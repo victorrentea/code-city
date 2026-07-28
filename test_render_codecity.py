@@ -244,6 +244,117 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertFalse(by_path["src/main/java/app/Base.java"]["changed"])     # also on the base
             self.assertIn("const HAS_CHANGES = true", html)
 
+    def test_walks_back_to_the_last_commit_that_touches_analysed_files(self):
+        """No PR, no Java edits in the working tree, and the recent commits only
+        moved docs -> the change set must walk BACK through history to the last
+        commit that really touched an analysed class, and name it (hash, subject,
+        GitHub link) so the page can say what the delta is."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                subprocess.run(["git", "-C", str(repo), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            git("init", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            git("remote", "add", "origin", "git@github.com:acme/demo.git")
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "Base.java").write_text("class Base {}\n")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            (src / "Base.java").write_text("class Base { int x; }\n")
+            git("add", "-A")
+            git("commit", "-m", "fix: the only commit that touches code\n\nlong body here")
+            wanted = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                    check=True, capture_output=True, text=True).stdout.strip()
+            (repo / "README.md").write_text("docs\n")             # two commits that touch
+            git("add", "-A")                                      # nothing the city renders
+            git("commit", "-m", "docs: readme")
+            (repo / "notes.txt").write_text("notes\n")
+            git("add", "-A")
+            git("commit", "-m", "chore: notes")
+            (repo / "scratch.txt").write_text("dirty\n")           # dirty tree, but no Java
+
+            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            tsv = repo / "codemap.tsv"
+            tsv.write_text(hdr + "src/main/java/app/Base.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n")
+
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            env.pop("HEATMAP_CHANGED_BASE", None)
+            env.pop("GITHUB_BASE_REF", None)
+            env.pop("GITHUB_REF", None)
+            env["PATH"] = "/usr/bin:/bin"                          # keep `gh` out of the picture
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                           check=True, cwd=str(repo), env=env)
+
+            html = (repo / "codecity.html").read_text()
+            import json
+            import re
+            source = json.loads(re.search(r"const CHANGE_SOURCE = (\{.*?\});", html, re.S).group(1))
+            self.assertEqual(source["kind"], "commit")             # not "working tree"
+            self.assertEqual(source["label"], "commit: " + wanted[:7])
+            self.assertEqual(source["detail"], "fix: the only commit that touches code")
+            self.assertIn("long body here", source["tooltip"])     # full message on hover
+            self.assertEqual(source["url"], f"https://github.com/acme/demo/commit/{wanted}")
+            files = json.loads(re.search(r"const FILES = (\[.*?\]);\nconst PACKAGES", html, re.S).group(1))
+            self.assertTrue(files[0]["changed"])                   # that commit's file lights up
+            self.assertIn("const HAS_CHANGES = true", html)
+            # the one-line "what am I looking at" readout under the change-set selector
+            self.assertIn('id="changeSourceRow"', html)
+            self.assertIn("function renderChangeSource", html)
+            self.assertIn('changeMode() !== "off" && HAS_CHANGES', html)
+
+    def test_dirty_java_working_tree_wins_over_history(self):
+        """An uncommitted edit to an analysed class is still the change set — the
+        history walk-back is a fallback, not a replacement."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                subprocess.run(["git", "-C", str(repo), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            git("init", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "Base.java").write_text("class Base {}\n")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            (src / "Base.java").write_text("class Base { int x; }\n")   # dirty Java
+
+            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            tsv = repo / "codemap.tsv"
+            tsv.write_text(hdr + "src/main/java/app/Base.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n")
+
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            env.pop("HEATMAP_CHANGED_BASE", None)
+            env.pop("GITHUB_BASE_REF", None)
+            env["PATH"] = "/usr/bin:/bin"
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                           check=True, cwd=str(repo), env=env)
+
+            html = (repo / "codecity.html").read_text()
+            import json
+            import re
+            source = json.loads(re.search(r"const CHANGE_SOURCE = (\{.*?\});", html, re.S).group(1))
+            self.assertEqual(source["kind"], "working")
+            self.assertEqual(source["label"], "working tree")
+            self.assertIn("uncommitted file", source["detail"])
+            self.assertIn("on main", source["detail"])
+            self.assertIn("src/main/java/app/Base.java", source["tooltip"])
+            self.assertEqual(source["url"], "")                     # nothing to link to on GitHub
+
 
 if __name__ == "__main__":
     unittest.main()

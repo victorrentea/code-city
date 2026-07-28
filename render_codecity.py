@@ -35,6 +35,25 @@ def _district(path):
     return "root"
 
 
+# The repo-relative paths this city actually renders (one per TSV row). The
+# change-set detection is measured against THIS set: a commit that only moved a
+# README or an .e2e test touches nothing the reader can see, so it must not be
+# offered as "the diff".
+def _analyzed_paths():
+    try:
+        with TSV.open() as f:
+            return {
+                (r.get("path") or "").lstrip("./")
+                for r in csv.DictReader(f, delimiter="\t")
+                if (r.get("path") or "").rsplit("/", 1)[-1] not in ("", "package-info.java")
+            }
+    except Exception:
+        return set()
+
+
+ANALYZED_PATHS = _analyzed_paths()
+
+
 # ── Current change set (git) ─────────────────────────────────────────────────
 # Which files count as "changed right now", baked into the page so the city can
 # grey out / hide everything else. Computed against REPO_ABS (the tree the tsv
@@ -97,38 +116,142 @@ def _pr_base():
     return base if ahead.isdigit() and int(ahead) > 0 else ""
 
 
-def _changed_files():
-    """Files in the CURRENT change set, auto-detecting how to read "what am I
-    working on right now" — no configuration needed:
+def _github_url():
+    """`https://github.com/owner/repo` for the origin remote (ssh or https form),
+    or "" — this is what turns the diff source into a clickable link."""
+    url = _run_git(["remote", "get-url", "origin"]).strip()
+    if url.startswith("git@"):                            # git@github.com:owner/repo.git
+        url = "https://" + url[4:].replace(":", "/", 1)
+    url = url.removesuffix(".git")
+    return url if url.startswith("http") else ""
+
+
+GITHUB_URL = _github_url()
+HISTORY_SCAN_LIMIT = 2000   # commits to walk back before giving up
+
+
+def _commit_meta(ref):
+    """sha / short sha / subject / full message of one commit, or None."""
+    out = _run_git(["show", "-s", "--format=%H%x1f%h%x1f%s%x1f%B", ref])
+    parts = out.split("\x1f")
+    if len(parts) < 4:
+        return None
+    return {"sha": parts[0].strip(), "short": parts[1].strip(),
+            "subject": parts[2].strip(), "message": parts[3].strip()}
+
+
+def _last_commit_touching(paths):
+    """(sha, files) of the most recent non-merge commit that touches a file the
+    city renders, walking back through history — or None.
+
+    Without this the change set can be a dud: on a repo whose recent commits only
+    moved docs, configs or .ts tests, every building stays "unchanged" and the
+    highlight/only-changed modes render nothing. Walking back until a commit
+    really hits the analysed classes always leaves the reader a delta to look at.
+    """
+    if not paths:
+        return None
+    out = _run_git(["log", "--no-merges", "--name-only", "--pretty=format:%x00%H",
+                    f"-n{HISTORY_SCAN_LIMIT}"])
+    for chunk in out.split("\x00"):
+        lines = [l.strip() for l in chunk.splitlines() if l.strip()]
+        if not lines:
+            continue
+        touched = set(lines[1:])
+        if touched & paths:
+            return lines[0], touched
+    return None
+
+
+def _pr_meta():
+    """Name the PR this checkout belongs to, so the page can say "PR #123" instead
+    of just "some branch diff". GitHub Actions env first (exact, free), then
+    `gh pr view` locally. Both best-effort: a feature branch with no PR yet simply
+    falls back to a branch-compare link."""
+    ref = os.environ.get("GITHUB_REF", "")
+    num = ref.split("/pull/", 1)[1].split("/", 1)[0] if "/pull/" in ref else ""
+    try:
+        out = subprocess.check_output(
+            ["gh", "pr", "view", "--json", "number,title,body,url"],
+            cwd=str(REPO_ABS), text=True, stderr=subprocess.DEVNULL, timeout=20)
+        pr = json.loads(out)
+        if pr.get("number"):
+            return {"number": str(pr["number"]), "title": (pr.get("title") or "").strip(),
+                    "body": (pr.get("body") or "").strip(), "url": pr.get("url") or ""}
+    except Exception:
+        pass
+    if num:
+        return {"number": num, "title": "", "body": "",
+                "url": f"{GITHUB_URL}/pull/{num}" if GITHUB_URL else ""}
+    return None
+
+
+def _working_source(working, branch):
+    n = len(working)
+    where = f" on {branch}" if branch and branch != "HEAD" else ""
+    return {"kind": "working", "label": "working tree",
+            "detail": f"{n} uncommitted file{'' if n == 1 else 's'}{where}",
+            "tooltip": "Uncommitted changes (staged + unstaged + untracked):\n"
+                       + "\n".join(sorted(working)[:40]),
+            "url": ""}
+
+
+def _change_set(analyzed):
+    """`(paths, source)` for the CURRENT change set — the files, plus a
+    description of *what the diff is of* so the page can name it.
+
+    Auto-detected, no configuration needed:
 
       1. On a PR / feature branch (commits ahead of the base branch, detected
          from GITHUB_BASE_REF or origin's default branch, or forced via
          HEATMAP_CHANGED_BASE) -> the whole branch diff `base...HEAD`, plus any
          uncommitted edits on top. "Everything this PR touches."
-      2. else, uncommitted work -> staged + unstaged + untracked vs HEAD.
-         "You haven't committed yet: the files you've changed."
-      3. else, the last commit  -> HEAD~1..HEAD.
-         "You just committed, not in a PR: the last commit."
+      2. else, uncommitted work that touches an analysed file -> staged +
+         unstaged + untracked vs HEAD. "You haven't committed yet."
+      3. else, the most recent commit that touches an analysed file — usually
+         HEAD, but we keep walking back past commits that only moved docs /
+         configs / non-Java tests. "The last commit that actually changed code."
 
     HEATMAP_CHANGED_BASE only overrides the auto-detected base (e.g. to diff
     against a release branch); it is never required.
     """
     working = _porcelain_paths(_run_git(["status", "--porcelain"]))
+    branch = _current_branch()
     base = os.environ.get("HEATMAP_CHANGED_BASE", "").strip() or _pr_base()
     if base:
-        diff = _run_git(["diff", "--name-only", f"{base}...HEAD"])
-        return {l.strip() for l in diff.splitlines() if l.strip()} | working
-    if working:
-        return working
-    last = {l.strip() for l in _run_git(["diff", "--name-only", "HEAD~1", "HEAD"]).splitlines() if l.strip()}
-    if last:
-        return last
-    # root commit (no parent): everything committed is "new".
-    show = _run_git(["show", "--name-only", "--pretty=format:", "HEAD"])
-    return {l.strip() for l in show.splitlines() if l.strip()}
+        diff = {l.strip() for l in _run_git(["diff", "--name-only", f"{base}...HEAD"]).splitlines()
+                if l.strip()}
+        pr = _pr_meta()
+        if pr:
+            source = {"kind": "pr", "label": f"PR #{pr['number']}",
+                      "detail": pr["title"] or f"{branch} → {base}",
+                      "tooltip": "\n\n".join(x for x in (pr["title"], pr["body"]) if x)
+                                 or f"{branch} → {base}",
+                      "url": pr["url"]}
+        else:
+            head = base.split("/")[-1]
+            source = {"kind": "branch", "label": f"branch {branch}",
+                      "detail": f"all commits since {base}, plus uncommitted edits",
+                      "tooltip": f"Everything {branch} changes relative to {base} "
+                                 f"(no open PR found), plus uncommitted edits.",
+                      "url": f"{GITHUB_URL}/compare/{head}...{branch}" if GITHUB_URL and branch else ""}
+        return diff | working, source
+    if working & analyzed or (working and not analyzed):
+        return working, _working_source(working, branch)
+    hit = _last_commit_touching(analyzed)
+    if hit:
+        sha, touched = hit
+        meta = _commit_meta(sha) or {"sha": sha, "short": sha[:7], "subject": "", "message": ""}
+        return touched, {"kind": "commit", "label": f"commit: {meta['short']}",
+                         "detail": meta["subject"],
+                         "tooltip": meta["message"] or meta["subject"],
+                         "url": f"{GITHUB_URL}/commit/{meta['sha']}" if GITHUB_URL else ""}
+    if working:                                            # nothing analysed was ever touched
+        return working, _working_source(working, branch)
+    return set(), {"kind": "none", "label": "no changes", "detail": "", "tooltip": "", "url": ""}
 
 
-CHANGED_FILES = _changed_files()
+CHANGED_FILES, CHANGE_SOURCE = _change_set(ANALYZED_PATHS)
 
 # Ancestor Java packages that contain a changed file (package mode "changed").
 _changed_districts = set()
@@ -360,6 +483,25 @@ html = """<!doctype html>
   }
   .viewOf option:disabled { color: #aab4c8; }
   .pkgRow { margin: 10px 0 0; }
+  /* WHAT the change set is a diff of — the PR, the commit, or the dirty working
+     tree. One line under the selector: the tag ("commit: a5d03cb") always fits,
+     the message after it takes whatever panel width is left and ellipsises;
+     hovering reveals the full text and the link opens it on GitHub. */
+  .changeSourceRow { display: flex; align-items: baseline; gap: 5px; margin: 4px 0 0; min-width: 0; }
+  .changeSourceRow .srcArrow { flex: none; color: #9aa5b1; font-size: 12px; }
+  .changeSource {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 12px; color: #1e3a8a; text-decoration: none;
+  }
+  .changeSource:hover { text-decoration: underline; }
+  .changeSource:not([href]) { color: #52606d; cursor: default; }
+  .changeSource:not([href]):hover { text-decoration: none; }
+  .changeSource .srcTag {
+    font-weight: 700;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .changeSource .srcDetail { color: #52606d; margin-left: 6px; }
   /* Package-pattern filter: AspectJ-style globs (victor..*Service, ..repo.., *Service). */
   .filterRow { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; }
   .filterRow input {
@@ -827,6 +969,10 @@ html = """<!doctype html>
     </select>
     <span id="changeCount" class="filterCount"></span>
   </div>
+  <div class="changeSourceRow" id="changeSourceRow" hidden>
+    <span class="srcArrow" aria-hidden="true">&#8627;</span>
+    <a id="changeSource" class="changeSource" target="_blank" rel="noopener"></a>
+  </div>
 </section>
 <nav id="breadcrumb" class="breadcrumb" hidden aria-label="package scope"></nav>
 <button id="howtoToggle" class="howto-toggle" type="button" aria-expanded="false" aria-controls="howto">
@@ -867,6 +1013,7 @@ const MODULES = __MODULES_JSON__;     // per-Maven/Gradle-module rows (same shap
 const REPO_ABS = __REPO_ABS__;
 const BUILD_CMD = __BUILD_CMD__;
 const HAS_CHANGES = __HAS_CHANGES__;  // any file in the current git change set?
+const CHANGE_SOURCE = __CHANGE_SOURCE__;  // what that change set is a diff OF (PR / commit / working tree)
 
 // The active COLOR metric's p95 scale max, mirrored out of rebuildCity so the
 // hover tooltip's colour-scale marker can place this building on the ramp.
@@ -941,6 +1088,35 @@ if (changeSelect && !HAS_CHANGES) {
   changeSelect.title = "no files in the current git change set";
 }
 function changeMode() { return changeSelect ? changeSelect.value : "off"; }
+// Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
+// dirty working tree. Only while a change mode is on — that is the moment the reader
+// is staring at a delta and needs to know which one. The tag ("commit: a5d03cb")
+// keeps its width, the message ellipsises into whatever panel space is left, and the
+// full message plus a GitHub link live on hover.
+const changeSourceRow = document.getElementById("changeSourceRow");
+const changeSourceEl = document.getElementById("changeSource");
+function renderChangeSource() {
+  if (!changeSourceRow || !changeSourceEl) return;
+  const src = CHANGE_SOURCE || {};
+  const show = changeMode() !== "off" && HAS_CHANGES && !!src.label;
+  changeSourceRow.hidden = !show;
+  if (!show) return;
+  changeSourceEl.textContent = "";
+  const tag = document.createElement("span");
+  tag.className = "srcTag";
+  tag.textContent = src.label;
+  changeSourceEl.append(tag);
+  if (src.detail) {
+    const detail = document.createElement("span");
+    detail.className = "srcDetail";
+    detail.textContent = src.detail;
+    changeSourceEl.append(detail);
+  }
+  changeSourceEl.title = [src.label, src.tooltip || src.detail].filter(Boolean).join("\\n\\n")
+    + (src.url ? "\\n\\nclick to open on GitHub" : "");
+  if (src.url) changeSourceEl.href = src.url;
+  else changeSourceEl.removeAttribute("href");
+}
 // The dropdown swaps which rows the treemap/floor/building machinery renders:
 // class rows, package rows (a building per package on its parent-package floor),
 // or module rows (a building per Maven/Gradle module). Falls back to classes.
@@ -1429,6 +1605,7 @@ function rebuildCity() {
     const n = activeDataset().filter(f => f.changed).length;
     changeCountEl.textContent = HAS_CHANGES ? n + " changed" : "no changes";
   }
+  renderChangeSource();
   window.__CODEMAP_3D_READY__ = {
     buildings: buildings.length,
     areaMetric,
@@ -2272,6 +2449,8 @@ html = (html
         .replace("__MODULES_JSON__", json.dumps(mod_rows))
         .replace("__REPO_ABS__", json.dumps(str(REPO_ABS)))
         .replace("__BUILD_CMD__", json.dumps(BUILD_CMD))
-        .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES))))
+        .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES & ANALYZED_PATHS)
+                                                if ANALYZED_PATHS else bool(CHANGED_FILES)))
+        .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE)))
 OUT.write_text(html)
 print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")

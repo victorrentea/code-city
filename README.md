@@ -79,10 +79,13 @@ against `HEATMAP_REPO`, in precedence order):
   base branch is detected from `GITHUB_BASE_REF` in GitHub Actions, otherwise from the
   remote's default branch (`origin/HEAD` → `origin/main`). Sitting **on** the base branch
   (e.g. `main`) is not a PR.
-- else, **uncommitted work** (staged + unstaged + untracked vs `HEAD`) — *you haven't
-  committed yet, so you see the files you've changed*.
-- else, the **last commit** (`HEAD~1..HEAD`) — *you just committed, not in a PR, so you
-  see the last commit*.
+- else, **uncommitted work** (staged + unstaged + untracked vs `HEAD`) *that touches a file
+  the city renders* — *you haven't committed yet, so you see the files you've changed*.
+- else, the **most recent commit that touches an analysed file** — usually `HEAD`, but the
+  detection keeps **walking back through history** past commits that only moved docs,
+  configs or non-Java tests. Without this, a repo whose last few commits were a README
+  tweak and a module rename would render an empty change set: nothing highlighted, nothing
+  to look at. (Merge commits are skipped; the walk gives up after 2000 commits.)
 
 `HEATMAP_CHANGED_BASE` is **optional** — it only *overrides* the auto-detected base (e.g.
 to diff against a release branch instead of `main`); you never need to set it for the
@@ -90,6 +93,22 @@ normal PR / dirty-tree / last-commit flow.
 
 When the change set is empty the highlight/hide modes are disabled and the selector
 reads "no changes".
+
+**What am I looking at?** Picking *highlight changed* or *only changed* reveals a one-line
+readout under the selector naming the **source of the diff**, because "42 changed" alone
+never says *changed relative to what*:
+
+| Source | Reads | Links to |
+| --- | --- | --- |
+| PR | `PR #123` + its title | the PR on GitHub |
+| feature branch with no PR yet | `branch feat/x` + `all commits since origin/main …` | the GitHub `compare/` view |
+| commit (incl. one found by walking back) | `commit: a5d03cb` + as much of the subject as fits | that commit on GitHub |
+| dirty tree | `working tree` + `N uncommitted files on <branch>` | — (nothing to link to) |
+
+The line truncates with an ellipsis to the panel width; **hovering** shows the full commit
+message / PR body, and **clicking** opens it on GitHub. The PR number comes from
+`GITHUB_REF` on CI, else from `gh pr view` locally (both best-effort — with neither, a
+branch falls back to the compare link).
 
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the
