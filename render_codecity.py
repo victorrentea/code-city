@@ -1159,7 +1159,7 @@ function filteredDataset() {
 const citySize = 900;
 const districtGap = 14;
 const fileGap = 3;
-const districtStep = 6;
+const districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
 const maxHeight = 190;
 const minHeight = 5;
 let buildings = [];
@@ -1408,36 +1408,6 @@ function grayFor(value, max) {
   return new THREE.Color(0xdfe3e8).lerp(new THREE.Color(0x6b7280), colorT(value, max));
 }
 
-// A hatch pattern for a terrace top: parallel lines in the terrace edge colour,
-// their direction rotating with the nesting level so each floor is distinguishable.
-function hatchTexture(edgeColor, level) {
-  const size = 64;
-  const gap = 16;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#e8eefc";
-  ctx.fillRect(0, 0, size, size);
-  ctx.strokeStyle = "#" + edgeColor.getHexString();
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  const dir = level % 4;
-  if (dir === 0) {
-    for (let y = gap / 2; y < size; y += gap) { ctx.moveTo(0, y); ctx.lineTo(size, y); }
-  } else if (dir === 2) {
-    for (let x = gap / 2; x < size; x += gap) { ctx.moveTo(x, 0); ctx.lineTo(x, size); }
-  } else if (dir === 1) {
-    for (let k = -size; k < size * 2; k += gap) { ctx.moveTo(k, size); ctx.lineTo(k + size, 0); }
-  } else {
-    for (let k = -size; k < size * 2; k += gap) { ctx.moveTo(k, 0); ctx.lineTo(k + size, size); }
-  }
-  ctx.stroke();
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
 function insertPackage(parent, parts, file, areaMetric) {
   if (parts.length === 0) {
     parent.children.push({ name: file.name, value: Math.max(1, Number(file[areaMetric]) || 0), file });
@@ -1530,7 +1500,6 @@ function rebuildCity() {
     if (node === root || !node.children) {
       continue;
     }
-    const level = Math.max(0, node.depth - 1);
     const width = Math.max(2, node.x1 - node.x0);
     const depth = Math.max(2, node.y1 - node.y0);
     const slab = districtStep + 2;
@@ -1538,15 +1507,13 @@ function rebuildCity() {
     const cx = node.x0 + width / 2 - citySize / 2;
     const cz = node.y0 + depth / 2 - citySize / 2;
     // Heat-colour the riser (vertical "height" faces) with the same scale as the
-    // buildings; hatch the light top surface with lines in that same edge colour,
-    // rotating the hatch direction per nesting level so each floor stands apart.
+    // buildings; leave the top surface a plain light plaster, so the only ink on a
+    // floor is its label. Nesting reads from the terrace step alone.
     const leaves = node.leaves();
     const avgColor = leaves.reduce((sum, l) => sum + (Number(l.data.file[colorMetric]) || 0), 0) / leaves.length;
     const edgeColor = colorFor(avgColor, maxColor);
     const sideMaterial = new THREE.MeshStandardMaterial({ color: edgeColor, roughness: 0.85 });
-    const topTexture = hatchTexture(edgeColor, level);
-    topTexture.repeat.set(width / 50, depth / 50);
-    const topMaterial = new THREE.MeshStandardMaterial({ map: topTexture, roughness: 0.9 });
+    const topMaterial = new THREE.MeshStandardMaterial({ color: 0xe8eefc, roughness: 0.9 });
     const block = new THREE.Mesh(
       new THREE.BoxGeometry(width, slab, depth),
       [sideMaterial, sideMaterial, topMaterial, topMaterial, sideMaterial, sideMaterial]
