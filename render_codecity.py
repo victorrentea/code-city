@@ -3,6 +3,7 @@
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.parse
@@ -21,6 +22,24 @@ REPO_ABS = Path(os.environ.get("HEATMAP_REPO_ABS") or os.environ.get("HEATMAP_RE
 def _number(row, key, cast=float):
     value = row.get(key, "0") or "0"
     return cast(value)
+
+
+_CAMEL_TOKEN = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*")
+
+
+def _class_prefixes(rows, min_classes=3, limit=20):
+    """Leading CamelCase word shared by several class names — OwnerRestController,
+    OwnerDto and OwnerMapper all yield "Owner". These are the groupings a reader
+    actually wants to isolate, so the filter box offers them as ready-made globs."""
+    counts = {}
+    for row in rows:
+        tokens = _CAMEL_TOKEN.findall(row["name"])
+        if len(tokens) < 2:                      # a one-word name is its own class, not a family
+            continue
+        counts[tokens[0]] = counts.get(tokens[0], 0) + 1
+    families = [(name, n) for name, n in counts.items() if n >= min_classes]
+    families.sort(key=lambda item: (-item[1], item[0]))
+    return [{"prefix": name, "count": n} for name, n in families[:limit]]
 
 
 def _district(path):
@@ -140,27 +159,61 @@ def _commit_meta(ref):
             "subject": parts[2].strip(), "message": parts[3].strip()}
 
 
-def _last_commit_touching(paths):
-    """(sha, files) of the most recent non-merge commit that touches a file the
-    city renders, walking back through history — or None.
+def _commits_touching(paths, limit=1):
+    """The `limit` most recent non-merge commits that touch a file the city renders,
+    newest first, walking back through history. Each entry carries its metadata and
+    the analysed files it touched.
 
     Without this the change set can be a dud: on a repo whose recent commits only
     moved docs, configs or .ts tests, every building stays "unchanged" and the
     highlight/only-changed modes render nothing. Walking back until a commit
     really hits the analysed classes always leaves the reader a delta to look at.
+
+    More than one is fetched so the page can offer the reader a history to step
+    through, instead of pinning them to whatever landed last.
     """
     if not paths:
-        return None
-    out = _run_git(["log", "--no-merges", "--name-only", "--pretty=format:%x00%H",
-                    f"-n{HISTORY_SCAN_LIMIT}"])
+        return []
+    out = _run_git(["log", "--no-merges", "--name-only",
+                    "--pretty=format:%x00%H%x1f%h%x1f%ar%x1f%s", f"-n{HISTORY_SCAN_LIMIT}"])
+    hits = []
     for chunk in out.split("\x00"):
         lines = [l.strip() for l in chunk.splitlines() if l.strip()]
         if not lines:
             continue
-        touched = set(lines[1:])
-        if touched & paths:
-            return lines[0], touched
-    return None
+        touched = set(lines[1:]) & paths     # only what the city can actually show
+        if not touched:
+            continue
+        header = (lines[0].split("\x1f") + ["", "", "", ""])[:4]
+        hits.append({"sha": header[0], "short": header[1], "when": header[2],
+                     "subject": header[3], "files": touched})
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+COMMIT_CHOICE_LIMIT = 10   # commits offered in the page's "which commit" dropdown
+
+
+def _change_scope(changed_files):
+    """The three key sets the page flags rows with — file paths, dotted packages and
+    module dirs — each keyed exactly like that dataset's `path`, so swapping change
+    sets in the browser is a Set lookup per row and no path logic gets re-implemented
+    in JavaScript."""
+    districts = set()
+    dirs = {"."}                       # the repo-root module row is keyed "."
+    for cf in changed_files:
+        district = _district(cf)
+        if district and district != "root":
+            segments = district.split(".")
+            for i in range(len(segments)):
+                districts.add(".".join(segments[: i + 1]))
+        parent = cf.rsplit("/", 1)[0] if "/" in cf else ""
+        accumulated = ""
+        for segment in (parent.split("/") if parent else []):
+            accumulated = f"{accumulated}/{segment}" if accumulated else segment
+            dirs.add(accumulated)
+    return {"files": sorted(changed_files), "districts": sorted(districts), "dirs": sorted(dirs)}
 
 
 def _pr_meta():
@@ -238,14 +291,15 @@ def _change_set(analyzed):
         return diff | working, source
     if working & analyzed or (working and not analyzed):
         return working, _working_source(working, branch)
-    hit = _last_commit_touching(analyzed)
-    if hit:
-        sha, touched = hit
+    history = _commits_touching(analyzed, limit=COMMIT_CHOICE_LIMIT)
+    if history:
+        sha, touched = history[0]["sha"], history[0]["files"]
         meta = _commit_meta(sha) or {"sha": sha, "short": sha[:7], "subject": "", "message": ""}
         return touched, {"kind": "commit", "label": f"commit: {meta['short']}",
                          "detail": meta["subject"],
                          "tooltip": meta["message"] or meta["subject"],
-                         "url": f"{GITHUB_URL}/commit/{meta['sha']}" if GITHUB_URL else ""}
+                         "url": f"{GITHUB_URL}/commit/{meta['sha']}" if GITHUB_URL else "",
+                         "history": history}   # popped out below into the commit dropdown
     if working:                                            # nothing analysed was ever touched
         return working, _working_source(working, branch)
     return set(), {"kind": "none", "label": "no changes", "detail": "", "tooltip": "", "url": ""}
@@ -253,23 +307,24 @@ def _change_set(analyzed):
 
 CHANGED_FILES, CHANGE_SOURCE = _change_set(ANALYZED_PATHS)
 
-# Ancestor Java packages that contain a changed file (package mode "changed").
-_changed_districts = set()
-for _cf in CHANGED_FILES:
-    _d = _district(_cf)
-    if _d and _d != "root":
-        _segs = _d.split(".")
-        for _i in range(len(_segs)):
-            _changed_districts.add(".".join(_segs[: _i + 1]))
+# Which packages / module dirs count as changed (modes "changed" in those datasets).
+_SCOPE = _change_scope(CHANGED_FILES)
+_changed_districts = set(_SCOPE["districts"])
+_changed_dirs = set(_SCOPE["dirs"])
 
-# Ancestor directories that contain a changed file (module mode "changed").
-_changed_dirs = {""}
-for _cf in CHANGED_FILES:
-    _dir = _cf.rsplit("/", 1)[0] if "/" in _cf else ""
-    _acc = ""
-    for _seg in (_dir.split("/") if _dir else []):
-        _acc = f"{_acc}/{_seg}" if _acc else _seg
-        _changed_dirs.add(_acc)
+# The commit dropdown: every recent commit that really touched rendered code, each
+# carrying the row keys needed to re-flag the city against it. Empty unless the change
+# set came from history — a PR diff or uncommitted work has no history to step through.
+COMMIT_CHOICES = [
+    {
+        "short": c["short"],
+        "subject": c["subject"],
+        "when": c["when"],
+        "url": f"{GITHUB_URL}/commit/{c['sha']}" if GITHUB_URL else "",
+        **_change_scope(c["files"]),
+    }
+    for c in CHANGE_SOURCE.pop("history", [])
+]
 
 
 rows = []
@@ -376,7 +431,7 @@ if MOD_TSV.exists():
                 "fan_out": fan_out,
                 "committers": _number(row, "committers", int),
                 "instability": (fan_out / (fan_in + fan_out)) if (fan_in + fan_out) else 0.0,
-                "changed": mod in _changed_dirs,
+                "changed": (mod or ".") in _changed_dirs,   # keyed like the row's path
             })
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -415,7 +470,10 @@ html = """<!doctype html>
     left: 16px;
     top: 16px;
     z-index: 2;
-    width: min(430px, calc(100vw - 32px));
+    /* As narrow as the widest thing inside allows: the dropdowns must still spell out
+       "instability Ce/(Ce+Ca)" and "Modules (Maven/Gradle)" next to the widest knob
+       label ("PACKAGES"). Measured truncation starts just under 320px. */
+    width: min(326px, calc(100vw - 32px));
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(140, 148, 160, 0.45);
     border-radius: 8px;
@@ -442,27 +500,58 @@ html = """<!doctype html>
     font-size: 12px;
     line-height: 1.35;
   }
-  /* Two rows of paired knobs, each pair joined by a separator glyph:
-       row 1   AREA  /  HEIGHT   (footprint & extrusion — the geometry)
-       row 2   COLOR @  SCALE    (the hue metric & the ramp it is drawn on)
-     so each row reads as one idea instead of four independent dropdowns. */
+  /* One knob per line, so they read as a stack of independent questions:
+       FILTER  [ ..repo.. * Service            ]
+       AREA    [ dropdown ]  [ ] /kloc
+       HEIGHT  [ dropdown ]  [ ] /kloc
+       COLOR   [ dropdown ]  [x] /kloc  [ ] lg
+     The dropdowns name the raw metric; "/kloc" turns a count into a density and
+     "lg" picks the colour ramp, both being one bit each rather than more dropdowns.
+     The filter shares the grid so its label lines up with the metric labels. */
   .controls {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: auto 1fr auto auto;
     gap: 6px 8px;
-    align-items: end;
+    align-items: center;
   }
-  .controls .sep {
-    align-self: end;
+  .controls .knob {
+    text-align: right;
+    color: #52606d;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .controls .checkbox {
     display: flex;
     align-items: center;
-    justify-content: center;
-    height: 30px;              /* ~ select height, so the glyph centres on the selects */
-    color: #7b8794;
-    font-size: 15px;
-    font-weight: 700;
-    user-select: none;
+    gap: 5px;
+    height: 30px;              /* ~ select height, so it sits on the dropdown's baseline */
+    color: #1f2933;
+    font-size: 13px;
+    font-weight: 500;
+    text-transform: none;
+    cursor: pointer;
   }
+  .controls .checkbox input { margin: 0; cursor: pointer; }
+  /* Trailing cell of a row that has no checkboxes of its own (Packages, Changes):
+     it swallows the two checkbox columns so the dropdown keeps the 1fr column and
+     therefore the exact width of the metric dropdowns above it. */
+  .controls .spanRest { grid-column: 3 / -1; }
+  /* Preset bubbles: ten colours, no words. The label is in the tooltip, because a row
+     of ten names would be a menu, and this is meant to be poked at. */
+  .presets { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
+  .presets .presetDot {
+    width: 17px; height: 17px; padding: 0;
+    border: 1px solid rgba(15, 23, 42, 0.28); border-radius: 50%;
+    cursor: pointer;
+  }
+  .presets .presetDot:hover { transform: scale(1.15); }
+  .presets .presetDot.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
+  .controls .filterCount { min-width: 0; text-align: left; }
+  /* Greyed out, not hidden: the row keeps its shape when you land on a metric
+     (size, committers, instability…) that has no meaningful per-KLOC form. */
+  .controls .checkbox.off { opacity: 0.35; cursor: default; }
+  .controls .checkbox.off input { cursor: default; }
   /* View switch (Classes / Packages / Modules) sits inline in the title row. */
   h1 .titleView {
     flex: none;
@@ -471,23 +560,17 @@ html = """<!doctype html>
     background: #fff; text-transform: none;
   }
   h1 .titleView option:disabled { color: #aab4c8; }
-  /* Inline label+select rows (e.g. "Package names:") under the title. */
-  .viewOf {
-    display: flex; align-items: center; gap: 8px; margin: 5px 0 10px;
-    font-size: 13px; font-weight: 600; color: #1f2933;
-    text-transform: none; letter-spacing: 0;
-  }
-  .viewOf select {
-    font-size: 13px; font-weight: 650; padding: 4px 8px;
-    color: #1e3a8a; border-color: #b9c4d6;
-  }
-  .viewOf option:disabled { color: #aab4c8; }
-  .pkgRow { margin: 10px 0 0; }
   /* WHAT the change set is a diff of — the PR, the commit, or the dirty working
      tree. One line under the selector: the tag ("commit: a5d03cb") always fits,
      the message after it takes whatever panel width is left and ellipsises;
      hovering reveals the full text and the link opens it on GitHub. */
-  .changeSourceRow { display: flex; align-items: baseline; gap: 5px; margin: 4px 0 0; min-width: 0; }
+  .changeSourceRow {
+    grid-column: 2 / -1;
+    display: flex; align-items: baseline; gap: 5px; min-width: 0;
+  }
+  /* Needed because the `display: flex` above outranks the UA's `[hidden] { display: none }`:
+     without it the row stays on screen in "show everything", naming a diff nothing is using. */
+  .changeSourceRow[hidden] { display: none; }
   .changeSourceRow .srcArrow { flex: none; color: #9aa5b1; font-size: 12px; }
   .changeSource {
     flex: 1 1 auto; min-width: 0;
@@ -502,8 +585,17 @@ html = """<!doctype html>
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .changeSource .srcDetail { color: #52606d; margin-left: 6px; }
-  /* Package-pattern filter: AspectJ-style globs (victor..*Service, ..repo.., *Service). */
-  .filterRow { display: flex; align-items: center; gap: 6px; margin: 10px 0 0; }
+  /* History mode: the subject moves into a dropdown of the last commits that touched
+     rendered code, and .changeSource shrinks to just the id that links to GitHub. */
+  .commitPick {
+    flex: 1 1 auto; min-width: 0; max-width: 250px;
+    border: 1px solid #c8d0da; border-radius: 6px; background: #fff;
+    color: #1f2933; font-size: 12px; padding: 2px 20px 2px 6px;   /* room for the native arrow */
+  }
+  .changeSourceRow:has(.commitPick:not([hidden])) .changeSource { flex: none; }
+  /* Package-pattern filter: AspectJ-style globs (victor..*Service, ..repo.., *Service).
+     Sits on the grid's first row, spanning everything right of its label. */
+  .filterRow { grid-column: 2 / -1; display: flex; align-items: center; gap: 6px; min-width: 0; }
   .filterRow input {
     flex: 1 1 auto; min-width: 0;
     border: 1px solid #c8d0da; border-radius: 6px; background: #fff;
@@ -517,6 +609,10 @@ html = """<!doctype html>
   }
   .filterRow button:hover { background: #eef1f5; color: #1f2933; }
   .filterCount { flex: none; font-size: 11px; color: #667085; min-width: 46px; text-align: right; }
+  /* No reserved gutter here: an empty count would otherwise keep the input from
+     reaching the panel's right edge, which is where the metric rows end. */
+  .filterRow .filterCount { min-width: 0; }
+  .filterRow:has(#pkgFilterCount:empty) { gap: 0; }
   /* Shortcuts help, pinned bottom-right, clear of the metrics tooltip (top-right). */
   #shortcuts {
     position: fixed; bottom: 16px; right: 16px; z-index: 2;
@@ -899,84 +995,92 @@ html = """<!doctype html>
       <option value="modules" id="moduleOpt">Modules (Maven/Gradle)</option>
     </select></h1>
   <div class="controls">
-    <label>
-      Area
-      <select id="areaMetric">
-        <option value="bytes" selected>file size</option>
-        <option value="lines">lines of code (LOC)</option>
-        <option value="cognitive_complexity">cognitive complexity</option>
-        <option value="commits">total commits</option>
-        <option value="committers">committers</option>
-        <option value="fan_out">outgoing coupling (fan out)</option>
-      </select>
+    <span class="knob">Filter</span>
+    <div class="filterRow" title="AspectJ-style globs: victor..*Service &middot; ..repo.. &middot; *Service">
+      <input id="pkgFilter" type="text" spellcheck="false" autocomplete="off"
+             list="classFamilies" placeholder="..repo.. &middot; *Service">
+      <datalist id="classFamilies">__CLASS_FAMILIES__</datalist>
+      <button id="pkgFilterClear" type="button" title="clear filter" hidden>&times;</button>
+      <span id="pkgFilterCount" class="filterCount"></span>
+    </div>
+
+    <span class="knob">Preset</span>
+    <div class="presets" id="presets" role="group" aria-label="metric presets"></div>
+
+    <span class="knob">Area</span>
+    <select id="areaMetric">
+      <option value="bytes" selected>file size</option>
+      <option value="lines">lines of code (LOC)</option>
+      <option value="cognitive_complexity">cognitive complexity</option>
+      <option value="commits">total commits</option>
+      <option value="committers">committers</option>
+      <option value="fan_out">outgoing coupling</option>
+    </select>
+    <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
+      <input id="areaKloc" type="checkbox" aria-label="area per KLOC"> /kloc
     </label>
-    <span class="sep" aria-hidden="true">/</span>
-    <label>
-      Height
-      <select id="heightMetric">
-        <option value="lines">lines of code (LOC)</option>
-        <option value="cognitive_complexity" selected>cognitive complexity</option>
-        <option value="bug_commits">bugfix commits</option>
-        <option value="commits">total commits</option>
-        <option value="committers">committers</option>
-        <option value="fan_in">incoming coupling (fan in)</option>
-        <option value="fan_out">outgoing coupling (fan out)</option>
-        <option value="instability">instability Ce/(Ce+Ca)</option>
-      </select>
+    <span></span>
+
+    <span class="knob">Height</span>
+    <select id="heightMetric">
+      <option value="lines">lines of code (LOC)</option>
+      <option value="cognitive_complexity" selected>cognitive complexity</option>
+      <option value="bug_commits">bugfix commits</option>
+      <option value="commits">total commits</option>
+      <option value="committers">committers</option>
+      <option value="fan_in">incoming coupling</option>
+      <option value="fan_out">outgoing coupling</option>
+      <option value="instability">instability Ce/(Ce+Ca)</option>
+    </select>
+    <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
+      <input id="heightKloc" type="checkbox" aria-label="height per KLOC"> /kloc
     </label>
-    <label>
-      Color
-      <select id="colorMetric">
-        <option value="complexity_per_kloc">cognitive complexity / KLOC</option>
-        <option value="bugs_per_kloc">bugfix commits / KLOC</option>
-        <option value="commits_per_kloc" selected>total commits / KLOC</option>
-        <option value="committers">committers</option>
-        <option value="instability">instability Ce/(Ce+Ca)</option>
-        <option value="fan_in">incoming coupling (fan in)</option>
-        <option value="fan_out">outgoing coupling (fan out)</option>
-      </select>
+    <span></span>
+
+    <span class="knob">Color</span>
+    <select id="colorMetric">
+      <option value="cognitive_complexity">cognitive complexity</option>
+      <option value="bug_commits">bugfix commits</option>
+      <option value="commits" selected>total commits</option>
+      <option value="committers">committers</option>
+      <option value="instability">instability Ce/(Ce+Ca)</option>
+      <option value="fan_in">incoming coupling</option>
+      <option value="fan_out">outgoing coupling</option>
+    </select>
+    <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
+      <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
     </label>
-    <span class="sep" aria-hidden="true">@</span>
-    <label>
-      Color scale
-      <select id="colorScale" aria-label="colour scale">
-        <option value="auto" selected>auto (log for /KLOC)</option>
-        <option value="linear">linear</option>
-        <option value="log">log</option>
-      </select>
+    <label class="checkbox"
+           title="Colour ramp: log instead of linear. Ticks itself to what the chosen metric wants; your own tick sticks for the session.">
+      <input id="colorLog" type="checkbox" aria-label="log colour ramp"> lg
     </label>
-  </div>
-  <div class="filterRow">
-    <input id="pkgFilter" type="text" spellcheck="false" autocomplete="off"
-           placeholder="filter e.g. victor..*Service &middot; ..repo.. &middot; *Service">
-    <button id="pkgFilterClear" type="button" title="clear filter" hidden>&times;</button>
-    <span id="pkgFilterCount" class="filterCount"></span>
-  </div>
-  <div class="viewOf pkgRow">
-    <span>Package names:</span>
+
+    <span class="knob">Packages</span>
     <select id="pkgLabelMode" aria-label="package label style">
       <option value="floating">floating tags</option>
       <option value="floor" selected>on the floor (edges)</option>
       <option value="off">off</option>
     </select>
-  </div>
-  <div class="viewOf pkgRow">
-    <span>Change set:</span>
+    <span class="spanRest"></span>
+
+    <span class="knob">Changes</span>
     <select id="changeMode" aria-label="change-set filter">
       <option value="off" selected>show everything</option>
       <option value="highlight">highlight changed</option>
       <option value="hide">only changed</option>
     </select>
-    <span id="changeCount" class="filterCount"></span>
-  </div>
-  <div class="changeSourceRow" id="changeSourceRow" hidden>
-    <span class="srcArrow" aria-hidden="true">&#8627;</span>
-    <a id="changeSource" class="changeSource" target="_blank" rel="noopener"></a>
+    <span id="changeCount" class="filterCount spanRest"></span>
+
+    <div class="changeSourceRow" id="changeSourceRow" hidden>
+      <span class="srcArrow" aria-hidden="true">&#8627;</span>
+      <select id="commitPick" class="commitPick" aria-label="which commit to diff against" hidden></select>
+      <a id="changeSource" class="changeSource" target="_blank" rel="noopener"></a>
+    </div>
   </div>
 </section>
 <nav id="breadcrumb" class="breadcrumb" hidden aria-label="package scope"></nav>
 <button id="howtoToggle" class="howto-toggle" type="button" aria-expanded="false" aria-controls="howto">
-  &#9874; Build for your repo
+  &#9874; How to build for your own repo
 </button>
 <section class="howto" id="howto" hidden>
   <div class="howto-card" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
@@ -1014,6 +1118,7 @@ const REPO_ABS = __REPO_ABS__;
 const BUILD_CMD = __BUILD_CMD__;
 const HAS_CHANGES = __HAS_CHANGES__;  // any file in the current git change set?
 const CHANGE_SOURCE = __CHANGE_SOURCE__;  // what that change set is a diff OF (PR / commit / working tree)
+const COMMIT_CHOICES = __COMMIT_CHOICES__;   // recent commits that touched rendered code; empty unless the diff came from history
 
 // The active COLOR metric's p95 scale max, mirrored out of rebuildCity so the
 // hover tooltip's colour-scale marker can place this building on the ramp.
@@ -1067,7 +1172,43 @@ const hover = document.getElementById("hover");
 const areaSelect = document.getElementById("areaMetric");
 const heightSelect = document.getElementById("heightMetric");
 const colorSelect = document.getElementById("colorMetric");
-const colorScaleSelect = document.getElementById("colorScale");   // linear vs log colour ramp
+const colorLogCheck = document.getElementById("colorLog");   // linear vs log colour ramp
+
+// Only counts have a meaningful density; size, lines, committers, the couplings and
+// instability (already a ratio) do not, so their "/kloc" box is disabled, not silently ignored.
+const PER_KLOC = {
+  cognitive_complexity: "complexity_per_kloc",
+  commits: "commits_per_kloc",
+  bug_commits: "bugs_per_kloc",
+};
+const METRIC_KNOBS = [
+  { select: areaSelect, kloc: document.getElementById("areaKloc") },
+  { select: heightSelect, kloc: document.getElementById("heightKloc") },
+  { select: colorSelect, kloc: document.getElementById("colorKloc") },
+];
+
+// What the dropdown names, plus the "/kloc" bit: "commits" + /kloc = commits_per_kloc.
+function metricKey(knob) {
+  const base = knob.select.value;
+  return knob.kloc && knob.kloc.checked && PER_KLOC[base] ? PER_KLOC[base] : base;
+}
+const areaMetricKey = () => metricKey(METRIC_KNOBS[0]);
+const heightMetricKey = () => metricKey(METRIC_KNOBS[1]);
+const colorMetricKey = () => metricKey(METRIC_KNOBS[2]);
+
+// Landing on a metric with no density greys its box out; the tick you had is kept
+// aside and put back when you return to a metric that can use it.
+const klocIntent = new WeakMap();
+function syncKlocChecks() {
+  for (const knob of METRIC_KNOBS) {
+    if (!knob.kloc) continue;
+    const supported = !!PER_KLOC[knob.select.value];
+    if (!knob.kloc.disabled) klocIntent.set(knob.kloc, knob.kloc.checked);
+    knob.kloc.disabled = !supported;
+    knob.kloc.checked = supported && klocIntent.get(knob.kloc) === true;
+    knob.kloc.parentElement.classList.toggle("off", !supported);
+  }
+}
 const viewSelect = document.getElementById("viewMode");   // the title-row view switch
 const packageOpt = document.getElementById("packageOpt");
 const moduleOpt = document.getElementById("moduleOpt");
@@ -1095,27 +1236,72 @@ function changeMode() { return changeSelect ? changeSelect.value : "off"; }
 // full message plus a GitHub link live on hover.
 const changeSourceRow = document.getElementById("changeSourceRow");
 const changeSourceEl = document.getElementById("changeSource");
+// When the change set came from history, the reader gets a dropdown of the last
+// commits that really touched rendered code rather than being pinned to whatever
+// landed most recently; the id next to it stays the GitHub link.
+const commitPick = document.getElementById("commitPick");
+let commitChoice = 0;
+const hasCommitHistory = () => COMMIT_CHOICES.length > 1 && (CHANGE_SOURCE || {}).kind === "commit";
+
+// Re-flag every dataset against the picked commit. The generator pre-computes the
+// keys per dataset (file path / dotted package / module dir), so this stays a Set
+// lookup per row and no path logic gets re-implemented here.
+function applyCommitChoice() {
+  const choice = COMMIT_CHOICES[commitChoice];
+  if (!choice) return;
+  const [files, districts, dirs] =
+    [choice.files, choice.districts, choice.dirs].map(keys => new Set(keys));
+  for (const row of FILES) row.changed = files.has(row.path);
+  for (const row of PACKAGES) row.changed = districts.has(row.path);
+  for (const row of MODULES) row.changed = dirs.has(row.path);
+}
+
 function renderChangeSource() {
   if (!changeSourceRow || !changeSourceEl) return;
   const src = CHANGE_SOURCE || {};
+  const history = hasCommitHistory() ? COMMIT_CHOICES[commitChoice] : null;
   const show = changeMode() !== "off" && HAS_CHANGES && !!src.label;
   changeSourceRow.hidden = !show;
+  if (commitPick) commitPick.hidden = !history;
   if (!show) return;
   changeSourceEl.textContent = "";
   const tag = document.createElement("span");
   tag.className = "srcTag";
-  tag.textContent = src.label;
+  tag.textContent = history ? history.short : src.label;   // the combo already names it
   changeSourceEl.append(tag);
-  if (src.detail) {
+  const detailText = history ? history.when : src.detail;
+  if (detailText) {
     const detail = document.createElement("span");
     detail.className = "srcDetail";
-    detail.textContent = src.detail;
+    detail.textContent = detailText;
     changeSourceEl.append(detail);
   }
-  changeSourceEl.title = [src.label, src.tooltip || src.detail].filter(Boolean).join("\\n\\n")
-    + (src.url ? "\\n\\nclick to open on GitHub" : "");
-  if (src.url) changeSourceEl.href = src.url;
+  const url = history ? history.url : src.url;
+  changeSourceEl.title = history
+    ? [history.short, history.subject, history.when].filter(Boolean).join("\\n\\n")
+      + (url ? "\\n\\nclick to open on GitHub" : "")
+    : [src.label, src.tooltip || src.detail].filter(Boolean).join("\\n\\n")
+      + (url ? "\\n\\nclick to open on GitHub" : "");
+  if (url) changeSourceEl.href = url;
   else changeSourceEl.removeAttribute("href");
+}
+
+if (commitPick && hasCommitHistory()) {
+  COMMIT_CHOICES.forEach((choice, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = choice.subject || choice.short;
+    option.title = [choice.short, choice.subject, choice.when].filter(Boolean).join(" · ");
+    commitPick.append(option);
+  });
+  commitPick.value = "0";
+  commitPick.addEventListener("change", () => {
+    dismissIntro();
+    commitChoice = Number(commitPick.value);
+    applyCommitChoice();
+    if (changeMode() === "hide") { scopePath = ""; updateBreadcrumb(); rebuildCity(); frameCity(); }
+    else rebuildCity();
+  });
 }
 // The dropdown swaps which rows the treemap/floor/building machinery renders:
 // class rows, package rows (a building per package on its parent-package floor),
@@ -1156,15 +1342,31 @@ function filteredDataset() {
   if (changeMode() === "hide") data = data.filter(f => f.changed);
   return data;
 }
-const citySize = 900;
+// Wettel's original CodeCity plate is a landscape rectangle, not a square: a wide
+// city reads better on a 16:9 screen and can be taken in whole from a low, far
+// camera. Keep the ground *area* of the old 900x900 square so footprints — and
+// therefore the height scale — stay comparable.
+const cityAspect = 1.6;
+const citySize = 900;                                        // side of the equivalent square
+const cityW = Math.round(citySize * Math.sqrt(cityAspect));  // 1138 across
+const cityD = Math.round(citySize / Math.sqrt(cityAspect));  // 712 deep
+const cityRadius = Math.hypot(cityW, cityD) / 2;             // half-diagonal: shadow + camera fit
+let cityTop = 0;                                             // tallest building; heights are p95-scaled, so outliers blow past maxHeight
 const districtGap = 14;
 const fileGap = 3;
 const districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
+// Header strip kept clear along each district's top edge, where its name is written.
+// It has to be reserved in the treemap itself: children terraces rise ABOVE their
+// parent's floor and tile its whole area, so text laid anywhere else is buried.
+// A share of the district's own depth, so a big package gets big, readable letters
+// and a cramped one still keeps a legible minimum.
+const floorLabelBand = node => Math.min(40, Math.max(11, (node.y1 - node.y0) * 0.12));
 const maxHeight = 190;
 const minHeight = 5;
 let buildings = [];
 let districts = [];
 let cityLabels = [];
+const MIN_LABEL_ROOF_PX = 26;   // a roof narrower than this on screen doesn't get a name
 let districtLabels = [];   // floating package tags (CSS2DObjects), when pkgLabelMode = "floating"
 const floorLabelMeshes = [];   // flat on-the-floor package names; re-oriented each frame to face the camera
 
@@ -1234,10 +1436,15 @@ function scopedParts(file) {
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xf4f5f7);
-scene.fog = new THREE.Fog(0xf4f5f7, 900, 2200);
+// No fog: the original CodeCity keeps the far districts as crisp as the near ones,
+// and a big city is mostly "far away" — haze would swallow exactly the overview
+// this page exists to give.
 
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 4000);
-camera.position.set(720, 620, 760);
+// A long lens (30°, not the usual 45°) shot from far back: perspective flattens
+// out, so the far districts stay the same scale as the near ones, the way the
+// original CodeCity plates look.
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1, 20000);
+camera.position.set(720, 620, 760);   // provisional; frameCity() fits it to the real city
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -1260,7 +1467,7 @@ controls.dampingFactor = 0.06;
 controls.screenSpacePanning = true;
 controls.zoomToCursor = true;
 controls.minDistance = 140;
-controls.maxDistance = 1900;
+controls.maxDistance = cityRadius * 12;   // room to pull right back off a big city
 controls.target.set(0, 0, 0);
 controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
 controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
@@ -1341,10 +1548,10 @@ const sun = new THREE.DirectionalLight(0xffffff, 2.2);
 sun.position.set(-420, 780, 520);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -650;
-sun.shadow.camera.right = 650;
-sun.shadow.camera.top = 650;
-sun.shadow.camera.bottom = -650;
+sun.shadow.camera.left = -(cityRadius + 60);
+sun.shadow.camera.right = cityRadius + 60;
+sun.shadow.camera.top = cityRadius + 60;
+sun.shadow.camera.bottom = -(cityRadius + 60);
 scene.add(sun);
 
 const groundMaterial = new THREE.MeshStandardMaterial({
@@ -1352,7 +1559,7 @@ const groundMaterial = new THREE.MeshStandardMaterial({
   roughness: 0.74,
   metalness: 0.02,
 });
-const ground = new THREE.Mesh(new THREE.BoxGeometry(citySize + 36, 8, citySize + 36), groundMaterial);
+const ground = new THREE.Mesh(new THREE.BoxGeometry(cityW + 36, 8, cityD + 36), groundMaterial);
 ground.position.y = -5;
 ground.receiveShadow = true;
 scene.add(ground);
@@ -1378,11 +1585,19 @@ function metricMax(key) {
 // those on a log ramp so the crowded low end spreads across the palette;
 // evenly-distributed metrics (instability, couplings) stay linear.
 const LOG_DEFAULT_METRICS = new Set(["commits_per_kloc", "bugs_per_kloc", "complexity_per_kloc"]);
+
+// Ticking "log" yourself pins that metric to your choice for the rest of the session;
+// metrics you never touched keep following the default above. Deliberately not
+// persisted — a reload starts from the defaults again.
+const colorLogOverrides = new Map();
+
 function wantsLog(metric) {
-  const mode = colorScaleSelect ? colorScaleSelect.value : "auto";
-  if (mode === "log") return true;
-  if (mode === "linear") return false;
-  return LOG_DEFAULT_METRICS.has(metric);   // "auto"
+  return colorLogOverrides.has(metric) ? colorLogOverrides.get(metric) : LOG_DEFAULT_METRICS.has(metric);
+}
+
+// The checkbox always shows the ramp the current metric resolves to.
+function syncColorLogCheck() {
+  if (colorLogCheck) colorLogCheck.checked = wantsLog(colorMetricKey());
 }
 
 // Normalised colour position t in [0,1]. Shared by the buildings and the hover
@@ -1444,6 +1659,8 @@ function clearCity() {
   for (const label of cityLabels) {
     label.obj.removeFromParent();
     label.el.remove();
+    label.stem.removeFromParent();
+    label.stem.geometry.dispose();   // the material is shared, so it stays
   }
   cityLabels = [];
   for (const label of districtLabels) {
@@ -1473,19 +1690,34 @@ function clearCity() {
   }
 }
 
+function medianFootprint(root) {
+  const sides = root.leaves().map(l => Math.min(l.x1 - l.x0, l.y1 - l.y0)).sort((a, b) => a - b);
+  return sides.length ? sides[Math.floor(sides.length / 2)] : 0;
+}
+
 function rebuildCity() {
   clearCity();
-  const areaMetric = areaSelect.value;
-  const heightMetric = heightSelect.value;
-  const colorMetric = colorSelect.value;
+  cityTop = 0;                 // tallest building of THIS layout — what frameCity must fit
+  const areaMetric = areaMetricKey();
+  const heightMetric = heightMetricKey();
+  const colorMetric = colorMetricKey();
   const maxMetric = metricMax(heightMetric);
   const maxColor = metricMax(colorMetric);
   activeColorMax = maxColor;   // remembered for the hover tooltip's colour-scale marker
   activeColorLog = wantsLog(colorMetric);   // ditto: log vs linear for the tick position
 
+  // Streets narrow with depth, like a real city: boulevards between top-level
+  // modules, alleys between leaf packages. A flat districtGap at every level costs
+  // a deeply nested tree (org.springframework.a.b.c.d) most of its plate in white
+  // gaps, which is what made the big city look empty next to Wettel's dense plates.
+  const padOuter = node => Math.max(3, districtGap / (1 + node.depth * 0.7));
   const layout = d3.treemap()
-    .size([citySize, citySize])
-    .paddingOuter(districtGap)
+    .size([cityW, cityD])
+    .paddingOuter(padOuter)
+    // The near (+z) side only, and not for the root — nothing is written on the bare
+    // ground. This is the strip addFloorName writes the package name into, kept on the
+    // side facing the default camera so the names are the first thing you read.
+    .paddingBottom(node => padOuter(node) + (node.depth === 0 ? 0 : floorLabelBand(node)))
     .paddingInner(fileGap)
     .round(true);
   const root = layout(buildHierarchy(areaMetric));
@@ -1494,7 +1726,6 @@ function rebuildCity() {
   // it rises, so a parent package (e.g. victor) visibly contains its children
   // (rest, mapper, ...). A thin outline delimits every package from its siblings.
   _floorLabelBudget = 240;   // cap flat floor-text planes per rebuild (perf on big cities)
-  _floorLabelBoxes = [];     // fresh overlap map for this rebuild's floor labels
   floorLabelMeshes.length = 0;   // the previous rebuild's planes are gone; start the facing list over
   for (const node of root.descendants()) {
     if (node === root || !node.children) {
@@ -1504,8 +1735,8 @@ function rebuildCity() {
     const depth = Math.max(2, node.y1 - node.y0);
     const slab = districtStep + 2;
     const topY = node.depth * districtStep;
-    const cx = node.x0 + width / 2 - citySize / 2;
-    const cz = node.y0 + depth / 2 - citySize / 2;
+    const cx = node.x0 + width / 2 - cityW / 2;
+    const cz = node.y0 + depth / 2 - cityD / 2;
     // Heat-colour the riser (vertical "height" faces) with the same scale as the
     // buildings; leave the top surface a plain light plaster, so the only ink on a
     // floor is its label. Nesting reads from the terrace step alone.
@@ -1538,13 +1769,26 @@ function rebuildCity() {
     addPackageLabel(node, cx, cz, topY, width, depth);
   }
 
+  // In Wettel's plates a building is a block, not a needle: its height stays a small
+  // multiple of its footprint. But footprints shrink as the file count grows (same
+  // plate, more tiles), so a fixed height scale turns a 5000-file repo into a bed of
+  // nails. Tie the scale to the median footprint and the proportions hold at any size;
+  // a small repo has roomy tiles and simply keeps the full maxHeight.
+  const heightScale = Math.min(maxHeight, Math.max(50, medianFootprint(root) * 9));
+
   for (const leaf of root.leaves()) {
     const file = leaf.data.file;
     const width = Math.max(4, leaf.x1 - leaf.x0 - 1);
     const depth = Math.max(4, leaf.y1 - leaf.y0 - 1);
     const metricValue = Number(file[heightMetric]) || 0;
     const colorValue = Number(file[colorMetric]) || 0;
-    const height = minHeight + Math.pow(metricValue / (maxMetric || 1), 0.62) * maxHeight;
+    // maxMetric is the p95, so the handful of files above it land past 1.0 — left
+    // unbounded, one monster class turns the whole skyline into needles. Above the
+    // p95 the curve goes logarithmic: outliers still visibly tower, but the city
+    // keeps the boxy proportions of the original CodeCity plates.
+    const ratio = metricValue / (maxMetric || 1);
+    const scaled = ratio <= 1 ? Math.pow(ratio, 0.62) : 1 + Math.log10(ratio) * 0.8;
+    const height = minHeight + scaled * heightScale;
     const geometry = new THREE.BoxGeometry(width, height, depth);
     const material = new THREE.MeshStandardMaterial({
       color: colorFor(colorValue, maxColor),
@@ -1554,16 +1798,17 @@ function rebuildCity() {
     const mesh = new THREE.Mesh(geometry, material);
     const baseY = leaf.parent.depth * districtStep;
     mesh.position.set(
-      leaf.x0 + (leaf.x1 - leaf.x0) / 2 - citySize / 2,
+      leaf.x0 + (leaf.x1 - leaf.x0) / 2 - cityW / 2,
       baseY + height / 2,
-      leaf.y0 + (leaf.y1 - leaf.y0) / 2 - citySize / 2
+      leaf.y0 + (leaf.y1 - leaf.y0) / 2 - cityD / 2
     );
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.file = file;
     mesh.userData.baseColor = material.color.clone();
     scene.add(mesh);
-    buildings.push({ mesh, file, height, colorValue, maxColor });
+    buildings.push({ mesh, file, height, colorValue, maxColor, footprint: Math.min(width, depth) });
+    cityTop = Math.max(cityTop, baseY + height);
   }
   styleForChanges();
   setupLabels(areaMetric, heightMetric, colorMetric);
@@ -1605,20 +1850,45 @@ const LABEL_GAP = 4;          // px breathing room required between two labels
 const _labelMeasure = document.createElement("canvas").getContext("2d");
 _labelMeasure.font = "700 12px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
+// A pill floating over a dense skyline reads as belonging to whatever building
+// happens to sit behind it, so every name is tied to the centre of its own roof by
+// a leader line. depthTest off: the stem is drawn over the city like the HTML pill
+// it hangs from, otherwise a name would show while its stem was buried.
+const LABEL_STEM = 16;      // world units from the roof up to the bottom of the pill
+const labelStemMaterial = new THREE.LineBasicMaterial({
+  color: 0x111827,
+  transparent: true,
+  opacity: 0.55,
+  depthTest: false,
+});
+
 // Persistent labels show ONLY the class name — every metric lives in the hover now.
 function makeLabel(entry, priority) {
+  const { x, z } = entry.mesh.position;
+  const roofY = entry.mesh.position.y + entry.height / 2;
   const div = document.createElement("div");
   div.className = "city-label";
   div.textContent = entry.file.name;
   const obj = new CSS2DObject(div);
-  obj.position.set(entry.mesh.position.x, entry.mesh.position.y + entry.height / 2 + 16, entry.mesh.position.z);
+  obj.position.set(x, roofY + LABEL_STEM, z);
   obj.center.set(0.5, 1);
   obj.visible = false;        // shown later, only if it survives de-overlap
   scene.add(obj);
+  const stem = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(x, roofY, z),
+      new THREE.Vector3(x, roofY + LABEL_STEM, z),
+    ]),
+    labelStemMaterial
+  );
+  stem.renderOrder = 3;
+  stem.visible = false;       // follows its label
+  scene.add(stem);
   cityLabels.push({
-    obj, el: div, priority,
+    obj, el: div, stem, priority,
     w: _labelMeasure.measureText(entry.file.name).width + 16,   // + .city-label horizontal padding
     h: 22,                    // single line
+    footprint: entry.footprint,   // world size of the roof this name belongs to
   });
 }
 
@@ -1654,16 +1924,30 @@ function setupLabels(areaMetric, heightMetric, colorMetric) {
 // Greedy screen-space de-overlap: walk candidates by priority, show one only if its
 // box clears every higher-priority box already shown; hide the rest. Runs each frame.
 const _labelNdc = new THREE.Vector3();
+function showLabel(L, on) {
+  L.obj.visible = on;
+  L.stem.visible = on;        // the leader line lives and dies with its name
+}
+
 function updateLabelVisibility() {
   if (introEl) {                                  // keep the intro screen clean
-    for (const L of cityLabels) L.obj.visible = false;
+    for (const L of cityLabels) showLabel(L, false);
     return;
   }
   const W = window.innerWidth, H = window.innerHeight;
   const placed = [];
+  // Pixels a world unit covers at distance d: the gate below turns names off for
+  // buildings too small on screen to own one. In a 5000-file city zoomed out that
+  // leaves a clean plate (Wettel's originals carry no labels either); zoom in and
+  // the names come back as the roofs grow.
+  const pxPerUnitAt = H / (2 * Math.tan(camera.fov * Math.PI / 360));
   for (const L of cityLabels) {
+    if (L.footprint * pxPerUnitAt / camera.position.distanceTo(L.obj.position) < MIN_LABEL_ROOF_PX) {
+      showLabel(L, false);
+      continue;
+    }
     _labelNdc.copy(L.obj.position).project(camera);
-    if (_labelNdc.z < -1 || _labelNdc.z > 1) { L.obj.visible = false; continue; }
+    if (_labelNdc.z < -1 || _labelNdc.z > 1) { showLabel(L, false); continue; }
     const x = (_labelNdc.x * 0.5 + 0.5) * W;
     const y = (-_labelNdc.y * 0.5 + 0.5) * H;
     const box = { left: x - L.w / 2, right: x + L.w / 2, top: y - L.h, bottom: y };
@@ -1672,7 +1956,7 @@ function updateLabelVisibility() {
       if (box.left < p.right + LABEL_GAP && box.right > p.left - LABEL_GAP &&
           box.top < p.bottom + LABEL_GAP && box.bottom > p.top - LABEL_GAP) { clash = true; break; }
     }
-    L.obj.visible = !clash;
+    showLabel(L, !clash);
     if (!clash) placed.push(box);
   }
 }
@@ -1680,12 +1964,11 @@ function updateLabelVisibility() {
 // ── Package-name labels (two switchable styles) ──────────────────────────────
 // "floating": a deep-blue capsule (see .district-label) hovering over the floor —
 //   deliberately unlike the dark class pills so a package never reads as a class.
-// "floor": the name laid FLAT on the platform top, centered along its EDGES (and,
-//   when it still fits without colliding, its corners), read along X or Z so it
-//   stays legible from any orbit angle. A global overlap check keeps labels apart.
+// "floor": the name laid FLAT in the district's header strip (see floorLabelBand),
+//   the one band of its floor no child terrace covers, and spun each frame so it
+//   never reads upside down.
 const _floorTexCache = new Map();   // "name|hex" -> {tex,w,h}; kept across rebuilds
 let _floorLabelBudget = 0;          // reset per rebuild in rebuildCity (perf cap)
-let _floorLabelBoxes = [];          // XZ AABBs of placed floor labels this rebuild — prevents overlap
 
 function floorTextTexture(text) {
   const hit = _floorTexCache.get(text);
@@ -1716,65 +1999,35 @@ function floorTextTexture(text) {
   return entry;
 }
 
-function addFloorName(text, cx, cz, topY, width, depth) {
-  if (width < 46 || depth < 46) return;              // too small to hold the text — skip
+// The strip runs the full width of the district, so the name only has to fit across
+// it; when it doesn't, shrink it rather than drop it, down to the point of illegibility.
+function addFloorName(text, cx, stripZ, topY, width, band) {
+  if (_floorLabelBudget <= 0) return;
   const { tex, w, h } = floorTextTexture(text);
-  const worldH = Math.min(16, depth * 0.16, width * 0.16);
-  const worldW = worldH * (w / h);
-  const fitsX = worldW <= width * 0.92;              // fits when read along X (yaw 0)
-  const fitsZ = worldW <= depth * 0.92;              // fits when read along Z (yaw 90°)
-  if (!fitsX && !fitsZ) return;                      // wouldn't fit along any edge
-  const halfW = width / 2, halfD = depth / 2, inset = 2;
-  const offX = halfW - worldH / 2 - inset;           // center-to-edge offset, perpendicular to the label
-  const offZ = halfD - worldH / 2 - inset;
-  // Preferred: one label centered on each edge that can hold it, running parallel to it.
-  const candidates = [];
-  if (fitsX) {
-    candidates.push({ x: cx, z: cz - offZ, yaw: 0 });               // bottom edge, reads along X
-    candidates.push({ x: cx, z: cz + offZ, yaw: 0 });               // top edge, reads along X
+  let worldH = band - 4;                             // 2 units of air above and below
+  let worldW = worldH * (w / h);
+  const room = width - 6;
+  if (worldW > room) {
+    const shrink = room / worldW;
+    if (shrink < 0.4) return;                        // would be too small to read anyway
+    worldH *= shrink;
+    worldW = room;
   }
-  if (fitsZ) {
-    candidates.push({ x: cx - offX, z: cz, yaw: Math.PI / 2 });     // left edge, reads along Z
-    candidates.push({ x: cx + offX, z: cz, yaw: Math.PI / 2 });     // right edge, reads along Z
-  }
-  // Corners are a bonus: only taken when the label still fits there without colliding.
-  const cyaw = fitsX ? 0 : Math.PI / 2;
-  const cmX = cyaw === 0 ? worldW / 2 : worldH / 2;
-  const cmZ = cyaw === 0 ? worldH / 2 : worldW / 2;
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    candidates.push({ x: cx + sx * (halfW - cmX - inset), z: cz + sz * (halfD - cmZ - inset), yaw: cyaw });
-  }
-  let placed = 0;
-  for (const c of candidates) {
-    if (placed >= 4 || _floorLabelBudget <= 0) return;
-    if (placeFloorLabelMesh(tex, worldW, worldH, c.x, c.z, c.yaw, topY)) placed++;
-  }
+  placeFloorLabelMesh(tex, worldW, worldH, cx, stripZ, topY);
 }
 
-// Lay one flat label plane only if its footprint clears every floor label already placed
-// this rebuild — the global overlap guard that keeps package names from crowding.
-function placeFloorLabelMesh(tex, worldW, worldH, x, z, yaw, topY) {
-  const alongX = yaw === 0;
-  const spanX = alongX ? worldW : worldH;
-  const spanZ = alongX ? worldH : worldW;
-  const box = { minX: x - spanX / 2, maxX: x + spanX / 2, minZ: z - spanZ / 2, maxZ: z + spanZ / 2 };
-  for (const b of _floorLabelBoxes) {
-    if (box.minX < b.maxX && box.maxX > b.minX && box.minZ < b.maxZ && box.maxZ > b.minZ) return false;
-  }
+function placeFloorLabelMesh(tex, worldW, worldH, x, z, topY) {
   _floorLabelBudget--;
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(worldW, worldH),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
   );
   mesh.rotation.x = -Math.PI / 2;                    // lay flat on the platform top
-  mesh.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), yaw);   // run along X (0) or Z (90°)
   mesh.position.set(x, topY + 0.6, z);
   mesh.renderOrder = 3;
   mesh.userData.kind = "package";                    // disposed by clearCity's package sweep
   scene.add(mesh);
-  _floorLabelBoxes.push(box);
-  floorLabelMeshes.push({ mesh, baseYaw: yaw });     // spun to face the viewer each frame
-  return true;
+  floorLabelMeshes.push({ mesh, baseYaw: 0 });       // spun to face the viewer each frame
 }
 
 // A flat floor label reads upside down from the far side of an orbit. Each frame,
@@ -1805,7 +2058,10 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
   const shortName = full.split(".").pop();
   if (!shortName) return;
   if (mode === "floor") {
-    addFloorName(shortName, cx, cz, topY, width, depth);
+    const band = floorLabelBand(node);
+    if (depth < band + 2) return;                  // district shallower than its own strip
+    // Middle of the strip the layout reserved along this district's near edge.
+    addFloorName(shortName, cx, node.y1 - band / 2 - cityD / 2, topY, width, band);
     return;
   }
   const div = document.createElement("div");     // "floating"
@@ -1900,9 +2156,9 @@ function marksFor(file, ...keys) {
   const marks = [];
   for (const key of keys) {
     if (!key) continue;
-    if (key === areaSelect.value) marks.push('<span class="mk-area" title="area / footprint">&#x2194;&#xFE0F;</span>');
-    if (key === heightSelect.value) marks.push('<span class="mk-height" title="height">&#x2195;&#xFE0F;</span>');
-    if (key === colorSelect.value) {
+    if (key === areaMetricKey()) marks.push('<span class="mk-area" title="area / footprint">&#x2194;&#xFE0F;</span>');
+    if (key === heightMetricKey()) marks.push('<span class="mk-height" title="height">&#x2195;&#xFE0F;</span>');
+    if (key === colorMetricKey()) {
       const t = colorT(Number(file[key]) || 0, activeColorMax);
       marks.push('<span class="cbar" title="colour scale (light-&gt;red, capped at 95th pct)">' +
         `<span class="cbar-mark" style="left:${(t * 100).toFixed(1)}%"></span></span>`);
@@ -1912,7 +2168,7 @@ function marksFor(file, ...keys) {
 }
 
 function formatHover(file) {
-  const active = new Set([areaSelect.value, heightSelect.value, colorSelect.value]);
+  const active = new Set([areaMetricKey(), heightMetricKey(), colorMetricKey()]);
   const items = [];
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
@@ -2046,10 +2302,51 @@ function scopeUp() {
 }
 
 // Snap the camera back to a clean overview of whatever city is now laid out.
-function frameCity() {
-  camera.position.set(720, 620, 760);
-  controls.target.set(0, 0, 0);
+// Wettel's CodeCity plates are shot with a long lens from far away: low over the
+// horizon, swung off-axis so districts read diagonally, and far enough back that
+// near and far buildings come out the same size. Framing is *computed* from the
+// city's bounding box instead of hard-coded, so a 60-file toy and a 5000-file
+// monster both arrive fully in frame.
+const viewElevation = 26 * Math.PI / 180;   // above the ground plane
+const viewAzimuth = 34 * Math.PI / 180;     // swung off the Z axis
+
+function frameCity(elevation = viewElevation, azimuth = viewAzimuth) {
+  const top = Math.max(cityTop, maxHeight);
+  const target = new THREE.Vector3(0, top * 0.18, 0);
+  const dir = new THREE.Vector3(              // unit vector from the target out to the camera
+    Math.cos(elevation) * Math.sin(azimuth),
+    Math.sin(elevation),
+    Math.cos(elevation) * Math.cos(azimuth)
+  );
+  camera.position.copy(target).addScaledVector(dir, fitDistance(dir, target, top));
+  controls.target.copy(target);
   controls.update();
+}
+
+// Closest the camera may sit along `dir` while the whole city box still fits the
+// frustum — checked on both axes, so a wide city in a narrow window backs off far
+// enough instead of spilling out the sides.
+function fitDistance(dir, target, top) {
+  const forward = dir.clone().negate();       // the way the camera looks
+  const right = new THREE.Vector3().crossVectors(forward, camera.up).normalize();
+  const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+  const tanV = Math.tan(camera.fov * Math.PI / 360);
+  const tanH = tanV * camera.aspect;
+  const halfW = cityW / 2 + 30;
+  const halfD = cityD / 2 + 30;
+  let dist = controls.minDistance;
+  for (const sx of [-1, 1]) {
+    for (const sy of [0, 1]) {
+      for (const sz of [-1, 1]) {
+        const corner = new THREE.Vector3(sx * halfW, sy * top, sz * halfD).sub(target);
+        const depth = corner.dot(forward);
+        dist = Math.max(dist,
+          Math.abs(corner.dot(right)) / tanH - depth,
+          Math.abs(corner.dot(up)) / tanV - depth);
+      }
+    }
+  }
+  return dist * 1.04;                         // a margin of air around the plate
 }
 
 function updateBreadcrumb() {
@@ -2284,15 +2581,117 @@ function buildIntro() {
   }
 }
 
+// The three dropdowns overlap in what they offer (committers, fan out, instability…).
+// Spending two of the city's three visual channels on the same number says nothing
+// twice, so whatever one dropdown shows is greyed out in the other two.
+const metricSelects = [areaSelect, heightSelect, colorSelect];
+function syncMetricOptions() {
+  const taken = new Set(metricSelects.map((sel) => sel.value));
+  for (const sel of metricSelects) {
+    for (const opt of sel.options) opt.disabled = opt.value !== sel.value && taken.has(opt.value);
+  }
+}
+
 function onMetricChange() {
+  dismissIntro();
+  syncMetricOptions();
+  syncKlocChecks();
+  syncColorLogCheck();           // the ramp follows the metric, /kloc included
+  markActivePreset();
+  rebuildCity();
+}
+
+// Ten saved answers to "what should area, height and colour mean?" — the question the
+// three dropdowns ask, and the one a newcomer has no basis to answer. Each bubble sets
+// all three metrics plus the four bits (/kloc x3, log), so a reading of the city is one
+// click away and the dropdowns stay there to show WHAT that reading is made of.
+const PRESETS = [
+  { dot: "#2563eb", label: "Overview — size, complexity, churn per KLOC",
+    metrics: ["bytes", "cognitive_complexity", "commits"], kloc: [false, false, true], log: true },
+  { dot: "#dc2626", label: "Hotspots — big files that churn and break",
+    metrics: ["bytes", "commits", "bug_commits"], kloc: [false, false, false], log: true },
+  { dot: "#ea580c", label: "Bug density — bugfixes per KLOC",
+    metrics: ["lines", "bug_commits", "commits"], kloc: [false, true, true], log: true },
+  { dot: "#7c3aed", label: "Complexity density — cognitive load per KLOC",
+    metrics: ["lines", "cognitive_complexity", "bug_commits"], kloc: [false, true, true], log: true },
+  { dot: "#059669", label: "Knowledge risk — how many hands touched each file",
+    metrics: ["bytes", "committers", "commits"], kloc: [false, false, true], log: true },
+  { dot: "#0891b2", label: "Coupling — outgoing vs incoming, coloured by instability",
+    metrics: ["fan_out", "fan_in", "instability"], kloc: [false, false, false], log: false },
+  { dot: "#d97706", label: "Instability — Martin's I = Ce/(Ce+Ca)",
+    metrics: ["bytes", "instability", "fan_in"], kloc: [false, false, false], log: false },
+  { dot: "#db2777", label: "Churn vs. team — commits per KLOC against committers",
+    metrics: ["lines", "commits", "committers"], kloc: [false, true, false], log: false },
+  { dot: "#4b5563", label: "Plain size — bytes, lines, complexity",
+    metrics: ["bytes", "lines", "cognitive_complexity"], kloc: [false, false, false], log: false },
+  { dot: "#4f46e5", label: "Dependencies — who is depended on, who depends",
+    metrics: ["bytes", "fan_in", "fan_out"], kloc: [false, false, false], log: false },
+];
+
+function applyPreset(preset) {
+  // Clear the mutual lock-out first: the target metrics may still be greyed out by
+  // whatever the other two dropdowns hold right now.
+  for (const knob of METRIC_KNOBS) for (const opt of knob.select.options) opt.disabled = false;
+  METRIC_KNOBS.forEach((knob, i) => {
+    knob.select.value = preset.metrics[i];
+    if (!knob.kloc) return;
+    knob.kloc.disabled = false;
+    knob.kloc.checked = preset.kloc[i];
+    klocIntent.set(knob.kloc, preset.kloc[i]);     // and remember it as the manual choice
+  });
+  syncMetricOptions();
+  syncKlocChecks();
+  colorLogOverrides.set(colorMetricKey(), preset.log);
+  syncColorLogCheck();
+  markActivePreset();
   dismissIntro();
   rebuildCity();
 }
 
-areaSelect.addEventListener("change", onMetricChange);
-heightSelect.addEventListener("change", onMetricChange);
-colorSelect.addEventListener("change", onMetricChange);
-if (colorScaleSelect) colorScaleSelect.addEventListener("change", onMetricChange);
+// A bubble lights up when the panel happens to show exactly its reading — after a
+// preset click, but equally after you land on the same combination by hand.
+function presetMatches(preset) {
+  return METRIC_KNOBS.every((knob, i) =>
+    knob.select.value === preset.metrics[i] &&
+    (!knob.kloc || knob.kloc.checked === (preset.kloc[i] && !knob.kloc.disabled))
+  ) && (!colorLogCheck || colorLogCheck.checked === preset.log);
+}
+
+const presetButtons = [];
+function markActivePreset() {
+  presetButtons.forEach((btn, i) => btn.classList.toggle("on", presetMatches(PRESETS[i])));
+}
+
+const presetsRow = document.getElementById("presets");
+if (presetsRow) {
+  PRESETS.forEach((preset) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "presetDot";
+    btn.style.background = preset.dot;
+    btn.style.color = preset.dot;                  // the .on ring picks this up as currentColor
+    btn.title = preset.label;
+    btn.setAttribute("aria-label", preset.label);
+    btn.addEventListener("click", () => applyPreset(preset));
+    presetsRow.appendChild(btn);
+    presetButtons.push(btn);
+  });
+}
+
+for (const knob of METRIC_KNOBS) {
+  knob.select.addEventListener("change", onMetricChange);
+  if (knob.kloc) knob.kloc.addEventListener("change", onMetricChange);
+}
+if (colorLogCheck) colorLogCheck.addEventListener("change", () => {
+  colorLogOverrides.set(colorMetricKey(), colorLogCheck.checked);
+  markActivePreset();
+  dismissIntro();
+  rebuildCity();                 // not onMetricChange: that would re-sync the tick away
+});
+syncKlocChecks();                // boot with /kloc greyed out where it makes no sense
+syncColorLogCheck();             // ...the ramp the initial metric wants
+syncMetricOptions();             // ...and the three metrics locked out of each other
+markActivePreset();              // ...and the bubble the initial reading belongs to
 viewSelect.addEventListener("change", () => {
   dismissIntro();
   scopePath = "";              // class / package / module hierarchies differ — reset the drill scope
@@ -2361,6 +2760,11 @@ positionBreadcrumb();
 window.addEventListener("resize", positionBreadcrumb);
 
 rebuildCity();
+frameCity();   // open on the whole city, not on a hard-coded viewpoint
+
+// Handle for screenshot/e2e drivers: everything here is module-scoped, so an
+// automated camera pose has no way in otherwise.
+window.codecity = { scene, camera, controls, frameCity, rebuildCity };
 
 function animate() {
   controls.update();
@@ -2407,7 +2811,14 @@ HEATMAP_REPO="$REPO" HEATMAP_OUT="$REPO/.codecity" \\
 open "$REPO/.codecity/codecity.html"
 """
 
+# Ready-made globs for the filter box's dropdown, one per CamelCase class family.
+CLASS_FAMILY_OPTIONS = "".join(
+    '<option value="..{p}*" label="{p} ({n} classes)"></option>'.format(p=family["prefix"], n=family["count"])
+    for family in _class_prefixes(rows)
+)
+
 html = (html
+        .replace("__CLASS_FAMILIES__", CLASS_FAMILY_OPTIONS)
         .replace("__TITLE__", TITLE)
         .replace("__LOGO_SVG__", LOGO_SVG)
         .replace("__FAVICON__", FAVICON)
@@ -2418,6 +2829,7 @@ html = (html
         .replace("__BUILD_CMD__", json.dumps(BUILD_CMD))
         .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES & ANALYZED_PATHS)
                                                 if ANALYZED_PATHS else bool(CHANGED_FILES)))
-        .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE)))
+        .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE))
+        .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES)))
 OUT.write_text(html)
 print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")

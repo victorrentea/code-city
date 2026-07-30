@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -74,7 +76,13 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn('class="perkloc"', html)
             self.assertIn("/ KLOC)", html)
             # Colour ramp can be linear or log; skewed /KLOC metrics default to log.
-            self.assertIn('id="colorScale"', html)
+            # One bit, so it is a checkbox that re-ticks itself when the metric changes,
+            # while a manual tick is remembered per metric for the session.
+            self.assertIn('id="colorLog"', html)
+            self.assertNotIn('id="colorScale"', html)
+            self.assertIn("const colorLogOverrides = new Map()", html)
+            self.assertIn("function syncColorLogCheck", html)
+            self.assertIn("colorLogOverrides.set(colorMetricKey(), colorLogCheck.checked)", html)
             self.assertIn("function wantsLog", html)
             self.assertIn("function colorT", html)
             self.assertIn("Math.log1p", html)
@@ -95,13 +103,30 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function addPackageLabel", html)
             self.assertIn("function placeFloorLabelMesh", html)   # global no-overlap floor-label guard
             self.assertIn("instability", html)           # Ce/(Ce+Ca) metric
-            # Controls are two paired rows joined by separator glyphs:
-            #   row 1  AREA / HEIGHT      row 2  COLOR @ SCALE
-            self.assertIn('class="sep" aria-hidden="true">/</span>', html)
-            self.assertIn('class="sep" aria-hidden="true">@</span>', html)
-            self.assertLess(html.index('id="areaMetric"'), html.index('id="heightMetric"'))
-            self.assertLess(html.index('id="heightMetric"'), html.index('id="colorMetric"'))
-            self.assertLess(html.index('id="colorMetric"'), html.index('id="colorScale"'))
+            # One knob per row, each dropdown followed by its own /kloc checkbox:
+            #   AREA   [ dropdown ] [ ] /kloc
+            #   HEIGHT [ dropdown ] [ ] /kloc
+            #   COLOR  [ dropdown ] [x] /kloc [ ] lg
+            self.assertIn("grid-template-columns: auto 1fr auto auto;", html)
+            self.assertNotIn('class="sep" aria-hidden="true">/</span>', html)
+            self.assertIn("> /kloc\n", html)
+            self.assertIn("> lg\n", html)
+            for base in ("area", "height", "color"):
+                self.assertIn('id="%sKloc"' % base, html)
+            self.assertNotIn("/ KLOC</option>", html)   # density lives in the checkbox, not the titles
+            self.assertLess(html.index('id="areaMetric"'), html.index('id="areaKloc"'))
+            self.assertLess(html.index('id="areaKloc"'), html.index('id="heightMetric"'))
+            self.assertLess(html.index('id="heightMetric"'), html.index('id="heightKloc"'))
+            self.assertLess(html.index('id="heightKloc"'), html.index('id="colorMetric"'))
+            self.assertLess(html.index('id="colorMetric"'), html.index('id="colorKloc"'))
+            self.assertLess(html.index('id="colorKloc"'), html.index('id="colorLog"'))
+            # A ticked /kloc swaps the raw metric for its density twin.
+            self.assertIn("const PER_KLOC = {", html)
+            self.assertIn("function syncKlocChecks", html)
+            self.assertIn("const areaMetricKey = ", html)
+            # A metric taken by one dropdown is greyed out in the other two.
+            self.assertIn("function syncMetricOptions", html)
+            self.assertIn("const metricSelects = [areaSelect, heightSelect, colorSelect]", html)
             self.assertIn("PetClinicMcp.java", html)
             self.assertIn('"district": "victor.training.petclinic.mcp"', html)
             self.assertIn("new THREE.BoxGeometry", html)
@@ -309,6 +334,9 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn('id="changeSourceRow"', html)
             self.assertIn("function renderChangeSource", html)
             self.assertIn('changeMode() !== "off" && HAS_CHANGES', html)
+            # ...and the row's own `display: flex` must not outrank the hidden attribute,
+            # or "show everything" keeps showing a diff it is not using.
+            self.assertIn(".changeSourceRow[hidden] { display: none; }", html)
 
     def test_dirty_java_working_tree_wins_over_history(self):
         """An uncommitted edit to an analysed class is still the change set — the
@@ -354,6 +382,68 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("on main", source["detail"])
             self.assertIn("src/main/java/app/Base.java", source["tooltip"])
             self.assertEqual(source["url"], "")                     # nothing to link to on GitHub
+
+    def test_offers_the_last_ten_commits_that_touched_code(self):
+        """The history diff is not pinned to whatever landed last: the page bakes a
+        dropdown of the recent commits that really touched analysed classes — capped
+        at ten, newest first, docs-only commits skipped — each carrying its own change
+        scope and a GitHub link, so the reader can step back through the deltas."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                subprocess.run(["git", "-C", str(repo), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            git("init", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            git("remote", "add", "origin", "git@github.com:acme/demo.git")
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            for i in range(12):                                    # twelve code commits...
+                (src / "Base.java").write_text(f"class Base {{ int x{i}; }}\n")
+                git("add", "-A")
+                git("commit", "-m", f"code {i}")
+            (repo / "README.md").write_text("docs\n")              # ...under a docs-only one
+            git("add", "-A")
+            git("commit", "-m", "docs: readme")
+
+            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            tsv = repo / "codemap.tsv"
+            tsv.write_text(hdr + "src/main/java/app/Base.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n")
+
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            env.pop("HEATMAP_CHANGED_BASE", None)
+            env.pop("GITHUB_BASE_REF", None)
+            env.pop("GITHUB_REF", None)
+            env["PATH"] = "/usr/bin:/bin"
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                           check=True, cwd=str(repo), env=env)
+
+            html = (repo / "codecity.html").read_text()
+            choices = json.loads(
+                re.search(r"const COMMIT_CHOICES = (\[.*?\]);   //", html, re.S).group(1))
+            self.assertEqual(len(choices), 10)                      # capped, docs commit skipped
+            self.assertEqual([c["subject"] for c in choices],
+                             [f"code {i}" for i in range(11, 1, -1)])   # newest first
+            self.assertTrue(all(c["url"].startswith("https://github.com/acme/demo/commit/")
+                                for c in choices))
+            self.assertTrue(all(len(c["short"]) >= 7 for c in choices))
+            self.assertTrue(all(c["when"] for c in choices))         # relative date for the tooltip
+            # every entry carries the row keys for all three datasets, so switching
+            # commits in the browser is a Set lookup and re-flags packages/modules too
+            self.assertEqual(choices[0]["files"], ["src/main/java/app/Base.java"])
+            self.assertIn("app", choices[0]["districts"])
+            self.assertIn("src/main/java/app", choices[0]["dirs"])
+            self.assertIn(".", choices[0]["dirs"])                   # the repo-root module row
+            # the combo itself, and the commit id linking to GitHub next to it
+            self.assertIn('<select id="commitPick"', html)
+            self.assertIn("function applyCommitChoice", html)
+            self.assertIn("hasCommitHistory", html)
 
 
 if __name__ == "__main__":

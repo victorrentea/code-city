@@ -56,11 +56,38 @@ Cmd/Ctrl-drag to rotate, scroll to zoom around the mouse cursor, and Cmd/Ctrl-do
 a building to open its Java file in VS Code. The 2D city layout is computed in-browser
 with D3 treemap; Three.js extrudes each file tile into a building.
 
-The page has independent selectors for all three visual axes:
+**City geometry & camera** — tuned to Wettel's original CodeCity plates. The ground is
+a **landscape rectangle** (1.6:1), not a square, and the opening shot is *computed* from
+the city's bounding box rather than hard-coded: a long 30° lens placed far enough back
+that the whole plate fits, low over the horizon and swung off-axis. There is **no fog** —
+far districts stay as crisp as near ones. Three scales adapt to repo size, so a 60-file
+toy and a 5000-file monster both read as cities instead of needles or flat tiles:
 
-- area: building footprint
-- height: building height
-- color: building color
+- **height** scales off the *median footprint* (footprints shrink as the file count
+  grows on a fixed plate, so the height scale shrinks with them); above the p95 the
+  curve goes logarithmic, so one monster class doesn't spike the whole skyline;
+- **streets narrow with nesting depth** — boulevards between top-level modules, alleys
+  between leaf packages, instead of one flat gap that eats a deep tree's plate;
+- a class **name appears only once its roof is ≥ 26 px on screen**, so a huge city
+  zoomed out is a clean plate and the names come back as you zoom in;
+- **package names are written flat on their own floor**, in a header strip the treemap
+  *reserves* along each district's near edge (a share of the district's own depth, so a
+  big package gets big letters). The strip is not decoration: children terraces rise
+  above their parent's floor and tile all of it, so text laid anywhere else is buried.
+
+**The control panel** stacks one knob per row, each row a single question, so the three
+visual axes read as independent choices rather than one wide toolbar:
+
+| row | what it sets |
+| --- | --- |
+| `FILTER` | AspectJ-style glob (`victor..*Service`, `..repo..`, `*Service`). It is a text box **with a dropdown**: the generator splits every class name on CamelCase and offers the leading word of each family that has ≥ 3 classes (`..Pet*`, `..Owner*`, …) as a ready-made glob. |
+| `PRESET` | ten coloured bubbles, one click each: a saved reading of the city (overview, hotspots, bug density, complexity density, knowledge risk, coupling, instability, churn vs. team, plain size, dependencies). A bubble sets all three metrics *and* the four bits below, and lights up whenever the panel happens to show its reading. |
+| `AREA` / `HEIGHT` / `COLOR` | the metric on that axis, plus a **`/kloc`** checkbox that swaps a raw count for its density twin (complexity, commits, bugfixes). Where no density exists the checkbox greys out instead of disappearing, so the rows keep their shape. Colour also carries **`lg`**, the log-vs-linear ramp: it ticks itself to what the chosen metric wants and remembers your override per metric for the session. |
+| `PACKAGES` | package-name style: floating tags, on the floor, or off. |
+| `CHANGES` | the change-set filter (below). |
+
+Whatever one metric dropdown shows is greyed out in the other two — spending two of the
+city's three channels on the same number says nothing twice.
 
 **Change-set filter:** a **Change set** selector focuses the city on the files in the
 *current git change set*, baked in when the page is generated. Three modes:
@@ -102,13 +129,22 @@ never says *changed relative to what*:
 | --- | --- | --- |
 | PR | `PR #123` + its title | the PR on GitHub |
 | feature branch with no PR yet | `branch feat/x` + `all commits since origin/main …` | the GitHub `compare/` view |
-| commit (incl. one found by walking back) | `commit: a5d03cb` + as much of the subject as fits | that commit on GitHub |
+| commit (incl. one found by walking back) | a **dropdown** of the last 10 commits that touched code, then `a5d03cb` + `3 days ago` | the picked commit on GitHub |
 | dirty tree | `working tree` + `N uncommitted files on <branch>` | — (nothing to link to) |
 
 The line truncates with an ellipsis to the panel width; **hovering** shows the full commit
 message / PR body, and **clicking** opens it on GitHub. The PR number comes from
 `GITHUB_REF` on CI, else from `gh pr view` locally (both best-effort — with neither, a
 branch falls back to the compare link).
+
+**Stepping back through history.** When the diff comes from a commit, being pinned to
+whatever landed last is arbitrary — so the generator bakes the **last 10 commits that
+really touched rendered code** (same walk, same docs-only skipping) into a dropdown.
+Picking one re-flags the whole city against that commit and updates the id next to the
+combo, which links to it on GitHub. Each entry carries its change scope pre-computed in
+the three key spaces the datasets use — file path, dotted package, module dir — so
+switching is a `Set` lookup per row and the Classes / Packages / Modules lenses all stay
+correct without re-deriving any path logic in the browser.
 
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the
