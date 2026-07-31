@@ -8,6 +8,11 @@ a treemap (area = file bytes, colour = a metric ratio) next to a log–log scatt
 Every output is a **single self-contained HTML file** — all data inlined, libraries from
 a CDN, no server. Mail it, publish it on Pages, open it from disk.
 
+![The Spring Framework as a Code City](docs/spring-framework-city.jpg)
+
+*The Spring Framework: 5003 classes, 565 packages, 23 modules — one run, one page.
+Height is cognitive complexity, colour is commits per KLOC on a log ramp.*
+
 ## Quick start
 
 ```bash
