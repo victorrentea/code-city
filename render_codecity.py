@@ -2460,6 +2460,24 @@ function onResize() {
 // <select> that drives it. It is a static, dismiss-on-first-interaction overlay.
 let introEl = null;
 let introDone = false;
+const introSelects = [];   // dropdowns the intro tinted, to be un-tinted on dismiss
+
+// The package name the PACKAGES connector points at: the lowest one on screen, in
+// whichever style the dropdown is currently set to. "off" leaves nothing to point at.
+function lowestPackageLabelOnScreen(project) {
+  let best = null;
+  for (const { mesh } of floorLabelMeshes) {
+    const p = project(mesh.position.x, mesh.position.y, mesh.position.z);
+    if (p.z < 1 && (!best || p.y > best.y)) best = p;
+  }
+  for (const obj of districtLabels) {
+    const rect = obj.element ? obj.element.getBoundingClientRect() : null;
+    if (!rect || !rect.width) continue;
+    const p = { x: rect.left + rect.width / 2, y: rect.bottom };
+    if (!best || p.y > best.y) best = p;
+  }
+  return best;
+}
 const INTRO_CHANNELS = [
   { key: "area", color: "#b45309", title: "AREA", select: () => areaSelect },
   { key: "height", color: "#0f766e", title: "HEIGHT", select: () => heightSelect },
@@ -2480,10 +2498,11 @@ function dismissIntro() {
   introEl = null;
   el.classList.add("hide");
   setTimeout(() => el.remove(), 320);
-  for (const select of [colorSelect, heightSelect, areaSelect]) {
+  for (const select of introSelects) {
     select.style.boxShadow = "";
     select.style.borderColor = "";
   }
+  introSelects.length = 0;
 }
 
 function buildIntro() {
@@ -2583,21 +2602,35 @@ function buildIntro() {
     `fill="${swatch}" stroke="#fff" stroke-width="2.5"/>`
   );
 
+  // Every connector plugs into its selector on the WEST side and is routed down the
+  // panel's left gutter, then out under the panel. Leaving from the bottom edge sent
+  // each wire straight across the selectors *below* it — three lines striking through
+  // the very dropdowns they were not talking about.
+  const panel = document.querySelector(".panel");
+  const panelRect = panel ? panel.getBoundingClientRect() : { left: 8, bottom: H * 0.4 };
+  const gutterX = Math.max(panelRect.left + 6, 8);
+  const exitY = panelRect.bottom + 14;
+  const connector = (rect, target, color) => {
+    const west = { x: rect.left - 3, y: rect.top + rect.height / 2 };
+    return [
+      `<path d="M ${west.x.toFixed(1)} ${west.y.toFixed(1)} ` +
+      `C ${gutterX.toFixed(1)} ${west.y.toFixed(1)}, ${gutterX.toFixed(1)} ${exitY.toFixed(1)}, ` +
+      `${(gutterX + 26).toFixed(1)} ${exitY.toFixed(1)} ` +
+      `S ${target.x.toFixed(1)} ${(exitY + 40).toFixed(1)}, ${target.x.toFixed(1)} ${target.y.toFixed(1)}" ` +
+      `fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="5 5" opacity="0.65"/>`,
+      `<circle cx="${west.x.toFixed(1)}" cy="${west.y.toFixed(1)}" r="3.5" fill="${color}"/>`,
+      // Selector highlight.
+      `<rect x="${rect.left - 4}" y="${rect.top - 4}" width="${rect.width + 8}" height="${rect.height + 8}" ` +
+      `rx="8" fill="none" stroke="${color}" stroke-width="2.5"/>`,
+    ];
+  };
+
   for (const row of rows) {
     const box = row.box;
     const rect = row.rect;
     const boxLeft = { x: box.x, y: box.y + box.h / 2 };
-    const selBottom = { x: rect.left + rect.width / 2, y: rect.bottom };
     // Connector: selector → label (dashed, channel colour).
-    parts.push(
-      `<path d="M ${selBottom.x} ${selBottom.y} ` +
-      `C ${selBottom.x} ${selBottom.y + 60}, ${box.x - 30} ${box.y - 20}, ${box.x + 22} ${box.y}" ` +
-      `fill="none" stroke="${row.color}" stroke-width="2" stroke-dasharray="5 5" opacity="0.65"/>`,
-      `<circle cx="${selBottom.x}" cy="${selBottom.y}" r="3.5" fill="${row.color}"/>`,
-      // Selector highlight.
-      `<rect x="${rect.left - 4}" y="${rect.top - 4}" width="${rect.width + 8}" height="${rect.height + 8}" ` +
-      `rx="8" fill="none" stroke="${row.color}" stroke-width="2.5"/>`
-    );
+    parts.push(...connector(rect, { x: box.x + 22, y: box.y }, row.color));
     // Leader: label → building feature (solid, channel colour).
     parts.push(
       `<line x1="${boxLeft.x}" y1="${boxLeft.y}" x2="${row.anchor.x.toFixed(1)}" y2="${row.anchor.y.toFixed(1)}" ` +
@@ -2616,6 +2649,21 @@ function buildIntro() {
     );
   }
 
+  // PACKAGES gets the same treatment, but its "feature" is not on the hero building:
+  // it is the package name written on the floor. Wire the dropdown to the lowest one
+  // on screen — the nearest, biggest, least ambiguous instance of what it controls.
+  const pkgAnchor = lowestPackageLabelOnScreen(project);
+  if (pkgLabelSelect && pkgAnchor) {
+    const color = "#4338ca";
+    parts.push(
+      ...connector(pkgLabelSelect.getBoundingClientRect(), pkgAnchor, color),
+      `<circle cx="${pkgAnchor.x.toFixed(1)}" cy="${pkgAnchor.y.toFixed(1)}" r="4" fill="${color}"/>`
+    );
+    pkgLabelSelect.style.boxShadow = `0 0 0 3px ${color}55`;
+    pkgLabelSelect.style.borderColor = color;
+    introSelects.push(pkgLabelSelect);
+  }
+
   introEl = document.createElement("div");
   introEl.id = "intro";
   introEl.innerHTML =
@@ -2628,6 +2676,7 @@ function buildIntro() {
   for (const row of rows) {
     row.select.style.boxShadow = `0 0 0 3px ${row.color}55`;
     row.select.style.borderColor = row.color;
+    introSelects.push(row.select);
   }
 }
 
