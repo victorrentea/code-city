@@ -21,10 +21,12 @@ TITLE = os.environ.get("CODECITY_TITLE") or os.environ.get("HEATMAP_TITLE", "Cod
 CODEMAP_SRC = "codemap.html"   # left pane  (Plotly 2D treemap + scatter)
 CITY_SRC = "codecity.html"     # right pane (Three.js 3D city)
 
-FAVICON = ("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E"
-           "%3Crect%20x='2.5'%20y='9'%20width='5.5'%20height='12.5'%20rx='1'%20fill='%235b8def'/%3E"
-           "%3Crect%20x='9'%20y='3.5'%20width='6'%20height='18'%20rx='1'%20fill='%231e3a8a'/%3E"
-           "%3Crect%20x='16'%20y='11.5'%20width='5.5'%20height='10'%20rx='1'%20fill='%233a86ff'/%3E%3C/svg%3E")
+FAVICON = (
+    "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E"
+    "%3Crect%20x='2.5'%20y='9'%20width='5.5'%20height='12.5'%20rx='1'%20fill='%235b8def'/%3E"
+    "%3Crect%20x='9'%20y='3.5'%20width='6'%20height='18'%20rx='1'%20fill='%231e3a8a'/%3E"
+    "%3Crect%20x='16'%20y='11.5'%20width='5.5'%20height='10'%20rx='1'%20fill='%233a86ff'/%3E%3C/svg%3E"
+)
 
 html = """<!doctype html>
 <html lang="en">

@@ -186,7 +186,7 @@ def _commits_touching(paths, limit=1):
             continue
         header = (lines[0].split("\x1f") + ["", "", "", ""])[:4]
         hits.append({"sha": header[0], "short": header[1], "when": header[2],
-                     "subject": header[3], "files": touched})
+                    "subject": header[3], "files": touched})
         if len(hits) >= limit:
             break
     return hits
@@ -245,7 +245,7 @@ def _working_source(working, branch):
     return {"kind": "working", "label": "working tree",
             "detail": f"{n} uncommitted file{'' if n == 1 else 's'}{where}",
             "tooltip": "Uncommitted changes (staged + unstaged + untracked):\n"
-                       + "\n".join(sorted(working)[:40]),
+                      + "\n".join(sorted(working)[:40]),
             "url": ""}
 
 
@@ -279,14 +279,14 @@ def _change_set(analyzed):
             source = {"kind": "pr", "label": f"PR #{pr['number']}",
                       "detail": pr["title"] or f"{branch} → {base}",
                       "tooltip": "\n\n".join(x for x in (pr["title"], pr["body"]) if x)
-                                 or f"{branch} → {base}",
+                                or f"{branch} → {base}",
                       "url": pr["url"]}
         else:
             head = base.split("/")[-1]
             source = {"kind": "branch", "label": f"branch {branch}",
                       "detail": f"all commits since {base}, plus uncommitted edits",
                       "tooltip": f"Everything {branch} changes relative to {base} "
-                                 f"(no open PR found), plus uncommitted edits.",
+                                f"(no open PR found), plus uncommitted edits.",
                       "url": f"{GITHUB_URL}/compare/{head}...{branch}" if GITHUB_URL and branch else ""}
         return diff | working, source
     if working & analyzed or (working and not analyzed):
@@ -296,10 +296,10 @@ def _change_set(analyzed):
         sha, touched = history[0]["sha"], history[0]["files"]
         meta = _commit_meta(sha) or {"sha": sha, "short": sha[:7], "subject": "", "message": ""}
         return touched, {"kind": "commit", "label": f"commit: {meta['short']}",
-                         "detail": meta["subject"],
-                         "tooltip": meta["message"] or meta["subject"],
-                         "url": f"{GITHUB_URL}/commit/{meta['sha']}" if GITHUB_URL else "",
-                         "history": history}   # popped out below into the commit dropdown
+                        "detail": meta["subject"],
+                        "tooltip": meta["message"] or meta["subject"],
+                        "url": f"{GITHUB_URL}/commit/{meta['sha']}" if GITHUB_URL else "",
+                        "history": history}   # popped out below into the commit dropdown
     if working:                                            # nothing analysed was ever touched
         return working, _working_source(working, branch)
     return set(), {"kind": "none", "label": "no changes", "detail": "", "tooltip": "", "url": ""}

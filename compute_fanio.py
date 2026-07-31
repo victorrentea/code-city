@@ -18,8 +18,11 @@ import subprocess
 _here = os.path.dirname(os.path.abspath(__file__))
 def _git_root(start):
     try:
-        return subprocess.check_output(["git", "-C", start, "rev-parse", "--show-toplevel"],
-                                       text=True, stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(
+            ["git", "-C", start, "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
     except Exception:
         return start
 REPO = os.path.abspath(os.environ.get("HEATMAP_REPO") or _git_root(_here))

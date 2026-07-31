@@ -20,8 +20,11 @@ from collections import defaultdict
 _here = os.path.dirname(os.path.abspath(__file__))
 def _git_root(start):
     try:
-        return subprocess.check_output(["git", "-C", start, "rev-parse", "--show-toplevel"],
-                                       text=True, stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(
+            ["git", "-C", start, "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
     except Exception:
         return start
 REPO_DIR = os.path.abspath(os.environ.get("HEATMAP_REPO") or _git_root(_here))
@@ -331,8 +334,22 @@ for pkg, (files, sz, lines, cog, fi, fo) in pkg_agg.items():
     bugs_per_kloc = (bug_commits / kloc) if kloc else 0
     bugs_per_commit = (bug_commits / commits) if commits else 0
     cog_per_kloc = (cog / kloc) if kloc else 0
-    pkg_rows.append((pkg, files, sz, lines, commits, bug_commits, commits_per_kloc,
-                     bugs_per_kloc, bugs_per_commit, cog, cog_per_kloc, fi, fo, committers))
+    pkg_rows.append((
+        pkg,
+        files,
+        sz,
+        lines,
+        commits,
+        bug_commits,
+        commits_per_kloc,
+        bugs_per_kloc,
+        bugs_per_commit,
+        cog,
+        cog_per_kloc,
+        fi,
+        fo,
+        committers,
+    ))
 
 pkg_rows.sort(key=lambda r: (r[6], r[5], r[4]), reverse=True)
 
@@ -368,8 +385,22 @@ for mod, (files, sz, lines, cog, fi, fo) in mod_agg.items():
     bugs_per_kloc = (bug_commits / kloc) if kloc else 0
     bugs_per_commit = (bug_commits / commits) if commits else 0
     cog_per_kloc = (cog / kloc) if kloc else 0
-    mod_rows.append((mod, files, sz, lines, commits, bug_commits, commits_per_kloc,
-                     bugs_per_kloc, bugs_per_commit, cog, cog_per_kloc, fi, fo, committers))
+    mod_rows.append((
+        mod,
+        files,
+        sz,
+        lines,
+        commits,
+        bug_commits,
+        commits_per_kloc,
+        bugs_per_kloc,
+        bugs_per_commit,
+        cog,
+        cog_per_kloc,
+        fi,
+        fo,
+        committers,
+    ))
 
 mod_rows.sort(key=lambda r: (r[3], r[4]), reverse=True)   # by lines, then commits
 

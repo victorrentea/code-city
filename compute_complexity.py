@@ -30,8 +30,11 @@ parser = Parser(JAVA)
 
 def _git_root(start):
     try:
-        return subprocess.check_output(["git", "-C", start, "rev-parse", "--show-toplevel"],
-                                       text=True, stderr=subprocess.DEVNULL).strip()
+        return subprocess.check_output(
+            ["git", "-C", start, "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
     except Exception:
         return start
 REPO = Path(os.environ.get("HEATMAP_REPO") or _git_root(_here)).resolve()

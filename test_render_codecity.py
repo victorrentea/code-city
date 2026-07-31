@@ -230,8 +230,12 @@ class RenderCodecityTest(unittest.TestCase):
             repo = Path(tmp)
 
             def git(*args):
-                subprocess.run(["git", "-C", str(repo), *args], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
             git("init", "-b", "main")
             git("config", "user.email", "t@example.com")
@@ -246,8 +250,10 @@ class RenderCodecityTest(unittest.TestCase):
             git("add", "-A")
             git("commit", "-m", "feat")
 
-            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
-                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
             row = lambda p: f"{p}\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n"
             tsv = repo / "codemap.tsv"
             tsv.write_text(hdr + row("src/main/java/app/Base.java") + row("src/main/java/app/Feature.java"))
@@ -257,8 +263,12 @@ class RenderCodecityTest(unittest.TestCase):
             env["HEATMAP_OUT"] = str(repo)
             env.pop("HEATMAP_CHANGED_BASE", None)           # rely purely on auto-detection
             env.pop("GITHUB_BASE_REF", None)
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
-                           check=True, cwd=str(repo), env=env)
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                check=True,
+                cwd=str(repo),
+                env=env,
+            )
 
             html = (repo / "codecity.html").read_text()
             import json
@@ -278,8 +288,12 @@ class RenderCodecityTest(unittest.TestCase):
             repo = Path(tmp)
 
             def git(*args):
-                subprocess.run(["git", "-C", str(repo), *args], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
             git("init", "-b", "main")
             git("config", "user.email", "t@example.com")
@@ -303,8 +317,10 @@ class RenderCodecityTest(unittest.TestCase):
             git("commit", "-m", "chore: notes")
             (repo / "scratch.txt").write_text("dirty\n")           # dirty tree, but no Java
 
-            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
-                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
             tsv = repo / "codemap.tsv"
             tsv.write_text(hdr + "src/main/java/app/Base.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n")
 
@@ -315,8 +331,12 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("GITHUB_BASE_REF", None)
             env.pop("GITHUB_REF", None)
             env["PATH"] = "/usr/bin:/bin"                          # keep `gh` out of the picture
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
-                           check=True, cwd=str(repo), env=env)
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                check=True,
+                cwd=str(repo),
+                env=env,
+            )
 
             html = (repo / "codecity.html").read_text()
             import json
@@ -345,8 +365,12 @@ class RenderCodecityTest(unittest.TestCase):
             repo = Path(tmp)
 
             def git(*args):
-                subprocess.run(["git", "-C", str(repo), *args], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
             git("init", "-b", "main")
             git("config", "user.email", "t@example.com")
@@ -358,8 +382,10 @@ class RenderCodecityTest(unittest.TestCase):
             git("commit", "-m", "base")
             (src / "Base.java").write_text("class Base { int x; }\n")   # dirty Java
 
-            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
-                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
             tsv = repo / "codemap.tsv"
             tsv.write_text(hdr + "src/main/java/app/Base.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n")
 
@@ -369,8 +395,12 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("HEATMAP_CHANGED_BASE", None)
             env.pop("GITHUB_BASE_REF", None)
             env["PATH"] = "/usr/bin:/bin"
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
-                           check=True, cwd=str(repo), env=env)
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                check=True,
+                cwd=str(repo),
+                env=env,
+            )
 
             html = (repo / "codecity.html").read_text()
             import json
@@ -392,8 +422,12 @@ class RenderCodecityTest(unittest.TestCase):
             repo = Path(tmp)
 
             def git(*args):
-                subprocess.run(["git", "-C", str(repo), *args], check=True,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
             git("init", "-b", "main")
             git("config", "user.email", "t@example.com")
@@ -409,8 +443,10 @@ class RenderCodecityTest(unittest.TestCase):
             git("add", "-A")
             git("commit", "-m", "docs: readme")
 
-            hdr = ("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
-                   "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
             tsv = repo / "codemap.tsv"
             tsv.write_text(hdr + "src/main/java/app/Base.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n")
 
@@ -421,15 +457,21 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("GITHUB_BASE_REF", None)
             env.pop("GITHUB_REF", None)
             env["PATH"] = "/usr/bin:/bin"
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
-                           check=True, cwd=str(repo), env=env)
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                check=True,
+                cwd=str(repo),
+                env=env,
+            )
 
             html = (repo / "codecity.html").read_text()
             choices = json.loads(
                 re.search(r"const COMMIT_CHOICES = (\[.*?\]);   //", html, re.S).group(1))
             self.assertEqual(len(choices), 10)                      # capped, docs commit skipped
-            self.assertEqual([c["subject"] for c in choices],
-                             [f"code {i}" for i in range(11, 1, -1)])   # newest first
+            self.assertEqual(
+                [c["subject"] for c in choices],
+                [f"code {i}" for i in range(11, 1, -1)],  # newest first
+            )
             self.assertTrue(all(c["url"].startswith("https://github.com/acme/demo/commit/")
                                 for c in choices))
             self.assertTrue(all(len(c["short"]) >= 7 for c in choices))

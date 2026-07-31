@@ -94,9 +94,9 @@ city's three channels on the same number says nothing twice.
 
 1. **show everything** — the normal city (default).
 2. **highlight changed** — unchanged buildings drain to grey and drop to 50% opacity;
-   changed buildings keep their full colour and get a thick black border so they pop.
+    changed buildings keep their full colour and get a thick black border so they pop.
 3. **only changed** — unchanged buildings are removed from the layout entirely, so the
-   treemap collapses to just the change set.
+    treemap collapses to just the change set.
 
 What counts as "changed" is **auto-detected** — no configuration needed (computed
 against `HEATMAP_REPO`, in precedence order):
