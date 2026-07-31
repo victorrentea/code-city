@@ -11,7 +11,9 @@ a CDN, no server. Mail it, publish it on Pages, open it from disk.
 ![The Spring Framework as a Code City](docs/spring-framework-city.jpg)
 
 *The Spring Framework: 5003 classes, 565 packages, 23 modules — one run, one page.
-Height is cognitive complexity, colour is commits per KLOC on a log ramp.*
+Height is cognitive complexity, colour is commits per KLOC on a log ramp. The plate is
+~12x wider than PetClinic's because the codebase is ~160x bigger: ground area is total
+lines, so the two cities are to scale with each other.*
 
 ## Quick start
 
@@ -78,12 +80,17 @@ with D3 treemap; Three.js extrudes each file tile into a building.
 a **landscape rectangle** (1.6:1), not a square, and the opening shot is *computed* from
 the city's bounding box rather than hard-coded: a long 30° lens placed far enough back
 that the whole plate fits, low over the horizon and swung off-axis. There is **no fog** —
-far districts stay as crisp as near ones. Three scales adapt to repo size, so a 60-file
-toy and a 5000-file monster both read as cities instead of needles or flat tiles:
+far districts stay as crisp as near ones.
 
-- **height** scales off the *median footprint* (footprints shrink as the file count
-  grows on a fixed plate, so the height scale shrinks with them); above the p95 the
-  curve goes logarithmic, so one monster class doesn't spike the whole skyline;
+**The plate is the size of the codebase.** Ground area grows with total lines at a fixed
+density, so a file of a given size gets the same footprint in every repo and two cities
+are to scale with each other (Spring's plate is ~12x wider than PetClinic's). Everything
+drawn *on* the plate — streets, package-name bands, the height scale — is sized from ONE
+TILE rather than from the plate, which keeps a 5000-file city looking like a 90-file one
+seen from higher up. That is also the honest picture: it IS the same city with more of it.
+
+- **height** scales with the tile too, and above the p95 the curve goes logarithmic, so
+  one monster class doesn't spike the whole skyline;
 - **streets narrow with nesting depth** — boulevards between top-level modules, alleys
   between leaf packages, instead of one flat gap that eats a deep tree's plate;
 - a class **name appears only once its roof is ≥ 26 px on screen**, so a huge city
@@ -94,7 +101,10 @@ toy and a 5000-file monster both read as cities instead of needles or flat tiles
   terraces rise above their parent's floor and tile all of it, so text laid anywhere
   else is buried. Its width is the *same at every nesting level* (the letters overhang
   it to stay readable): how big a package is, is what the plate already shows — the
-  name is an identifier, not a metric.
+  name is an identifier, not a metric;
+- the **depth buffer is logarithmic** and the near plane rises with the plate. Without
+  both, a big city flickers where surfaces meet (a base on its floor, a name on its
+  terrace) — even standing still, because camera damping never quite stops.
 
 **The control panel** stacks one knob per row, each row a single question, so the three
 visual axes read as independent choices rather than one wide toolbar:
@@ -104,6 +114,7 @@ visual axes read as independent choices rather than one wide toolbar:
 | `FILTER` | AspectJ-style glob (`victor..*Service`, `..repo..`, `*Service`). It is a text box **with a dropdown** (its chevron always visible, or nobody finds it): the generator offers the biggest packages (`..rest.*`, `..repository.*`) and the CamelCase class families it finds — every leading word shared by ≥ 3 classes (`..Pet*`, `..Owner*`) — each with its class count. |
 | `PRESET` | ten coloured bubbles, one click each: a saved reading of the city (overview, hotspots, bug density, complexity density, knowledge risk, coupling, instability, churn vs. team, plain size, dependencies). A bubble sets all three metrics *and* the four bits below; the row's caption spells out which reading you are on, and reads *Custom* as soon as you turn any knob under it. |
 | `AREA` / `HEIGHT` / `COLOR` | the metric on that axis, plus a **`/kloc`** checkbox that swaps a raw count for its density twin (complexity, commits, bugfixes). Where no density exists the checkbox greys out instead of disappearing, so the rows keep their shape. Colour also carries **`lg`**, the log-vs-linear ramp: it ticks itself to what the chosen metric wants and remembers your override per metric for the session. |
+| `ZOOM TO` | drill into one package by name, with autocomplete over every package in the current lens — the typed form of shift-clicking a floor. |
 | `PACKAGES` | package-name style: floating tags, on the floor, or off. |
 | `CHANGES` | the change-set filter (below). |
 

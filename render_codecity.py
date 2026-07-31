@@ -1088,6 +1088,14 @@ html = """<!doctype html>
       <input id="colorLog" type="checkbox" aria-label="log colour ramp"> lg
     </label>
 
+    <span class="knob">Zoom to</span>
+    <div class="filterRow" title="Drill into one package — the same scope shift-clicking a floor gives you">
+      <input id="scopePick" type="text" spellcheck="false" autocomplete="off"
+             list="allPackages" placeholder="whole city">
+      <datalist id="allPackages"></datalist>
+      <button id="scopePickClear" type="button" title="back to the whole city" hidden>&times;</button>
+    </div>
+
     <span class="knob">Packages</span>
     <select id="pkgLabelMode" aria-label="package label style">
       <option value="floating">floating tags</option>
@@ -1251,6 +1259,9 @@ const changeCountEl = document.getElementById("changeCount");
 const filterInput = document.getElementById("pkgFilter");
 const filterClearBtn = document.getElementById("pkgFilterClear");
 const filterCountEl = document.getElementById("pkgFilterCount");
+const scopeInput = document.getElementById("scopePick");
+const scopeClearBtn = document.getElementById("scopePickClear");
+const scopeList = document.getElementById("allPackages");
 if (packageOpt && !PACKAGES.length) packageOpt.disabled = true;   // no package data → option greyed
 if (moduleOpt && MODULES.length < 2) moduleOpt.disabled = true;   // <2 modules → nothing to compare
 // "show everything" is the default; the highlight/hide modes only make sense when
@@ -1394,23 +1405,37 @@ const cityD = Math.round(citySize / Math.sqrt(cityAspect));  // PetClinic: 712 d
 const cityRadius = Math.hypot(cityW, cityD) / 2;             // half-diagonal: shadow + camera fit
 // Everything written ON the plate scales with it, or a big city's package names would
 // be unreadable specks by the time the camera has pulled back far enough to frame it.
-const cityScale = citySize / 900;
+// ...and everything drawn ON the plate scales with the size of ONE TILE, not with the
+// plate: streets, package-name bands and heights stay in proportion to the buildings,
+// so a 5000-file city looks like a 90-file one seen from higher up — which is exactly
+// what it is. Scaling them with the plate instead made Spring's package names taller
+// than its towers. `cityUnit` is recomputed per rebuild, because a filter changes how
+// many tiles share the plate. 95 = the reference footprint (PetClinic's median).
+const cityScale = citySize / 900;   // plate vs the reference plate: lights + far plane follow it
+let cityUnit = 1;
+const REFERENCE_FOOTPRINT = 95;
+function tuneCityToTileSize(leafCount) {
+  const tile = Math.sqrt((cityW * cityD) / Math.max(1, leafCount));
+  cityUnit = Math.max(0.35, tile / REFERENCE_FOOTPRINT);
+  districtGap = 14 * cityUnit;
+  fileGap = 3 * cityUnit;
+  districtStep = 9 * cityUnit;
+  maxHeight = 190 * cityUnit;
+  minHeight = 5 * cityUnit;
+}
 let cityTop = 0;                                             // tallest building; heights are p95-scaled, so outliers blow past maxHeight
-// Streets are part of the plate, so they scale with it: keep them absolute and a big
-// city's alleys vanish at the zoom needed to see it whole. Heights do NOT scale --
-// they are a metric, and a metric must mean the same thing in every city.
-const districtGap = 14 * cityScale;
-const fileGap = 3 * cityScale;
-const districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
+let districtGap = 14;
+let fileGap = 3;
+let districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
 // Margin kept clear on ALL FOUR sides of every district, where its name is written.
 // It has to be reserved in the treemap itself: children terraces rise ABOVE their
 // parent's floor and tile its whole area, so text laid anywhere else is buried.
 // One fixed width for every level: a package name is an identifier, not a metric —
 // sizing it by the district's area only said "this package is big", which the plate
 // already says, while making the outer names (victor / training / petclinic) shout.
-const floorLabelBand = () => 13 * cityScale;
-const maxHeight = 190;
-const minHeight = 5;
+const floorLabelBand = () => 13 * cityUnit;
+let maxHeight = 190;
+let minHeight = 5;
 let buildings = [];
 let districts = [];
 let cityLabels = [];
@@ -1492,11 +1517,16 @@ scene.background = new THREE.Color(0xf4f5f7);
 // A long lens (30°, not the usual 45°) shot from far back: perspective flattens
 // out, so the far districts stay the same scale as the near ones, the way the
 // original CodeCity plates look.
-const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1,
-  Math.max(20000, cityRadius * 30));   // the far plane has to clear the whole plate
+// The far plane has to clear the whole plate, and the near plane has to rise with it:
+// a 1-unit near against a 250000-unit far leaves so little depth precision that
+// coplanar surfaces (a building's base on its floor, a name laid on a terrace) trade
+// places from frame to frame and the city flickers — with the camera standing still,
+// because damping never stops nudging it. The log depth buffer holds the rest.
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight,
+  Math.max(1, cityRadius / 400), Math.max(20000, cityRadius * 20));
 camera.position.set(720, 620, 760);   // provisional; frameCity() fits it to the real city
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -1595,7 +1625,7 @@ function openInEditor(rel) {
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8592a3, 2.1));
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-sun.position.set(-420 * cityScale, 780 * cityScale, 520 * cityScale);
+sun.position.set(-420 * cityScale, 780 * cityScale, 520 * cityScale);   // the sun has to clear the whole plate
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -(cityRadius + 60);
@@ -1748,6 +1778,7 @@ function medianFootprint(root) {
 function rebuildCity() {
   clearCity();
   cityTop = 0;                 // tallest building of THIS layout — what frameCity must fit
+  tuneCityToTileSize(filteredDataset().length);   // streets, bands and heights follow the tile
   const areaMetric = areaMetricKey();
   const heightMetric = heightMetricKey();
   const colorMetric = colorMetricKey();
@@ -1865,6 +1896,7 @@ function rebuildCity() {
     cityTop = Math.max(cityTop, baseY + height);
   }
   styleForChanges();
+  refreshScopeOptions();
   setupLabels(areaMetric, heightMetric, colorMetric);
   if (filterCountEl) filterCountEl.textContent = filterRe ? buildings.length + " shown" : "";
   if (changeCountEl) {
@@ -2082,7 +2114,7 @@ function placeFloorLabelMesh(tex, worldW, worldH, x, z, topY, yaw) {
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
   );
   mesh.rotation.x = -Math.PI / 2;                    // lay flat on the platform top
-  mesh.position.set(x, topY + 0.6, z);
+  mesh.position.set(x, topY + 0.6 * cityUnit, z);   // clear of the terrace it lies on
   mesh.renderOrder = 3;
   mesh.userData.kind = "package";                    // disposed by clearCity's package sweep
   scene.add(mesh);
@@ -2431,6 +2463,8 @@ function fitDistance(dir, target, top) {
 }
 
 function updateBreadcrumb() {
+  if (scopeInput && scopeInput.value.trim() !== scopePath) scopeInput.value = scopePath;
+  if (scopeClearBtn) scopeClearBtn.hidden = scopePath === "";
   if (scopePath === "") {
     breadcrumbEl.hidden = true;
     breadcrumbEl.innerHTML = "";
@@ -2449,6 +2483,40 @@ function updateBreadcrumb() {
   });
   breadcrumbEl.innerHTML = parts.join("");
   breadcrumbEl.hidden = false;
+}
+
+// ── "Zoom to": the drill-in you get by shift-clicking a floor, as a typed one ────
+// Shift-clicking only reaches what you can see and identify; a codebase with 565
+// packages needs a way to say the name. Every package on the current lens (a package
+// IS something else in module view) goes into a datalist, so the browser does the
+// autocomplete and the box stays a plain text field you can also paste into.
+let scopeOptions = new Set();
+function refreshScopeOptions() {
+  if (!scopeList) return;
+  scopeOptions = new Set();
+  for (const file of activeDataset()) {
+    const pkg = packageOf(file);
+    let acc = "";
+    for (const seg of pkg ? pkg.split(".") : []) {
+      acc = acc ? `${acc}.${seg}` : seg;
+      scopeOptions.add(acc);
+    }
+  }
+  scopeList.innerHTML = [...scopeOptions].sort()
+    .map(name => `<option value="${escapeXml(name)}"></option>`).join("");
+}
+
+// Applied the moment the text IS a package (picked from the list, typed in full or
+// pasted) — anything else is someone still typing, and rebuilding the city per
+// keystroke would fight them.
+function applyScopePick() {
+  if (!scopeInput) return;
+  const value = scopeInput.value.trim();
+  if (scopeClearBtn) scopeClearBtn.hidden = value === "";
+  scopeInput.classList.toggle("bad", value !== "" && !scopeOptions.has(value));
+  if (value !== "" && !scopeOptions.has(value)) return;
+  dismissIntro();
+  scopeTo(value);
 }
 
 function onSceneClick(event) {
@@ -2885,6 +2953,15 @@ function applyFilter() {
   frameCity();
 }
 filterInput.addEventListener("input", applyFilter);
+if (scopeInput) {
+  scopeInput.addEventListener("input", applyScopePick);
+  scopeInput.addEventListener("change", applyScopePick);
+}
+if (scopeClearBtn) scopeClearBtn.addEventListener("click", () => {
+  scopeInput.value = "";
+  applyScopePick();
+  scopeInput.focus();
+});
 filterClearBtn.addEventListener("click", () => { filterInput.value = ""; applyFilter(); filterInput.focus(); });
 window.addEventListener("resize", onResize);
 window.addEventListener("resize", dismissIntro);
