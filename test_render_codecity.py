@@ -56,7 +56,8 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertNotIn("Code City of:", html)
             self.assertIn('value="classes" selected', html)
             self.assertIn('value="packages" id="packageOpt"', html)
-            self.assertIn('value="modules" id="moduleOpt">Modules (Maven/Gradle)', html)
+            # Just "Modules": the (Maven/Gradle) gloss only widened the title combo.
+            self.assertIn('value="modules" id="moduleOpt">Modules<', html)
             self.assertIn("const PACKAGES =", html)
             self.assertIn("const MODULES =", html)
             self.assertIn("function activeDataset", html)

@@ -39,7 +39,23 @@ def _class_prefixes(rows, min_classes=3, limit=20):
         counts[tokens[0]] = counts.get(tokens[0], 0) + 1
     families = [(name, n) for name, n in counts.items() if n >= min_classes]
     families.sort(key=lambda item: (-item[1], item[0]))
-    return [{"prefix": name, "count": n} for name, n in families[:limit]]
+    return [{"glob": f"..{name}*", "count": n} for name, n in families[:limit]]
+
+
+def _package_families(rows, min_classes=4, limit=8):
+    """The other half of "what do I want to isolate?": whole layers/packages, offered
+    as ..rest.* next to ..Owner*. Keyed by the package's LAST segment, which is how a
+    reader names it ("the repository layer"), not by its full dotted path."""
+    counts = {}
+    for row in rows:
+        district = row.get("district") or ""
+        if not district or district == "root":
+            continue
+        leaf = district.rsplit(".", 1)[-1]
+        counts[leaf] = counts.get(leaf, 0) + 1
+    packages = [(name, n) for name, n in counts.items() if n >= min_classes]
+    packages.sort(key=lambda item: (-item[1], item[0]))
+    return [{"glob": f"..{name}.*", "count": n} for name, n in packages[:limit]]
 
 
 def _district(path):
@@ -471,8 +487,8 @@ html = """<!doctype html>
     top: 16px;
     z-index: 2;
     /* As narrow as the widest thing inside allows: the dropdowns must still spell out
-       "instability Ce/(Ce+Ca)" and "Modules (Maven/Gradle)" next to the widest knob
-       label ("PACKAGES"). Measured truncation starts just under 320px. */
+       "instability Ce/(Ce+Ca)" next to the widest knob label ("PACKAGES").
+       Measured truncation starts just under 320px. */
     width: min(326px, calc(100vw - 32px));
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(140, 148, 160, 0.45);
@@ -547,6 +563,16 @@ html = """<!doctype html>
   }
   .presets .presetDot:hover { transform: scale(1.15); }
   .presets .presetDot.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
+  /* ...and the name of the bubble you are on, spelled out under the row: the tooltip
+     only tells you AFTER you hover, which is no help once you have clicked. Reads
+     "Custom" the moment you turn any knob below it away from the saved reading. */
+  .presetName {
+    grid-column: 2 / -1;
+    margin: -2px 0 1px;
+    font-size: 11.5px; font-weight: 600; color: #334155;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .presetName.custom { font-weight: 500; color: #7b8794; font-style: italic; }
   .controls .filterCount { min-width: 0; text-align: left; }
   /* Greyed out, not hidden: the row keeps its shape when you land on a metric
      (size, committers, instability…) that has no meaningful per-KLOC form. */
@@ -603,6 +629,12 @@ html = """<!doctype html>
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .filterRow input.bad { border-color: #d14343; background: #fff5f5; }
+  /* The datalist chevron: Chrome fades it in only on hover, so the box looks like a
+     plain text field and nobody discovers the ready-made globs. Keep it always on. */
+  .filterRow input::-webkit-calendar-picker-indicator {
+    opacity: 0.75; cursor: pointer; margin-left: 2px;
+  }
+  .filterRow input:hover::-webkit-calendar-picker-indicator { opacity: 1; }
   .filterRow button {
     flex: none; border: 1px solid #c8d0da; border-radius: 6px; background: #fff;
     color: #52606d; font-size: 14px; line-height: 1; cursor: pointer; padding: 4px 8px;
@@ -992,7 +1024,7 @@ html = """<!doctype html>
       aria-label="what a building represents">
       <option value="classes" selected>Classes</option>
       <option value="packages" id="packageOpt">Packages</option>
-      <option value="modules" id="moduleOpt">Modules (Maven/Gradle)</option>
+      <option value="modules" id="moduleOpt">Modules</option>
     </select></h1>
   <div class="controls">
     <span class="knob">Filter</span>
@@ -1006,6 +1038,8 @@ html = """<!doctype html>
 
     <span class="knob">Preset</span>
     <div class="presets" id="presets" role="group" aria-label="metric presets"></div>
+    <span></span>
+    <div class="presetName" id="presetName" aria-live="polite"></div>
 
     <span class="knob">Area</span>
     <select id="areaMetric">
@@ -1355,12 +1389,13 @@ let cityTop = 0;                                             // tallest building
 const districtGap = 14;
 const fileGap = 3;
 const districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
-// Header strip kept clear along each district's top edge, where its name is written.
+// Margin kept clear on ALL FOUR sides of every district, where its name is written.
 // It has to be reserved in the treemap itself: children terraces rise ABOVE their
 // parent's floor and tile its whole area, so text laid anywhere else is buried.
-// A share of the district's own depth, so a big package gets big, readable letters
-// and a cramped one still keeps a legible minimum.
-const floorLabelBand = node => Math.min(40, Math.max(11, (node.y1 - node.y0) * 0.12));
+// One fixed width for every level: a package name is an identifier, not a metric —
+// sizing it by the district's area only said "this package is big", which the plate
+// already says, while making the outer names (victor / training / petclinic) shout.
+const floorLabelBand = () => 13;
 const maxHeight = 190;
 const minHeight = 5;
 let buildings = [];
@@ -1711,13 +1746,16 @@ function rebuildCity() {
   // a deeply nested tree (org.springframework.a.b.c.d) most of its plate in white
   // gaps, which is what made the big city look empty next to Wettel's dense plates.
   const padOuter = node => Math.max(3, districtGap / (1 + node.depth * 0.7));
+  // The name ring: the same band on all four edges (not the near side only), so the
+  // children sit in a frame the district can write its name into whichever way you
+  // orbit. Not for the root — nothing is written on the bare ground.
+  const padRing = node => padOuter(node) + (node.depth === 0 ? 0 : floorLabelBand(node));
   const layout = d3.treemap()
     .size([cityW, cityD])
-    .paddingOuter(padOuter)
-    // The near (+z) side only, and not for the root — nothing is written on the bare
-    // ground. This is the strip addFloorName writes the package name into, kept on the
-    // side facing the default camera so the names are the first thing you read.
-    .paddingBottom(node => padOuter(node) + (node.depth === 0 ? 0 : floorLabelBand(node)))
+    .paddingTop(padRing)
+    .paddingBottom(padRing)
+    .paddingLeft(padRing)
+    .paddingRight(padRing)
     .paddingInner(fileGap)
     .round(true);
   const root = layout(buildHierarchy(areaMetric));
@@ -1725,7 +1763,7 @@ function rebuildCity() {
   // Each package becomes a terraced platform: the deeper it is nested, the higher
   // it rises, so a parent package (e.g. victor) visibly contains its children
   // (rest, mapper, ...). A thin outline delimits every package from its siblings.
-  _floorLabelBudget = 240;   // cap flat floor-text planes per rebuild (perf on big cities)
+  _floorLabelBudget = 960;   // cap flat floor-text planes per rebuild (4 per district now)
   floorLabelMeshes.length = 0;   // the previous rebuild's planes are gone; start the facing list over
   for (const node of root.descendants()) {
     if (node === root || !node.children) {
@@ -1999,24 +2037,25 @@ function floorTextTexture(text) {
   return entry;
 }
 
-// The strip runs the full width of the district, so the name only has to fit across
-// it; when it doesn't, shrink it rather than drop it, down to the point of illegibility.
-function addFloorName(text, cx, stripZ, topY, width, band) {
+// One name laid along one edge of the ring. `run` is the length of that edge, so the
+// name only has to fit across it; when it doesn't, shrink it rather than drop it, down
+// to the point of illegibility. The band is fixed, so every name comes out the same size.
+function addFloorName(text, x, z, topY, run, band, yaw) {
   if (_floorLabelBudget <= 0) return;
   const { tex, w, h } = floorTextTexture(text);
   let worldH = band - 4;                             // 2 units of air above and below
   let worldW = worldH * (w / h);
-  const room = width - 6;
+  const room = run - 6;
   if (worldW > room) {
     const shrink = room / worldW;
     if (shrink < 0.4) return;                        // would be too small to read anyway
     worldH *= shrink;
     worldW = room;
   }
-  placeFloorLabelMesh(tex, worldW, worldH, cx, stripZ, topY);
+  placeFloorLabelMesh(tex, worldW, worldH, x, z, topY, yaw);
 }
 
-function placeFloorLabelMesh(tex, worldW, worldH, x, z, topY) {
+function placeFloorLabelMesh(tex, worldW, worldH, x, z, topY, yaw) {
   _floorLabelBudget--;
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(worldW, worldH),
@@ -2027,7 +2066,7 @@ function placeFloorLabelMesh(tex, worldW, worldH, x, z, topY) {
   mesh.renderOrder = 3;
   mesh.userData.kind = "package";                    // disposed by clearCity's package sweep
   scene.add(mesh);
-  floorLabelMeshes.push({ mesh, baseYaw: 0 });       // spun to face the viewer each frame
+  floorLabelMeshes.push({ mesh, baseYaw: yaw || 0 });   // spun to face the viewer each frame
 }
 
 // A flat floor label reads upside down from the far side of an orbit. Each frame,
@@ -2059,9 +2098,17 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
   if (!shortName) return;
   if (mode === "floor") {
     const band = floorLabelBand(node);
-    if (depth < band + 2) return;                  // district shallower than its own strip
-    // Middle of the strip the layout reserved along this district's near edge.
-    addFloorName(shortName, cx, node.y1 - band / 2 - cityD / 2, topY, width, band);
+    if (depth < band + 2 || width < band + 2) return;   // district smaller than its own ring
+    // The four edges of the ring the layout reserved around this district's children.
+    // Whichever way you orbit, one of them faces you, so the name is always at hand.
+    const near = node.y1 - band / 2 - cityD / 2;
+    const far = node.y0 + band / 2 - cityD / 2;
+    const left = node.x0 + band / 2 - cityW / 2;
+    const right = node.x1 - band / 2 - cityW / 2;
+    addFloorName(shortName, cx, near, topY, width, band, 0);
+    addFloorName(shortName, cx, far, topY, width, band, 0);
+    addFloorName(shortName, left, cz, topY, depth, band, Math.PI / 2);
+    addFloorName(shortName, right, cz, topY, depth, band, Math.PI / 2);
     return;
   }
   const div = document.createElement("div");     // "floating"
@@ -2658,8 +2705,14 @@ function presetMatches(preset) {
 }
 
 const presetButtons = [];
+const presetNameEl = document.getElementById("presetName");
 function markActivePreset() {
   presetButtons.forEach((btn, i) => btn.classList.toggle("on", presetMatches(PRESETS[i])));
+  if (!presetNameEl) return;
+  const active = PRESETS.find(presetMatches);
+  presetNameEl.textContent = active ? active.label : "Custom";
+  presetNameEl.title = active ? active.label : "your own combination of metrics";
+  presetNameEl.classList.toggle("custom", !active);
 }
 
 const presetsRow = document.getElementById("presets");
@@ -2712,7 +2765,14 @@ if (changeSelect) changeSelect.addEventListener("change", () => {
 
 // Package-pattern filter: recompile on every keystroke, flag invalid patterns,
 // reset the drill scope (the visible set changed) and reframe.
+// A suggestion picked from the datalist arrives with its " · 14 classes" tail (the
+// count has to ride in the value to stay on one line); peel it off before it reaches
+// the pattern compiler, and out of the box, so what you see is the glob you filter by.
+const FAMILY_COUNT_TAIL = / *· *[0-9]+ +classes *$/;
 function applyFilter() {
+  if (FAMILY_COUNT_TAIL.test(filterInput.value)) {
+    filterInput.value = filterInput.value.replace(FAMILY_COUNT_TAIL, "");
+  }
   const raw = filterInput.value.trim();
   filterClearBtn.hidden = raw === "";
   if (!raw) {
@@ -2811,14 +2871,17 @@ HEATMAP_REPO="$REPO" HEATMAP_OUT="$REPO/.codecity" \\
 open "$REPO/.codecity/codecity.html"
 """
 
-# Ready-made globs for the filter box's dropdown, one per CamelCase class family.
-CLASS_FAMILY_OPTIONS = "".join(
-    '<option value="..{p}*" label="{p} ({n} classes)"></option>'.format(p=family["prefix"], n=family["count"])
-    for family in _class_prefixes(rows)
+# Ready-made globs for the filter box's dropdown: whole packages first (the coarse
+# cut), then the CamelCase class families. The count rides INSIDE the value, because a
+# `label` is drawn by the browser as a second line under it — and that line could only
+# repeat the glob's own words. applyFilter strips the " · N classes" tail back off.
+FAMILY_OPTIONS = "".join(
+    '<option value="{g} &#183; {n} classes"></option>'.format(g=family["glob"], n=family["count"])
+    for family in _package_families(rows) + _class_prefixes(rows)
 )
 
 html = (html
-        .replace("__CLASS_FAMILIES__", CLASS_FAMILY_OPTIONS)
+        .replace("__CLASS_FAMILIES__", FAMILY_OPTIONS)
         .replace("__TITLE__", TITLE)
         .replace("__LOGO_SVG__", LOGO_SVG)
         .replace("__FAVICON__", FAVICON)
