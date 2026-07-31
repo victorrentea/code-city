@@ -1,24 +1,37 @@
-# Codemap
+# Code City
 
-An interactive, self-contained HTML heatmap of the codebase: a **treemap** (rectangle
-area = file bytes, color = a metric ratio you pick) plus a **log–log scatter**
-(lines vs bug-fix commits). Open the generated page in any browser — it pulls Plotly
-from a CDN and embeds all data inline, so there is no server.
+Turn any folder of Java sources into a **3-D city you can walk around**: one building
+per file, districts per package, its height and colour driven by whatever you want to
+see — complexity, churn, bug-fixes, coupling. Plus the 2-D **codemap** it grew out of:
+a treemap (area = file bytes, colour = a metric ratio) next to a log–log scatter.
 
-Output:
+Every output is a **single self-contained HTML file** — all data inlined, libraries from
+a CDN, no server. Mail it, publish it on Pages, open it from disk.
 
-- [`../../generated/codemap/codemap.html`](../../generated/codemap/codemap.html)
-- [`../../generated/codemap/codecity.html`](../../generated/codemap/codecity.html) Three.js CodeCity
-
-## Run
+## Quick start
 
 ```bash
-pip install -r requirements.txt --target .pylibs   # one-time (vendors tree-sitter)
-./generate.sh
+git clone https://github.com/victorrentea/code-city ~/code-city
+~/code-city/generate.sh ~/workspace/your-repo      # any git checkout of Java sources
+open ~/workspace/your-repo/.codecity/codecity.html
 ```
 
-`generate.sh` analyzes the **whole git repo** (so commit paths line up with the file
-walk) and writes all artifacts into `petclinic-backend/docs/generated/codemap/`.
+That is the whole configuration: the repo to analyse. The first run vendors the
+tree-sitter parsers into `.pylibs/` (needs `python3` + `pip3` + `git`); later runs skip it.
+Output lands in `REPO/.codecity/`:
+
+| File | What it is |
+| --- | --- |
+| `codecity.html` | the 3-D city (Three.js) |
+| `codemap.html` | the 2-D treemap + scatter (Plotly) |
+| `combined.html` | both, side by side, hover-linked |
+| `*.tsv` | the measurements, if you want to plot your own |
+
+`generate.sh REPO OUT` also takes an explicit output directory, and every knob has an
+env-var twin (see [Configuration](#configuration-env-vars)) for CI use.
+
+**Live example:** the city of the repo these generators grew up in —
+[Spring PetClinic](https://victorrentea.github.io/petclinic/petclinic-backend/docs/generated/codemap/codecity.html).
 
 ## What each metric means
 
@@ -70,18 +83,21 @@ toy and a 5000-file monster both read as cities instead of needles or flat tiles
   between leaf packages, instead of one flat gap that eats a deep tree's plate;
 - a class **name appears only once its roof is ≥ 26 px on screen**, so a huge city
   zoomed out is a clean plate and the names come back as you zoom in;
-- **package names are written flat on their own floor**, in a header strip the treemap
-  *reserves* along each district's near edge (a share of the district's own depth, so a
-  big package gets big letters). The strip is not decoration: children terraces rise
-  above their parent's floor and tile all of it, so text laid anywhere else is buried.
+- **package names are written flat on their own floor**, in a margin the treemap
+  *reserves* on all four edges of every district, and written into each of them — so
+  whichever way you orbit, a copy faces you. The margin is not decoration: children
+  terraces rise above their parent's floor and tile all of it, so text laid anywhere
+  else is buried. Its width is the *same at every nesting level* (the letters overhang
+  it to stay readable): how big a package is, is what the plate already shows — the
+  name is an identifier, not a metric.
 
 **The control panel** stacks one knob per row, each row a single question, so the three
 visual axes read as independent choices rather than one wide toolbar:
 
 | row | what it sets |
 | --- | --- |
-| `FILTER` | AspectJ-style glob (`victor..*Service`, `..repo..`, `*Service`). It is a text box **with a dropdown**: the generator splits every class name on CamelCase and offers the leading word of each family that has ≥ 3 classes (`..Pet*`, `..Owner*`, …) as a ready-made glob. |
-| `PRESET` | ten coloured bubbles, one click each: a saved reading of the city (overview, hotspots, bug density, complexity density, knowledge risk, coupling, instability, churn vs. team, plain size, dependencies). A bubble sets all three metrics *and* the four bits below, and lights up whenever the panel happens to show its reading. |
+| `FILTER` | AspectJ-style glob (`victor..*Service`, `..repo..`, `*Service`). It is a text box **with a dropdown** (its chevron always visible, or nobody finds it): the generator offers the biggest packages (`..rest.*`, `..repository.*`) and the CamelCase class families it finds — every leading word shared by ≥ 3 classes (`..Pet*`, `..Owner*`) — each with its class count. |
+| `PRESET` | ten coloured bubbles, one click each: a saved reading of the city (overview, hotspots, bug density, complexity density, knowledge risk, coupling, instability, churn vs. team, plain size, dependencies). A bubble sets all three metrics *and* the four bits below; the row's caption spells out which reading you are on, and reads *Custom* as soon as you turn any knob under it. |
 | `AREA` / `HEIGHT` / `COLOR` | the metric on that axis, plus a **`/kloc`** checkbox that swaps a raw count for its density twin (complexity, commits, bugfixes). Where no density exists the checkbox greys out instead of disappearing, so the rows keep their shape. Colour also carries **`lg`**, the log-vs-linear ramp: it ticks itself to what the chosen metric wants and remembers your override per metric for the session. |
 | `PACKAGES` | package-name style: floating tags, on the floor, or off. |
 | `CHANGES` | the change-set filter (below). |
@@ -152,17 +168,23 @@ single "hero" building to make the three selectors concrete — the hatched **ro
 the *colour* metric — each tied by a connector line to the `<select>` that drives it.
 Dismissed on the first drag/scroll/metric-change (or the "Got it" button).
 
-**Build it for your own repo:** the page has a compact **"⚒ Build for your repo"** button
-in the **bottom-left corner**. It opens a copy-pasteable recipe that re-runs this exact
-pipeline against any other folder of Java sources and opens the resulting city — just edit
-`REPO`.
-The recipe drives `generate.sh` via `HEATMAP_REPO` / `HEATMAP_OUT` / `CODECITY_TITLE`
-overrides, which `generate.sh` now honours (falling back to the PetClinic defaults when
-unset).
+**Build it for your own repo:** every generated page carries a compact **"⚒ Build for your
+repo"** button in the **bottom-left corner**, which opens the three-line recipe at the top
+of this README. It clones *this* repo — a reader who opens a published city has no local
+checkout of the generators to point at.
 
 `fetch_bugs.py` is the Spring-specific GitHub bug-label crawler from the original; it is
-kept for provenance but **not** used here (PetClinic has no `type: bug` labels, so the
-bug signal comes from Conventional-Commit `fix:` subjects instead — see `generate.sh`).
+kept for provenance but **not** used by `generate.sh`, which reads the bug signal from
+Conventional-Commit `fix:` subjects instead (`HEATMAP_BUG_COMMIT_REGEX`).
+
+## Tests
+
+```bash
+python3 -m pytest test_render_codecity.py
+```
+
+The renderer is exercised against `testdata/` — a real, small run of the pipeline — so the
+tests need no checkout to analyse and stay fast.
 
 ## Configuration (env vars)
 

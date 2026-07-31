@@ -11,7 +11,6 @@ from pathlib import Path
 
 
 _here = Path(__file__).resolve().parent
-SCRIPTS_DIR = _here  # the codemap generators live here; baked into the in-page "build it yourself" recipe
 OUT_DIR = Path(os.environ.get("HEATMAP_OUT") or os.environ.get("HEATMAP_REPO") or _here).resolve()
 TSV = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else OUT_DIR / "codemap.tsv"
 OUT = OUT_DIR / "codecity.html"
@@ -2855,24 +2854,18 @@ FAVICON = "data:image/svg+xml," + urllib.parse.quote(
     f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">{_LOGO_SHAPES}</svg>'
 )
 
-# The recipe the in-page "Build this for your own repo" button reveals. SCRIPTS_DIR is
-# baked in so the command is runnable as-is; generate.sh honours the HEATMAP_*/CODECITY_*
-# overrides, so the only thing the reader edits is REPO.
-BUILD_CMD = f"""# 1. The folder you want to visualise (a git repo of Java sources):
-REPO="$HOME/workspace/your-repo"
+# The recipe the in-page "Build this for your own repo" button reveals. It clones the
+# generators from GitHub rather than pointing at wherever THIS page was built from: a
+# reader who opens a published city has no such folder on their disk.
+TOOL_REPO = "https://github.com/victorrentea/code-city"
+BUILD_CMD = f"""# 1. The generators (this page was made by them):
+git clone {TOOL_REPO} ~/code-city
 
-# 2. PetClinic's codemap generators do all the analysis & rendering:
-SCRIPTS="{SCRIPTS_DIR}"
+# 2. Point them at any git repo of Java sources — that's the whole configuration.
+~/code-city/generate.sh ~/workspace/your-repo
 
-# 3. One-time: vendor the tree-sitter parsers used to measure complexity.
-[ -d "$SCRIPTS/.pylibs" ] || pip install -r "$SCRIPTS/requirements.txt" --target "$SCRIPTS/.pylibs"
-
-# 4. Run the pipeline on REPO, writing the report into REPO/.codecity/ .
-HEATMAP_REPO="$REPO" HEATMAP_OUT="$REPO/.codecity" \\
-  CODECITY_TITLE="Code City: $(basename "$REPO")" "$SCRIPTS/generate.sh"
-
-# 5. Open the city in your browser (macOS `open`; Linux `xdg-open`; Windows `start`).
-open "$REPO/.codecity/codecity.html"
+# 3. Open the city (macOS `open`; Linux `xdg-open`; Windows `start`).
+open ~/workspace/your-repo/.codecity/codecity.html
 """
 
 # Ready-made globs for the filter box's dropdown: whole packages first (the coarse

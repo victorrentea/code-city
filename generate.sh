@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
-# Generate the PetClinic codemap (interactive Plotly treemap + scatter).
+# Build a Code City (and the 2D codemap next to it) for a folder of Java sources.
 #
-# ── Reference example ─────────────────────────────────────────────────────────
-# The same generators also produced the Spring Framework codemap — a much
-# larger codebase, which is a great "what is this?" demo to show people:
-#     file:///Users/victorrentea/workspace/spring-framework/codemap.html
-# (regenerate it by pointing HEATMAP_REPO at a spring-framework checkout; swap in
-#  a hosted URL once you publish it).
-# ──────────────────────────────────────────────────────────────────────────────
+#   ./generate.sh [REPO] [OUT]
+#     REPO   git checkout to analyse   (default: $PWD's git toplevel)
+#     OUT    where the artifacts land  (default: REPO/.codecity)
 #
-# Pipeline (same generators recovered from the Spring Framework heatmap, made
-# repo-agnostic via HEATMAP_* env vars):
+# Both arguments are just friendlier spellings of HEATMAP_REPO / HEATMAP_OUT, so an
+# env-var caller (the in-page "build for your own repo" recipe, CI) keeps working.
+#
+# Pipeline:
 #   compute_complexity.py  -> complexity-per-{class,file}.tsv   (tree-sitter cognitive complexity)
 #   compute_fanio.py       -> fanio-per-file.tsv                (internal fan-in / fan-out)
 #   build_heatmap.py       -> codemap.tsv                       (joins git history + size + above)
@@ -18,20 +16,26 @@
 #   render_codecity.py     -> codecity.html                     (Three.js CodeCity)
 #   render_combined.py     -> combined.html                     (2D codemap <-> 3D city, linked)
 #
-# Bug signal: PetClinic has no GitHub "type: bug" labels like Spring, but it uses
-# Conventional Commits, so a commit is counted as a bug-fix when its subject matches
-# ^(fix|bugfix)(:|(|!).
+# Bug signal: a commit counts as a bug-fix when its subject matches
+# ^(fix|bugfix)(:|(|!) — i.e. Conventional Commits. Override with
+# HEATMAP_BUG_COMMIT_REGEX for a repo that spells its fixes differently.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Code under analysis = the whole git repo (so git paths line up with the file walk);
-# generated artifacts land in their own subfolder under petclinic-backend/docs/generated.
-# Both honour a pre-set value, so the in-page "Build this for your own repo" recipe can
-# aim the same pipeline at any other checkout via HEATMAP_REPO=... HEATMAP_OUT=... .
-export HEATMAP_REPO="${HEATMAP_REPO:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)}"
-export HEATMAP_OUT="${HEATMAP_OUT:-$(cd "$SCRIPT_DIR/../../generated" && pwd)/codemap}"
+# Code under analysis = a whole git repo (so git paths line up with the file walk).
+# Artifacts land beside it in .codecity/ unless told otherwise — self-contained HTML,
+# so that folder can be published, zipped or thrown away without touching the sources.
+export HEATMAP_REPO="${1:-${HEATMAP_REPO:-$(git rev-parse --show-toplevel)}}"
+export HEATMAP_REPO="$(cd "$HEATMAP_REPO" && pwd)"
+export HEATMAP_OUT="${2:-${HEATMAP_OUT:-$HEATMAP_REPO/.codecity}}"
 export HEATMAP_PYLIBS="$SCRIPT_DIR/.pylibs"
+
+# One-time: vendor the tree-sitter parsers the complexity pass needs.
+if [ ! -d "$HEATMAP_PYLIBS" ]; then
+  echo "[0/6] vendoring tree-sitter into $HEATMAP_PYLIBS ..."
+  pip3 install -q -r "$SCRIPT_DIR/requirements.txt" --target "$HEATMAP_PYLIBS"
+fi
 
 # Exclude build outputs (Maven target/, Gradle build/out/.gradle), IDE/agent
 # metadata, and git worktrees (.claude/worktrees and .conductor hold full
@@ -41,8 +45,8 @@ export HEATMAP_PRUNE="${HEATMAP_PRUNE:-target,build,out,.gradle,.claude,.conduct
 # Conventional-commit bug-fix detection.
 export HEATMAP_BUG_COMMIT_REGEX='^(fix|bugfix)(\(|:|!)'
 
-export HEATMAP_TITLE="${HEATMAP_TITLE:-Spring PetClinic Codemap}"
-export CODECITY_TITLE="${CODECITY_TITLE:-Code City}"
+export HEATMAP_TITLE="${HEATMAP_TITLE:-$(basename "$HEATMAP_REPO") Codemap}"
+export CODECITY_TITLE="${CODECITY_TITLE:-Code City: $(basename "$HEATMAP_REPO")}"
 
 # Ctrl/⌘-click a file tile to open it in an editor (in-page picker: VS Code / IntelliJ).
 # REPO_ABS defaults to HEATMAP_REPO, which is what the tsv paths are relative to.

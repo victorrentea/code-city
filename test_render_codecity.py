@@ -9,8 +9,9 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[3]
-SAMPLE_TSV = REPO_ROOT / "petclinic-backend/docs/generated/codemap/codemap.tsv"
+# A real (small) run of the pipeline, kept as a fixture so the renderer can be tested
+# without re-analysing a checkout: the PetClinic city these generators grew up on.
+SAMPLE_TSV = SCRIPT_DIR / "testdata/codemap.tsv"
 
 
 class RenderCodecityTest(unittest.TestCase):
@@ -183,9 +184,11 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn('id="howtoToggle"', html)
             self.assertIn("Build a Code City for any source folder", html)
             self.assertIn("const BUILD_CMD =", html)
-            # BUILD_CMD is JSON-embedded, so quotes are backslash-escaped in the HTML.
-            self.assertIn(r'HEATMAP_REPO=\"$REPO\" HEATMAP_OUT=\"$REPO/.codecity\"', html)
-            self.assertIn(str(SCRIPT_DIR), html)
+            # The recipe clones the generators from GitHub: whoever opens a published
+            # city has no local checkout of them to point at.
+            self.assertIn("git clone https://github.com/victorrentea/code-city", html)
+            self.assertIn("/code-city/generate.sh ~/workspace/your-repo", html)
+            self.assertNotIn('SCRIPTS="', html)   # ...not a path from the machine that built it
             # First-run intro: an annotated hero building wired to the metric selectors,
             # with AREA drawn on the roof (top face), not the base.
             self.assertIn("function buildIntro", html)

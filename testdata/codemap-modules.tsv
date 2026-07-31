@@ -1,0 +1,5 @@
+module	files	bytes	lines	commits	bug_commits	commits_per_kloc	bugs_per_kloc	bugs_per_commit	cognitive_complexity	complexity_per_kloc	fan_in	fan_out	committers
+petclinic-backend	60	102377	2741	51	4	18.61	1.46	0.078	93	33.93	123	123	2
+petclinic-chatbot	25	85471	1942	3	0	1.54	0.00	0.000	125	64.37	38	38	1
+refactoring-legacy	2	12889	287	1	0	3.48	0.00	0.000	24	83.62	1	1	1
+petclinic-database	2	6430	193	5	0	25.91	0.00	0.000	16	82.90	1	1	1
