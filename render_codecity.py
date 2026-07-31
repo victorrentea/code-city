@@ -562,14 +562,16 @@ html = """<!doctype html>
   }
   .presets .presetDot:hover { transform: scale(1.15); }
   .presets .presetDot.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
-  /* ...and the name of the bubble you are on, spelled out under the row: the tooltip
-     only tells you AFTER you hover, which is no help once you have clicked. Reads
-     "Custom" the moment you turn any knob below it away from the saved reading. */
+  /* ...and the name of the bubble you are on, spelled out under the title: the tooltip
+     only tells you AFTER you hover, which is no help once you have clicked. It reads
+     "Custom" the moment you turn any knob away from the saved reading. Full panel width
+     and free to wrap — squeezed into the grid it was ellipsed after four words, which
+     is exactly where these labels get interesting ("...churn per KLOC"). */
   .presetName {
-    grid-column: 2 / -1;
-    margin: -2px 0 1px;
-    font-size: 11.5px; font-weight: 600; color: #334155;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin: 0 0 8px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid #e4e9f2;
+    font-size: 12px; font-weight: 600; line-height: 1.35; color: #334155;
   }
   .presetName.custom { font-weight: 500; color: #7b8794; font-style: italic; }
   .controls .filterCount { min-width: 0; text-align: left; }
@@ -1025,20 +1027,10 @@ html = """<!doctype html>
       <option value="packages" id="packageOpt">Packages</option>
       <option value="modules" id="moduleOpt">Modules</option>
     </select></h1>
+  <div class="presetName" id="presetName" aria-live="polite"></div>
   <div class="controls">
-    <span class="knob">Filter</span>
-    <div class="filterRow" title="AspectJ-style globs: victor..*Service &middot; ..repo.. &middot; *Service">
-      <input id="pkgFilter" type="text" spellcheck="false" autocomplete="off"
-             list="classFamilies" placeholder="..repo.. &middot; *Service">
-      <datalist id="classFamilies">__CLASS_FAMILIES__</datalist>
-      <button id="pkgFilterClear" type="button" title="clear filter" hidden>&times;</button>
-      <span id="pkgFilterCount" class="filterCount"></span>
-    </div>
-
     <span class="knob">Preset</span>
     <div class="presets" id="presets" role="group" aria-label="metric presets"></div>
-    <span></span>
-    <div class="presetName" id="presetName" aria-live="polite"></div>
 
     <span class="knob">Area</span>
     <select id="areaMetric">
@@ -1094,6 +1086,15 @@ html = """<!doctype html>
              list="allPackages" placeholder="whole city">
       <datalist id="allPackages"></datalist>
       <button id="scopePickClear" type="button" title="back to the whole city" hidden>&times;</button>
+    </div>
+
+    <span class="knob">Filter</span>
+    <div class="filterRow" title="AspectJ-style globs: victor..*Service &middot; ..repo.. &middot; *Service">
+      <input id="pkgFilter" type="text" spellcheck="false" autocomplete="off"
+             list="classFamilies" placeholder="..repo.. &middot; *Service">
+      <datalist id="classFamilies">__CLASS_FAMILIES__</datalist>
+      <button id="pkgFilterClear" type="button" title="clear filter" hidden>&times;</button>
+      <span id="pkgFilterCount" class="filterCount"></span>
     </div>
 
     <span class="knob">Packages</span>
@@ -1888,10 +1889,29 @@ function rebuildCity() {
   // a small repo has roomy tiles and simply keeps the full maxHeight.
   const heightScale = Math.min(maxHeight, Math.max(50, medianFootprint(root) * 9));
 
+  // A floor does not have to be tiled 100%. Letting each building fill its treemap cell
+  // is what made area unfaithful: the cell is what is LEFT after every ancestor took its
+  // ring, so the same 7 KB buys less plate six levels down than three. Instead one
+  // global scale for the whole city — footprint = value x areaScale — and the building
+  // sits centred in its cell at exactly that area, leaving the slack as breathing room.
+  // Now a 7 KB class is 3.5x the plate of a 2 KB one wherever either of them lives.
+  // The scale is the 5th percentile of cell/value rather than the strict minimum, so one
+  // degenerate cell (rounding, a 1-file package inside deep nesting) cannot collapse the
+  // whole city; the few buildings above it are clamped to their cell.
+  const cellRatios = root.leaves().map(leaf => {
+    const w = Math.max(4, leaf.x1 - leaf.x0 - 1), d = Math.max(4, leaf.y1 - leaf.y0 - 1);
+    return (w * d) / Math.max(1, leaf.value || 0);
+  });
+  const areaScale = percentile(cellRatios, 0.05) || 1;
+
   for (const leaf of root.leaves()) {
     const file = leaf.data.file;
-    const width = Math.max(4, leaf.x1 - leaf.x0 - 1);
-    const depth = Math.max(4, leaf.y1 - leaf.y0 - 1);
+    const cellW = Math.max(4, leaf.x1 - leaf.x0 - 1);
+    const cellD = Math.max(4, leaf.y1 - leaf.y0 - 1);
+    // Keep the cell's shape, take only the area the metric earns.
+    const fit = Math.min(1, Math.sqrt((leaf.value || 0) * areaScale / (cellW * cellD)));
+    const width = Math.max(2, cellW * fit);
+    const depth = Math.max(2, cellD * fit);
     const metricValue = Number(file[heightMetric]) || 0;
     const colorValue = Number(file[colorMetric]) || 0;
     // maxMetric is the p95, so the handful of files above it land past 1.0 — left
