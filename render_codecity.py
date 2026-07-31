@@ -2043,7 +2043,11 @@ function floorTextTexture(text) {
 function addFloorName(text, x, z, topY, run, band, yaw) {
   if (_floorLabelBudget <= 0) return;
   const { tex, w, h } = floorTextTexture(text);
-  let worldH = band - 4;                             // 2 units of air above and below
+  // Letters twice as tall as the strip they sit in: the band is what the layout takes
+  // AWAY from the children, so widening it to fit bigger letters would cost the city
+  // real estate. The overhang lands on the street/gap around the district, where the
+  // white halo keeps it legible and there is nothing to cover.
+  let worldH = (band - 4) * 2;
   let worldW = worldH * (w / h);
   const room = run - 6;
   if (worldW > room) {
