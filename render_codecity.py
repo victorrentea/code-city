@@ -703,10 +703,10 @@ html = """<!doctype html>
   /* Identity header above the metrics: class name (bold) / folder / package.
      The class + package used to live in a top-center #classTitle banner; that
      banner is gone and its info now lives here, inside the metrics panel. */
+  /* No rule of its own: the metrics list below already draws one (and it is the only
+     divider a district hover gets), so a border here made two hairlines in a row. */
   #hover .idhdr {
-    margin: 0 0 6px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+    margin: 0 0 4px;
   }
   #hover .idhdr .cls {
     display: block;
@@ -1376,17 +1376,31 @@ function filteredDataset() {
   return data;
 }
 // Wettel's original CodeCity plate is a landscape rectangle, not a square: a wide
-// city reads better on a 16:9 screen and can be taken in whole from a low, far
-// camera. Keep the ground *area* of the old 900x900 square so footprints — and
-// therefore the height scale — stay comparable.
+// city reads better on a 16:9 screen and can be taken in whole from a low, far camera.
+//
+// The plate's AREA is the size of the codebase. A fixed plate made every repo look the
+// same size — Spring Framework (600k lines) and PetClinic (4k) both filled the same
+// ground, so the tiles just got smaller and the two cities were incomparable. Ground
+// area now grows with total lines at a fixed density, so a *file* of a given size gets
+// the same footprint in any repo, and Spring's plate is the ~12x wider thing it is.
+// Rendering cost is unchanged: same buildings, bigger coordinates.
 const cityAspect = 1.6;
-const citySize = 900;                                        // side of the equivalent square
-const cityW = Math.round(citySize * Math.sqrt(cityAspect));  // 1138 across
-const cityD = Math.round(citySize / Math.sqrt(cityAspect));  // 712 deep
+const LINES_PER_UNIT2 = 0.0064;   // ≈ PetClinic's density: keeps its 900x900-equivalent plate
+const MIN_CITY_SIDE = 420;        // a handful of files still deserves a plate, not a coin
+const totalLines = FILES.reduce((sum, f) => sum + (Number(f.lines) || 0), 0);
+const citySize = Math.max(MIN_CITY_SIDE, Math.round(Math.sqrt(totalLines / LINES_PER_UNIT2)));
+const cityW = Math.round(citySize * Math.sqrt(cityAspect));  // PetClinic: 1138 across
+const cityD = Math.round(citySize / Math.sqrt(cityAspect));  // PetClinic: 712 deep
 const cityRadius = Math.hypot(cityW, cityD) / 2;             // half-diagonal: shadow + camera fit
+// Everything written ON the plate scales with it, or a big city's package names would
+// be unreadable specks by the time the camera has pulled back far enough to frame it.
+const cityScale = citySize / 900;
 let cityTop = 0;                                             // tallest building; heights are p95-scaled, so outliers blow past maxHeight
-const districtGap = 14;
-const fileGap = 3;
+// Streets are part of the plate, so they scale with it: keep them absolute and a big
+// city's alleys vanish at the zoom needed to see it whole. Heights do NOT scale --
+// they are a metric, and a metric must mean the same thing in every city.
+const districtGap = 14 * cityScale;
+const fileGap = 3 * cityScale;
 const districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
 // Margin kept clear on ALL FOUR sides of every district, where its name is written.
 // It has to be reserved in the treemap itself: children terraces rise ABOVE their
@@ -1394,7 +1408,7 @@ const districtStep = 9;   // terrace rise per nesting level: tall enough to sepa
 // One fixed width for every level: a package name is an identifier, not a metric —
 // sizing it by the district's area only said "this package is big", which the plate
 // already says, while making the outer names (victor / training / petclinic) shout.
-const floorLabelBand = () => 13;
+const floorLabelBand = () => 13 * cityScale;
 const maxHeight = 190;
 const minHeight = 5;
 let buildings = [];
@@ -1403,6 +1417,7 @@ let cityLabels = [];
 const MIN_LABEL_ROOF_PX = 26;   // a roof narrower than this on screen doesn't get a name
 let districtLabels = [];   // floating package tags (CSS2DObjects), when pkgLabelMode = "floating"
 const floorLabelMeshes = [];   // flat on-the-floor package names; re-oriented each frame to face the camera
+const topLevelPackages = [];   // {area, meshes, tags} per depth-1 district, for the intro's PACKAGES wire
 
 // ── Cross-view link with the 2D codemap (when embedded side by side) ──────────
 // The parent "combined" page bridges hover selection between this city and the
@@ -1477,7 +1492,8 @@ scene.background = new THREE.Color(0xf4f5f7);
 // A long lens (30°, not the usual 45°) shot from far back: perspective flattens
 // out, so the far districts stay the same scale as the near ones, the way the
 // original CodeCity plates look.
-const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1, 20000);
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 1,
+  Math.max(20000, cityRadius * 30));   // the far plane has to clear the whole plate
 camera.position.set(720, 620, 760);   // provisional; frameCity() fits it to the real city
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -1500,7 +1516,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.screenSpacePanning = true;
 controls.zoomToCursor = true;
-controls.minDistance = 140;
+controls.minDistance = 140;   // screen-space: how close you may get to one building
 controls.maxDistance = cityRadius * 12;   // room to pull right back off a big city
 controls.target.set(0, 0, 0);
 controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
@@ -1579,7 +1595,7 @@ function openInEditor(rel) {
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8592a3, 2.1));
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-sun.position.set(-420, 780, 520);
+sun.position.set(-420 * cityScale, 780 * cityScale, 520 * cityScale);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.left = -(cityRadius + 60);
@@ -1764,6 +1780,7 @@ function rebuildCity() {
   // (rest, mapper, ...). A thin outline delimits every package from its siblings.
   _floorLabelBudget = 960;   // cap flat floor-text planes per rebuild (4 per district now)
   floorLabelMeshes.length = 0;   // the previous rebuild's planes are gone; start the facing list over
+  topLevelPackages.length = 0;
   for (const node of root.descendants()) {
     if (node === root || !node.children) {
       continue;
@@ -2099,6 +2116,18 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
   const full = node.data.packageName || node.data.name || "";
   const shortName = full.split(".").pop();
   if (!shortName) return;
+  // Remember which labels belong to which top-level district: the intro points at the
+  // biggest one, and "biggest, outermost" is the instance a newcomer will find first.
+  const meshStart = floorLabelMeshes.length;
+  const tagStart = districtLabels.length;
+  const remember = () => {
+    if (node.depth !== 1) return;
+    topLevelPackages.push({
+      area: width * depth,
+      meshes: floorLabelMeshes.slice(meshStart),
+      tags: districtLabels.slice(tagStart),
+    });
+  };
   if (mode === "floor") {
     const band = floorLabelBand(node);
     if (depth < band + 2 || width < band + 2) return;   // district smaller than its own ring
@@ -2112,6 +2141,7 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
     addFloorName(shortName, cx, far, topY, width, band, 0);
     addFloorName(shortName, left, cz, topY, depth, band, Math.PI / 2);
     addFloorName(shortName, right, cz, topY, depth, band, Math.PI / 2);
+    remember();
     return;
   }
   const div = document.createElement("div");     // "floating"
@@ -2122,6 +2152,7 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
   obj.center.set(0.5, 1);
   scene.add(obj);
   districtLabels.push(obj);
+  remember();
 }
 
 // The dotted Java package of a class row lives in `district` ("root" means none).
@@ -2462,15 +2493,29 @@ let introEl = null;
 let introDone = false;
 const introSelects = [];   // dropdowns the intro tinted, to be un-tinted on dismiss
 
-// The package name the PACKAGES connector points at: the lowest one on screen, in
-// whichever style the dropdown is currently set to. "off" leaves nothing to point at.
-function lowestPackageLabelOnScreen(project) {
+// The package name the PACKAGES connector points at: the one written on the LARGEST
+// top-level district — the biggest, outermost name on the plate, the same one a reader
+// would have picked out first. Of its four copies (one per edge) take the nearest, i.e.
+// the lowest on screen. "off" leaves nothing to point at.
+function biggestTopPackageLabel(project) {
+  const biggest = topLevelPackages.reduce((a, b) => (!a || b.area > a.area ? b : a), null);
+  if (!biggest) return null;
   let best = null;
-  for (const { mesh } of floorLabelMeshes) {
-    const p = project(mesh.position.x, mesh.position.y, mesh.position.z);
-    if (p.z < 1 && (!best || p.y > best.y)) best = p;
+  // Of the four copies take the one a reader would read: written along the near/far
+  // edge (baseYaw 0), so it runs across the screen rather than up its side, nearest to
+  // the camera, and not hugging the edge of the viewport — a wire ending half
+  // off-screen points at nothing. Each condition relaxes if nothing qualifies.
+  const W = window.innerWidth;
+  for (const [flat, inset] of [[true, 0.12], [false, 0.12], [false, 0]]) {
+    for (const { mesh, baseYaw } of biggest.meshes) {
+      if (flat && baseYaw !== 0) continue;
+      const p = project(mesh.position.x, mesh.position.y, mesh.position.z);
+      if (p.z >= 1 || p.x < W * inset || p.x > W * (1 - inset)) continue;
+      if (!best || p.y > best.y) best = p;
+    }
+    if (best) break;
   }
-  for (const obj of districtLabels) {
+  for (const obj of biggest.tags) {
     const rect = obj.element ? obj.element.getBoundingClientRect() : null;
     if (!rect || !rect.width) continue;
     const p = { x: rect.left + rect.width / 2, y: rect.bottom };
@@ -2602,23 +2647,22 @@ function buildIntro() {
     `fill="${swatch}" stroke="#fff" stroke-width="2.5"/>`
   );
 
-  // Every connector plugs into its selector on the WEST side and is routed down the
-  // panel's left gutter, then out under the panel. Leaving from the bottom edge sent
-  // each wire straight across the selectors *below* it — three lines striking through
-  // the very dropdowns they were not talking about.
+  // Every connector plugs into its selector on the EAST side and leaves the panel
+  // sideways, toward the thing it explains. Leaving from the bottom edge sent each wire
+  // straight across the selectors *below* it — lines striking through the very
+  // dropdowns they were not talking about.
   const panel = document.querySelector(".panel");
-  const panelRect = panel ? panel.getBoundingClientRect() : { left: 8, bottom: H * 0.4 };
-  const gutterX = Math.max(panelRect.left + 6, 8);
-  const exitY = panelRect.bottom + 14;
+  const panelRect = panel ? panel.getBoundingClientRect() : { right: 340 };
+  const exitX = panelRect.right + 16;
   const connector = (rect, target, color) => {
-    const west = { x: rect.left - 3, y: rect.top + rect.height / 2 };
+    const east = { x: rect.right + 3, y: rect.top + rect.height / 2 };
     return [
-      `<path d="M ${west.x.toFixed(1)} ${west.y.toFixed(1)} ` +
-      `C ${gutterX.toFixed(1)} ${west.y.toFixed(1)}, ${gutterX.toFixed(1)} ${exitY.toFixed(1)}, ` +
-      `${(gutterX + 26).toFixed(1)} ${exitY.toFixed(1)} ` +
-      `S ${target.x.toFixed(1)} ${(exitY + 40).toFixed(1)}, ${target.x.toFixed(1)} ${target.y.toFixed(1)}" ` +
+      `<path d="M ${east.x.toFixed(1)} ${east.y.toFixed(1)} ` +
+      `C ${exitX.toFixed(1)} ${east.y.toFixed(1)}, ` +
+      `${((exitX + target.x) / 2).toFixed(1)} ${target.y.toFixed(1)}, ` +
+      `${target.x.toFixed(1)} ${target.y.toFixed(1)}" ` +
       `fill="none" stroke="${color}" stroke-width="2" stroke-dasharray="5 5" opacity="0.65"/>`,
-      `<circle cx="${west.x.toFixed(1)}" cy="${west.y.toFixed(1)}" r="3.5" fill="${color}"/>`,
+      `<circle cx="${east.x.toFixed(1)}" cy="${east.y.toFixed(1)}" r="3.5" fill="${color}"/>`,
       // Selector highlight.
       `<rect x="${rect.left - 4}" y="${rect.top - 4}" width="${rect.width + 8}" height="${rect.height + 8}" ` +
       `rx="8" fill="none" stroke="${color}" stroke-width="2.5"/>`,
@@ -2652,7 +2696,7 @@ function buildIntro() {
   // PACKAGES gets the same treatment, but its "feature" is not on the hero building:
   // it is the package name written on the floor. Wire the dropdown to the lowest one
   // on screen — the nearest, biggest, least ambiguous instance of what it controls.
-  const pkgAnchor = lowestPackageLabelOnScreen(project);
+  const pkgAnchor = biggestTopPackageLabel(project);
   if (pkgLabelSelect && pkgAnchor) {
     const color = "#4338ca";
     parts.push(
