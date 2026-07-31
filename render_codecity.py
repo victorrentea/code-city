@@ -1440,6 +1440,28 @@ let districtStep = 9;   // terrace rise per nesting level: tall enough to separa
 // sizing it by the district's area only said "this package is big", which the plate
 // already says, while making the outer names (victor / training / petclinic) shout.
 const floorLabelBand = () => 13 * cityUnit;
+
+// Streets narrow with depth, like a real city: boulevards between top-level modules,
+// alleys between leaf packages. A flat gap at every level costs a deeply nested tree
+// (org.springframework.a.b.c.d) most of its plate in white gaps.
+const streetFor = node => Math.max(3, districtGap / (1 + node.depth * 0.7));
+
+// The ring a district keeps clear around its children — street and name band in one,
+// on all four edges, so whichever way you orbit a copy of the name faces you.
+//
+// It is charged at EVERY level, so its cost compounds: a fixed 20-unit frame is nothing
+// around a 3000-unit module and most of the tile around a 200-unit package six levels
+// down. Uncapped, that broke the one promise a treemap makes — area IS the metric — and
+// a 7 KB class came out smaller than a 2 KB one nearer the root. So the ring takes at
+// most a share of the tile it frames, and the band reuses the street instead of adding
+// to it. Called with the node's own rect both by the layout and by the label placement,
+// so the name is always drawn in exactly the space that was reserved for it.
+const RING_SHARE = 0.07;   // per side: at worst ~14% of each dimension
+function districtRing(node) {
+  if (node.depth === 0) return streetFor(node);
+  const room = Math.min(node.x1 - node.x0, node.y1 - node.y0);
+  return Math.min(Math.max(streetFor(node), floorLabelBand()), room * RING_SHARE);
+}
 let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
@@ -1801,17 +1823,12 @@ function rebuildCity() {
   // modules, alleys between leaf packages. A flat districtGap at every level costs
   // a deeply nested tree (org.springframework.a.b.c.d) most of its plate in white
   // gaps, which is what made the big city look empty next to Wettel's dense plates.
-  const padOuter = node => Math.max(3, districtGap / (1 + node.depth * 0.7));
-  // The name ring: the same band on all four edges (not the near side only), so the
-  // children sit in a frame the district can write its name into whichever way you
-  // orbit. Not for the root — nothing is written on the bare ground.
-  const padRing = node => padOuter(node) + (node.depth === 0 ? 0 : floorLabelBand(node));
   const layout = d3.treemap()
     .size([cityW, cityD])
-    .paddingTop(padRing)
-    .paddingBottom(padRing)
-    .paddingLeft(padRing)
-    .paddingRight(padRing)
+    .paddingTop(districtRing)
+    .paddingBottom(districtRing)
+    .paddingLeft(districtRing)
+    .paddingRight(districtRing)
     .paddingInner(fileGap)
     .round(true);
   const root = layout(buildHierarchy(areaMetric));
@@ -2171,7 +2188,7 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
     });
   };
   if (mode === "floor") {
-    const band = floorLabelBand(node);
+    const band = districtRing(node);
     if (depth < band + 2 || width < band + 2) return;   // district smaller than its own ring
     // The four edges of the ring the layout reserved around this district's children.
     // Whichever way you orbit, one of them faces you, so the name is always at hand.
