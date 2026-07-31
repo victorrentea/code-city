@@ -1386,6 +1386,12 @@ function filteredDataset() {
   if (changeMode() === "hide") data = data.filter(f => f.changed);
   return data;
 }
+// What the city actually draws: the filtered rows that fall inside the current drill
+// scope. Everything measured about "the city" — its scales, its tile size — is measured
+// on this, so scoping in re-normalises the whole picture.
+function visibleDataset() {
+  return filteredDataset().filter(inScope);
+}
 // Wettel's original CodeCity plate is a landscape rectangle, not a square: a wide
 // city reads better on a 16:9 screen and can be taken in whole from a low, far camera.
 //
@@ -1656,8 +1662,13 @@ function percentile(values, p) {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
 }
 
+// Scales are read off what is ON SCREEN, not off the whole repo: drilled into one
+// package, its own tallest/most-committed file has to reach the top of the height and
+// colour ramps. Judged against the repo's global p95, a quiet package renders as a
+// uniformly short, pale plate — the very comparison you drilled in to make is flattened
+// by files you are no longer looking at.
 function metricMax(key) {
-  return percentile(filteredDataset().map(f => Number(f[key]) || 0), 0.95);
+  return percentile(visibleDataset().map(f => Number(f[key]) || 0), 0.95);
 }
 
 // Density/ratio metrics (per-KLOC) are heavily right-skewed: a few tiny files
@@ -1726,8 +1737,7 @@ function buildHierarchy(areaMetric) {
   // absolute dotted path (needed for further drill-in and hover labels), while the
   // *layout* depth restarts at the scope so a drilled-in package fills the plot.
   const root = { name: "root", packageName: scopePath, children: [] };
-  for (const file of filteredDataset()) {
-    if (!inScope(file)) continue;
+  for (const file of visibleDataset()) {
     insertPackage(root, scopedParts(file), file, areaMetric);
   }
   return d3.hierarchy(root)
@@ -1778,7 +1788,7 @@ function medianFootprint(root) {
 function rebuildCity() {
   clearCity();
   cityTop = 0;                 // tallest building of THIS layout — what frameCity must fit
-  tuneCityToTileSize(filteredDataset().length);   // streets, bands and heights follow the tile
+  tuneCityToTileSize(visibleDataset().length);   // streets, bands and heights follow the tile
   const areaMetric = areaMetricKey();
   const heightMetric = heightMetricKey();
   const colorMetric = colorMetricKey();
