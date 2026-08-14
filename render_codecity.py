@@ -449,6 +449,53 @@ if MOD_TSV.exists():
                 "changed": (mod or ".") in _changed_dirs,   # keyed like the row's path
             })
 
+# ── Coupling edges, per view ─────────────────────────────────────────────────
+# fan_in / fan_out are counts; the "Coupling wires" overlay needs the relation
+# itself, so compute_fanio.py also writes coupling-edges.tsv (source -> target,
+# one row per reference). Here it is folded into an adjacency list keyed exactly
+# like each view's rows, so the same lookup works whether a building is a class,
+# a package or a module. Absent file (an older tool run) => no wires, and the
+# checkbox simply has nothing to draw.
+def _coupling_adjacency():
+    edges_tsv = TSV.with_name("coupling-edges.tsv")
+    if not edges_tsv.exists():
+        return {"classes": {}, "packages": {}, "modules": {}}
+
+    class_paths = {r["path"] for r in rows}
+    # A file's package is its row's district; its module is the deepest module row
+    # whose directory contains it (mirrors build_heatmap's _module, whose result is
+    # what the module rows are keyed by).
+    pkg_of = {r["path"]: r["district"] for r in rows}
+    mod_dirs = sorted((r["path"] for r in mod_rows if r["path"] != "."), key=len, reverse=True)
+
+    def mod_of(path):
+        d = path.rsplit("/", 1)[0] if "/" in path else ""
+        for m in mod_dirs:
+            if d == m or d.startswith(m + "/"):
+                return m
+        return "."
+
+    views = {"classes": {}, "packages": {}, "modules": {}}
+    with edges_tsv.open() as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            src = (row.get("source") or "").lstrip("./")
+            dst = (row.get("target") or "").lstrip("./")
+            # Only edges between two rendered buildings can be drawn.
+            if src not in class_paths or dst not in class_paths or src == dst:
+                continue
+            for view, key in (("classes", lambda p: p),
+                              ("packages", pkg_of.get),
+                              ("modules", mod_of)):
+                a, b = key(src), key(dst)
+                # A package depending on itself is just its own internals: no wire.
+                if a is None or b is None or a == b:
+                    continue
+                views[view].setdefault(a, set()).add(b)
+    return {view: {k: sorted(v) for k, v in sorted(adj.items())} for view, adj in views.items()}
+
+
+COUPLING = _coupling_adjacency()
+
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 html = """<!doctype html>
@@ -552,6 +599,10 @@ html = """<!doctype html>
      it swallows the two checkbox columns so the dropdown keeps the 1fr column and
      therefore the exact width of the metric dropdowns above it. */
   .controls .spanRest { grid-column: 3 / -1; }
+  /* A row whose only control is a checkbox (Coupling): it takes the whole width
+     after the knob, so its wording is free to be a phrase rather than a "/kloc"-
+     sized tag squeezed into a checkbox column. */
+  .controls .spanRow { grid-column: 2 / -1; }
   /* Preset bubbles: ten colours, no words. The label is in the tooltip, because a row
      of ten names would be a menu, and this is meant to be poked at. */
   .presets { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1105,6 +1156,13 @@ html = """<!doctype html>
     </select>
     <span class="spanRest"></span>
 
+    <span class="knob">Coupling</span>
+    <label class="checkbox spanRow" id="couplingWiresLabel"
+           title="Hover a building to trace its dependencies: blue arrows leave it, red arrows arrive.">
+      <input id="couplingWires" type="checkbox" aria-label="coupling wires"> Coupling wires
+      <span id="couplingCount" class="filterCount"></span>
+    </label>
+
     <span class="knob">Changes</span>
     <select id="changeMode" aria-label="change-set filter">
       <option value="off" selected>show everything</option>
@@ -1161,6 +1219,9 @@ const BUILD_CMD = __BUILD_CMD__;
 const HAS_CHANGES = __HAS_CHANGES__;  // any file in the current git change set?
 const CHANGE_SOURCE = __CHANGE_SOURCE__;  // what that change set is a diff OF (PR / commit / working tree)
 const COMMIT_CHOICES = __COMMIT_CHOICES__;   // recent commits that touched rendered code; empty unless the diff came from history
+// Coupling adjacency per view: { classes|packages|modules: { path: [paths it references] } }.
+// Only the outgoing direction is stored; incoming is its transpose, built once per view below.
+const COUPLING = __COUPLING_JSON__;
 
 // The active COLOR metric's p95 scale max, mirrored out of rebuildCity so the
 // hover tooltip's colour-scale marker can place this building on the ramp.
@@ -1257,6 +1318,8 @@ const moduleOpt = document.getElementById("moduleOpt");
 const pkgLabelSelect = document.getElementById("pkgLabelMode");
 const changeSelect = document.getElementById("changeMode");   // off / highlight / hide unchanged
 const changeCountEl = document.getElementById("changeCount");
+const couplingCheck = document.getElementById("couplingWires");   // draw dependency wires on hover
+const couplingCountEl = document.getElementById("couplingCount");
 const filterInput = document.getElementById("pkgFilter");
 const filterClearBtn = document.getElementById("pkgFilterClear");
 const filterCountEl = document.getElementById("pkgFilterCount");
@@ -1274,6 +1337,13 @@ if (changeSelect && !HAS_CHANGES) {
   changeSelect.title = "no files in the current git change set";
 }
 function changeMode() { return changeSelect ? changeSelect.value : "off"; }
+// Nothing to wire up if the tool that produced this page predates coupling-edges.tsv.
+const HAS_COUPLING = Object.values(COUPLING || {}).some(adj => Object.keys(adj).length);
+if (couplingCheck && !HAS_COUPLING) {
+  couplingCheck.disabled = true;
+  couplingCheck.parentElement.classList.add("off");
+  couplingCheck.parentElement.title = "no coupling data in this build (re-run compute_fanio.py)";
+}
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
 // is staring at a delta and needs to know which one. The tag ("commit: a5d03cb")
@@ -1466,6 +1536,7 @@ function districtRing(node) {
 let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
+let buildingByPath = new Map();   // row path -> its building entry (coupling wires resolve targets by path)
 let districts = [];
 let cityLabels = [];
 const MIN_LABEL_ROOF_PX = 26;   // a roof narrower than this on screen doesn't get a name
@@ -1769,6 +1840,7 @@ function buildHierarchy(areaMetric) {
 }
 
 function clearCity() {
+  clearWires();          // they point at meshes this rebuild is about to dispose
   for (const label of cityLabels) {
     label.obj.removeFromParent();
     label.el.remove();
@@ -1787,6 +1859,7 @@ function clearCity() {
     entry.mesh.material.dispose();
   }
   buildings = [];
+  buildingByPath = new Map();
   districts = [];
   districtByName = new Map();
   glowingDistrict = null;
@@ -1939,7 +2012,9 @@ function rebuildCity() {
     mesh.userData.file = file;
     mesh.userData.baseColor = material.color.clone();
     scene.add(mesh);
-    buildings.push({ mesh, file, height, colorValue, maxColor, footprint: Math.min(width, depth) });
+    buildings.push({ mesh, file, height, width, depth, colorValue, maxColor,
+                     footprint: Math.min(width, depth) });
+    buildingByPath.set(file.path, buildings[buildings.length - 1]);
     cityTop = Math.max(cityTop, baseY + height);
   }
   styleForChanges();
@@ -1996,7 +2071,10 @@ const labelStemMaterial = new THREE.LineBasicMaterial({
 });
 
 // Persistent labels show ONLY the class name — every metric lives in the hover now.
-function makeLabel(entry, priority) {
+// `ignoreRoofGate` exempts a name from the "roof too small on screen" cut-off: used
+// for the change set in "highlight changed" mode, where the point is to name as many
+// of the touched blocks as the screen holds, however slim their roofs.
+function makeLabel(entry, priority, ignoreRoofGate) {
   const { x, z } = entry.mesh.position;
   const roofY = entry.mesh.position.y + entry.height / 2;
   const div = document.createElement("div");
@@ -2022,7 +2100,39 @@ function makeLabel(entry, priority) {
     w: _labelMeasure.measureText(entry.file.name).width + 16,   // + .city-label horizontal padding
     h: 22,                    // single line
     footprint: entry.footprint,   // world size of the roof this name belongs to
+    ignoreRoofGate: !!ignoreRoofGate,
   });
+}
+
+// How much building there is: the metric-driven footprint times the metric-driven
+// height. With area and height on two different knobs, neither alone is "the big
+// one" — their product is the block the eye actually reads as massive.
+function blockVolume(entry) {
+  return entry.width * entry.depth * entry.height;
+}
+
+// "highlight changed" is a review view: the reader wants to know WHICH files the diff
+// touched, and the ones worth naming first are the ones the eye already went to — the
+// biggest blocks and the most saturated ones on the colour ramp. So every changed
+// building is a candidate, ranked by that prominence, and updateLabelVisibility then
+// fills the current screen top-down: as many names as fit at this camera, no cap of our
+// own and no roof-size gate (a slim-but-scarlet touched class still gets named).
+function setupChangedLabels() {
+  const changed = buildings.filter(entry => entry.file.changed);
+  if (!changed.length) return;
+  let maxVolume = 0;
+  for (const entry of changed) maxVolume = Math.max(maxVolume, blockVolume(entry));
+  const rank = new Map();
+  for (const entry of changed) {
+    const vol = blockVolume(entry) / (maxVolume || 1);              // 0..1 relative to the biggest touched block
+    const col = colorT(entry.colorValue, entry.maxColor);           // 0..1 position on the light→red ramp
+    // "and/or": leading on EITHER axis is enough to be named early (max), and leading
+    // on both breaks the tie in your favour (the quarter-weighted weaker signal).
+    rank.set(entry, Math.max(vol, col) + 0.25 * Math.min(vol, col));
+  }
+  const ordered = [...changed].sort((a, b) => rank.get(b) - rank.get(a));
+  let priority = 0;
+  for (const entry of ordered) makeLabel(entry, priority++, true);
 }
 
 // Candidate labels: the per-metric standouts (always) plus the tallest buildings, up to a
@@ -2033,9 +2143,8 @@ function setupLabels(areaMetric, heightMetric, colorMetric) {
   // the drained-out buildings would put the reader's attention back on exactly
   // what the mode is trying to push away — and it frees the de-overlap budget so
   // more of the changed names actually surface.
-  const labelPool = changeMode() === "highlight"
-    ? buildings.filter(entry => entry.file.changed)
-    : buildings;
+  if (changeMode() === "highlight") { setupChangedLabels(); return; }
+  const labelPool = buildings;
   const chosen = new Set();
   for (const metric of [areaMetric, heightMetric, colorMetric]) {
     let best = null, bestValue = -Infinity;
@@ -2062,20 +2171,40 @@ function showLabel(L, on) {
   L.stem.visible = on;        // the leader line lives and dies with its name
 }
 
+// Screen rectangles the city labels must stay out of: the opaque chrome drawn over the
+// canvas. Re-measured each frame — the panel grows and shrinks with its own controls.
+function panelBoxes() {
+  const boxes = [];
+  for (const sel of [".panel", "#shortcuts", ".howto-toggle", ".breadcrumb"]) {
+    const el = document.querySelector(sel);
+    if (!el || el.hidden) continue;
+    // Not offsetParent: every one of these is position:fixed, for which it is always
+    // null. An empty rect is the reliable "not laid out" signal here.
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    boxes.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+  }
+  return boxes;
+}
+
 function updateLabelVisibility() {
   if (introEl) {                                  // keep the intro screen clean
     for (const L of cityLabels) showLabel(L, false);
     return;
   }
   const W = window.innerWidth, H = window.innerHeight;
-  const placed = [];
+  // The control panel is opaque and sits on top of the CSS2D layer, so a name landing
+  // under it is spent budget for a label nobody can read. Seeding the de-overlap with
+  // the panel's own rectangle makes the next candidate take that slot instead.
+  const placed = panelBoxes();
   // Pixels a world unit covers at distance d: the gate below turns names off for
   // buildings too small on screen to own one. In a 5000-file city zoomed out that
   // leaves a clean plate (Wettel's originals carry no labels either); zoom in and
   // the names come back as the roofs grow.
   const pxPerUnitAt = H / (2 * Math.tan(camera.fov * Math.PI / 360));
   for (const L of cityLabels) {
-    if (L.footprint * pxPerUnitAt / camera.position.distanceTo(L.obj.position) < MIN_LABEL_ROOF_PX) {
+    if (!L.ignoreRoofGate &&
+        L.footprint * pxPerUnitAt / camera.position.distanceTo(L.obj.position) < MIN_LABEL_ROOF_PX) {
       showLabel(L, false);
       continue;
     }
@@ -2091,6 +2220,167 @@ function updateLabelVisibility() {
     }
     showLabel(L, !clash);
     if (!clash) placed.push(box);
+  }
+}
+
+// ── Coupling wires ───────────────────────────────────────────────────────────
+// With the checkbox on, hovering a building traces the dependency edges it sits on:
+// BLUE arrows leave it (what it references — outgoing coupling, Ce) and RED arrows
+// arrive at it (what references it — incoming coupling, Ca). Hover only: a city with
+// every edge drawn at once is a hairball, and the question a reader actually has is
+// always about one building at a time.
+const WIRE_OUT = 0x1d4ed8;      // blue — outgoing
+const WIRE_IN = 0xdc2626;       // red — incoming
+const WIRE_CAP = 80;            // per direction; a hub with 900 dependants is not readable anyway
+// Tubes, not THREE.Line: WebGL ignores `linewidth`, so a Line is always one physical
+// pixel — over a city plate that reads as a scratch, not as a wire. A swept tube is a
+// real mesh, so it thickens with the zoom like everything else on screen.
+// depthTest off on both: a wire that dives behind a tower is exactly the wire you were
+// trying to follow, and this overlay is an answer to a question, not part of the city.
+const wireMaterials = {
+  out: new THREE.MeshBasicMaterial({ color: WIRE_OUT, transparent: true, opacity: 0.9, depthTest: false }),
+  in: new THREE.MeshBasicMaterial({ color: WIRE_IN, transparent: true, opacity: 0.9, depthTest: false }),
+};
+let wireGroup = null;           // the wires currently drawn (one hovered building's)
+let wiredPath = null;           // whose they are, so a pointermove inside the same roof is free
+const _incomingByView = new Map();   // view name -> transposed adjacency, built on first need
+
+function couplingViewName() { return viewSelect ? viewSelect.value : "classes"; }
+
+function outgoingAdjacency() { return (COUPLING && COUPLING[couplingViewName()]) || {}; }
+
+// Incoming = the transpose of outgoing. Built lazily and kept: the adjacency is a
+// property of the data, not of the camera or the hover.
+function incomingAdjacency() {
+  const view = couplingViewName();
+  let map = _incomingByView.get(view);
+  if (!map) {
+    map = new Map();
+    const out = outgoingAdjacency();
+    for (const src of Object.keys(out)) {
+      for (const dst of out[src]) {
+        if (!map.has(dst)) map.set(dst, []);
+        map.get(dst).push(src);
+      }
+    }
+    _incomingByView.set(view, map);
+  }
+  return map;
+}
+
+function clearWires() {
+  if (wireGroup) {
+    scene.remove(wireGroup);
+    // Materials are the four shared ones above — only the per-wire geometry is ours to free.
+    wireGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    wireGroup = null;
+  }
+  wiredPath = null;
+  if (couplingCountEl) couplingCountEl.textContent = "";
+}
+
+// Where a wire meets a roof. All of them leaving the exact centre knots into an
+// unreadable star the moment a building has more than a handful of peers, so each one
+// leaves (or lands) at the point of the roof slab that FACES its peer: the roof
+// rectangle cut along the horizontal direction to the other building, at 70% of the
+// way out. The bundle then fans around the roof in the directions the couplings
+// actually run — which is itself information, since the city is laid out by package.
+function roofAnchor(entry, towards) {
+  const c = entry.mesh.position;
+  const roofY = c.y + entry.height / 2;
+  let dx = towards.x - c.x, dz = towards.z - c.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return new THREE.Vector3(c.x, roofY, c.z);
+  dx /= len; dz /= len;
+  const reach = Math.min(
+    Math.abs(dx) > 1e-6 ? (entry.width / 2) / Math.abs(dx) : Infinity,
+    Math.abs(dz) > 1e-6 ? (entry.depth / 2) / Math.abs(dz) : Infinity
+  ) * 0.7;
+  return new THREE.Vector3(c.x + dx * reach, roofY, c.z + dz * reach);
+}
+
+// An arc, not a straight line: a chord across a dense skyline disappears into the
+// buildings it crosses. Lifting it over the rooftops keeps both ends visible and makes
+// the direction readable at a glance.
+function wireCurve(a, b) {
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  mid.y = Math.max(a.y, b.y) + a.distanceTo(b) * 0.26 + 16 * cityUnit;
+  return new THREE.QuadraticBezierCurve3(a, mid, b);
+}
+
+// One arrow: the arc plus a cone at the ARRIVING end, so the head says which way the
+// dependency points without the reader having to remember which colour is which.
+const WIRE_RADIUS = 1.15;     // × cityUnit
+const _wireUp = new THREE.Vector3(0, 1, 0);
+function addWire(group, from, to, kind) {
+  const curve = wireCurve(from, to);
+  // Stop the tube short of the tip so the cone is the pointy end, not a bulge on a stick.
+  const headLen = 9 * cityUnit;
+  const shaftEnd = Math.max(0.05, 1 - headLen / Math.max(1e-6, curve.getLength()));
+  // de Casteljau: the sub-curve [0, shaftEnd] of a quadratic Bézier is itself quadratic,
+  // with control point lerp(P0, P1, t) — reusing P1 unchanged would bend the shaft away
+  // from the arc its own arrowhead sits on.
+  const shaftCtrl = curve.v0.clone().lerp(curve.v1, shaftEnd);
+  const shaft = new THREE.Mesh(
+    new THREE.TubeGeometry(
+      new THREE.QuadraticBezierCurve3(curve.v0, shaftCtrl, curve.getPoint(shaftEnd)),
+      24, WIRE_RADIUS * cityUnit, 6, false
+    ),
+    wireMaterials[kind]
+  );
+  shaft.renderOrder = 4;
+  group.add(shaft);
+  const head = new THREE.Mesh(
+    new THREE.ConeGeometry(3 * cityUnit, headLen, 12),
+    wireMaterials[kind]
+  );
+  const dir = curve.getTangent(1).normalize();
+  head.quaternion.setFromUnitVectors(_wireUp, dir);
+  head.position.copy(curve.getPoint(1)).addScaledVector(dir, -headLen / 2);
+  head.renderOrder = 5;
+  group.add(head);
+}
+
+// Draw the wires of one building (or clear them, for `null` / the checkbox being off).
+function showWiresFor(entry) {
+  if (!couplingCheck || !couplingCheck.checked || !entry) {
+    if (wiredPath !== null) clearWires();
+    return;
+  }
+  const path = entry.file.path;
+  if (path === wiredPath) return;         // same building as last frame — nothing to redo
+  clearWires();
+  wiredPath = path;
+
+  const group = new THREE.Group();
+  let drawn = 0, skipped = 0;
+  for (const [kind, peers] of [
+    ["out", outgoingAdjacency()[path] || []],
+    ["in", incomingAdjacency().get(path) || []],
+  ]) {
+    let n = 0;
+    for (const peerPath of peers) {
+      // Peers filtered out, or outside the drilled-into scope, have no building to reach.
+      const peer = buildingByPath.get(peerPath);
+      if (!peer || peer === entry) continue;
+      if (n >= WIRE_CAP) { skipped++; continue; }
+      const here = roofAnchor(entry, peer.mesh.position);
+      const there = roofAnchor(peer, entry.mesh.position);
+      // Blue leaves this roof and lands on the peer; red comes the other way.
+      if (kind === "out") addWire(group, here, there, kind);
+      else addWire(group, there, here, kind);
+      n++; drawn++;
+    }
+  }
+  if (!drawn) {
+    if (couplingCountEl) couplingCountEl.textContent = "no coupling";
+    return;
+  }
+  scene.add(group);
+  wireGroup = group;
+  if (couplingCountEl) {
+    couplingCountEl.textContent = drawn + " wire" + (drawn === 1 ? "" : "s") +
+      (skipped ? " (+" + skipped + " over cap)" : "");
   }
 }
 
@@ -2374,6 +2664,10 @@ function onPointerMove(event) {
   }
   applyExternalHighlight();   // keep the codemap-linked building lit even while moving over the city
   postCityHover(hit && hit.object.userData.file ? hit.object.userData.file.path : null);
+  // Coupling wires follow the same hover as the tooltip (no-op while the box is off).
+  showWiresFor(hit && hit.object.userData.file
+    ? buildingByPath.get(hit.object.userData.file.path)
+    : null);
   let tooltipObj = null;
   let tooltipIsDistrict = false;
   let glowFloor = null;       // platform to light as the would-be drill target
@@ -2974,6 +3268,13 @@ if (changeSelect) changeSelect.addEventListener("change", () => {
   else rebuildCity();
 });
 
+// Coupling wires: nothing to redraw on toggle — the next hover draws them. Turning the
+// box off has to take down whatever is on screen right now, though.
+if (couplingCheck) couplingCheck.addEventListener("change", () => {
+  dismissIntro();
+  if (!couplingCheck.checked) clearWires();
+});
+
 // Package-pattern filter: recompile on every keystroke, flag invalid patterns,
 // reset the drill scope (the visible set changed) and reframe.
 // A suggestion picked from the datalist arrives with its " · 14 classes" tail (the
@@ -3044,7 +3345,13 @@ frameCity();   // open on the whole city, not on a hard-coded viewpoint
 
 // Handle for screenshot/e2e drivers: everything here is module-scoped, so an
 // automated camera pose has no way in otherwise.
-window.codecity = { scene, camera, controls, frameCity, rebuildCity };
+// Getters, not the arrays themselves: every rebuild replaces them, and a driver that
+// grabbed the list once would then be pointing at a city that is no longer on screen.
+window.codecity = {
+  scene, camera, controls, frameCity, rebuildCity,
+  get buildings() { return buildings; },
+  get buildingByPath() { return buildingByPath; },
+};
 
 function animate() {
   controls.update();
@@ -3107,6 +3414,7 @@ html = (html
         .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES & ANALYZED_PATHS)
                                                 if ANALYZED_PATHS else bool(CHANGED_FILES)))
         .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE))
-        .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES)))
+        .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES))
+        .replace("__COUPLING_JSON__", json.dumps(COUPLING)))
 OUT.write_text(html)
 print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")

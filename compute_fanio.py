@@ -8,6 +8,11 @@ Definitions (internal coupling — JDK/3rd-party deps not counted):
 
 Output: /Users/victorrentea/workspace/spring-framework/fanio-per-file.tsv
   file \t fan_in \t fan_out
+
+...and, beside it, the EDGES those two counts are aggregates of:
+  coupling-edges.tsv:  source \t target      (one row per "source references target")
+The counts answer "how coupled is this file"; the edge list answers "to WHAT", which
+is what the Code City needs to draw a dependency wire from a building to its peers.
 """
 import os
 import re
@@ -30,6 +35,7 @@ OUT_DIR = os.path.abspath(os.environ.get("HEATMAP_OUT") or REPO)
 EXTRA_PRUNE = {d for d in os.environ.get("HEATMAP_PRUNE", "").split(",") if d}
 CLASS_TSV = os.path.join(OUT_DIR, "complexity-per-class.tsv")
 OUT = os.path.join(OUT_DIR, "fanio-per-file.tsv")
+EDGES_OUT = os.path.join(OUT_DIR, "coupling-edges.tsv")
 
 PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
 IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?\s*;", re.MULTILINE)
@@ -139,6 +145,17 @@ def main():
         for r in rows:
             f.write(f"{r[0]}\t{r[1]}\t{r[2]}\n")
     print(f"wrote {len(rows)} rows to {OUT}", file=sys.stderr)
+
+    # The same relation, un-aggregated. Sorted so a rebuild of an unchanged repo
+    # produces a byte-identical file and the diff stays about the code.
+    edges = 0
+    with open(EDGES_OUT, "w") as f:
+        f.write("source\ttarget\n")
+        for src_file in sorted(fan_out):
+            for tf in sorted(fan_out[src_file]):
+                f.write(f"{src_file}\t{tf}\n")
+                edges += 1
+    print(f"wrote {edges} edges to {EDGES_OUT}", file=sys.stderr)
 
     # quick sanity report
     top_out = sorted(rows, key=lambda r: r[2], reverse=True)[:5]

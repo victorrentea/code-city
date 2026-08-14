@@ -226,6 +226,76 @@ class RenderCodecityTest(unittest.TestCase):
             # Unchanged buildings are not label candidates in highlight mode.
             self.assertIn("entry.file.changed)", html)
             self.assertIn("const labelPool", html)
+            # ...and among them the order is prominence, not just height: the biggest
+            # block and the hottest colour of the diff get named first.
+            self.assertIn("function setupChangedLabels", html)
+            self.assertIn("function blockVolume", html)
+            self.assertIn("Math.max(vol, col) + 0.25 * Math.min(vol, col)", html)
+            self.assertIn("makeLabel(entry, priority++, true)", html)   # exempt from the roof-size gate
+            self.assertIn("if (!L.ignoreRoofGate &&", html)
+            # "as many as fit on the screen" excludes the space under the opaque panel.
+            self.assertIn("function panelBoxes", html)
+            self.assertIn("const placed = panelBoxes();", html)
+
+    def test_coupling_wires(self):
+        """The Coupling-wires overlay: a checkbox in the panel, and the dependency
+        EDGES (not just the fan-in/out counts) baked in, folded per view."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+
+            self.assertIn('id="couplingWires"', html)
+            self.assertIn("Coupling wires", html)
+            self.assertIn("const COUPLING =", html)
+            self.assertIn("function showWiresFor", html)
+            self.assertIn("function roofAnchor", html)
+            self.assertIn("function incomingAdjacency", html)
+            # Blue leaves, red arrives.
+            self.assertIn("const WIRE_OUT = 0x1d4ed8", html)
+            self.assertIn("const WIRE_IN = 0xdc2626", html)
+            # Tubes, not THREE.Line: WebGL clamps line width to one pixel.
+            self.assertIn("THREE.TubeGeometry", html)
+            self.assertIn("THREE.ConeGeometry", html)
+
+            coupling = json.loads(
+                re.search(r"const COUPLING = (\{.*?\});\n", html, re.S).group(1)
+            )
+            classes = coupling["classes"]
+            self.assertTrue(classes, "the fixture's edges should reach the page")
+            rest = "petclinic-backend/src/main/java/victor/training/petclinic/rest"
+            domain = "petclinic-backend/src/main/java/victor/training/petclinic/domain"
+            self.assertIn(f"{domain}/Owner.java", classes[f"{rest}/OwnerRestController.java"])
+            # Folded up to packages, and self-edges (a package's own internals) dropped.
+            packages = coupling["packages"]
+            self.assertIn("victor.training.petclinic.domain",
+                          packages["victor.training.petclinic.rest"])
+            for src, targets in packages.items():
+                self.assertNotIn(src, targets, "a package must not wire to itself")
+
+    def test_coupling_wires_absent_without_the_edge_file(self):
+        """A codemap.tsv from an older tool run has no coupling-edges.tsv beside it:
+        the page still renders, with the checkbox greyed out rather than broken."""
+        with tempfile.TemporaryDirectory() as tmp:
+            solo = Path(tmp) / "codemap.tsv"
+            solo.write_text(SAMPLE_TSV.read_text())
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+            coupling = json.loads(
+                re.search(r"const COUPLING = (\{.*?\});\n", html, re.S).group(1)
+            )
+            self.assertEqual({"classes": {}, "packages": {}, "modules": {}}, coupling)
+            self.assertIn("const HAS_COUPLING =", html)
+            self.assertIn("couplingCheck.disabled = true", html)
 
     def test_change_set_auto_detects_pr_branch(self):
         """With NO config, a feature branch is recognised as a PR and its whole

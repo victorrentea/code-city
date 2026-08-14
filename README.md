@@ -57,14 +57,14 @@ unsetting `HEATMAP_OPEN_IN`.
 | `commits` | non-merge commits that touched the file (full history) |
 | `bug_commits` | of those, commits whose subject is a Conventional-Commit `fix:` |
 | `cognitive_complexity` | Sonar-style cognitive complexity (tree-sitter, summed over methods) |
-| `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only) |
+| `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, which is what the Coupling-wires overlay draws |
 
 ## Pipeline
 
 | Step | Script | Produces |
 | --- | --- | --- |
 | 1 | `compute_complexity.py` | `complexity-per-{class,file}.tsv` |
-| 2 | `compute_fanio.py` | `fanio-per-file.tsv` |
+| 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (the edges those counts aggregate) |
 | 3 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) |
 | 4 | `render_heatmap.py` | `codemap.html` |
 | 5 | `render_codecity.py` | `codecity.html` |
@@ -116,6 +116,7 @@ visual axes read as independent choices rather than one wide toolbar:
 | `AREA` / `HEIGHT` / `COLOR` | the metric on that axis, plus a **`/kloc`** checkbox that swaps a raw count for its density twin (complexity, commits, bugfixes). Where no density exists the checkbox greys out instead of disappearing, so the rows keep their shape. Colour also carries **`lg`**, the log-vs-linear ramp: it ticks itself to what the chosen metric wants and remembers your override per metric for the session. |
 | `ZOOM TO` | drill into one package by name, with autocomplete over every package in the current lens — the typed form of shift-clicking a floor. |
 | `PACKAGES` | package-name style: floating tags, on the floor, or off. |
+| `COUPLING` | **Coupling wires** — hovering a building traces the dependency edges it sits on (below). |
 | `CHANGES` | the change-set filter (below). |
 
 Whatever one metric dropdown shows is greyed out in the other two — spending two of the
@@ -125,8 +126,14 @@ city's three channels on the same number says nothing twice.
 *current git change set*, baked in when the page is generated. Three modes:
 
 1. **show everything** — the normal city (default).
-2. **highlight changed** — unchanged buildings drain to grey and drop to 50% opacity;
-    changed buildings keep their full colour and get a thick black border so they pop.
+2. **highlight changed** — unchanged buildings drain to grey and drop to 50% opacity,
+    so the change set holds the only real colour on screen. It is also the only mode
+    that **names** buildings: every changed building becomes a label candidate, ranked
+    by how much of it the eye already caught — its **volume** (footprint × height) and
+    its **intensity** on the colour ramp, whichever of the two is stronger — and the
+    screen is then filled top-down with as many of those names as actually fit at the
+    current camera (the "roof too small to own a name" gate is waived here, and the
+    control panel's own rectangle counts as taken, so no name hides under it).
 3. **only changed** — unchanged buildings are removed from the layout entirely, so the
     treemap collapses to just the change set.
 
@@ -177,6 +184,29 @@ combo, which links to it on GitHub. Each entry carries its change scope pre-comp
 the three key spaces the datasets use — file path, dotted package, module dir — so
 switching is a `Set` lookup per row and the Classes / Packages / Modules lenses all stay
 correct without re-deriving any path logic in the browser.
+
+**Coupling wires:** the `COUPLING` checkbox turns hovering into a dependency query. With
+it on, the hovered building grows a bundle of arrows: **blue leaving it** (what it
+references — outgoing coupling, `Ce`) and **red arriving at it** (what references it —
+incoming coupling, `Ca`). Everything else about the city stays as it was; nothing is
+drawn until you hover, because a city with every edge on screen at once is a hairball
+and the question is always about one building at a time.
+
+Three details make the bundle readable:
+
+- Wires **do not all meet at the roof's centre**. Each one leaves (or lands) at the point
+  of the roof slab that faces its peer, so the bundle fans out around the roof in the
+  directions the couplings actually run — which is itself information, the city being
+  laid out by package.
+- They are **arcs over the skyline**, not chords through it: a straight line between two
+  roofs disappears into the towers it crosses.
+- They are **tubes, not lines**. WebGL clamps `linewidth` to one physical pixel, which
+  over a city plate reads as a scratch; a swept tube thickens with the zoom.
+
+The edges come from `coupling-edges.tsv` and are baked into the page **per lens** — class
+→ class, package → package, module → module — with a level's internal edges dropped, so a
+package never wires to itself. A build whose `codemap.tsv` has no `coupling-edges.tsv`
+beside it (an older run of the tool) renders normally with the checkbox greyed out.
 
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the
