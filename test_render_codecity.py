@@ -238,7 +238,7 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("const placed = panelBoxes();", html)
 
     def test_coupling_wires(self):
-        """The Coupling-wires overlay: a checkbox in the panel, and the dependency
+        """The coupling overlay: held on the Alt key (no checkbox), with the dependency
         EDGES (not just the fan-in/out counts) baked in, folded per view."""
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -249,8 +249,14 @@ class RenderCodecityTest(unittest.TestCase):
             )
             html = (Path(tmp) / "codecity.html").read_text()
 
-            self.assertIn('id="couplingWires"', html)
-            self.assertIn("Coupling wires", html)
+            # Held, not toggled: the checkbox is gone, ⌥ drives it.
+            self.assertNotIn('id="couplingWires"', html)
+            self.assertIn('const WIRE_KEY = "altKey"', html)
+            self.assertIn("function onWireKey", html)
+            self.assertIn('window.addEventListener("keydown", onWireKey)', html)
+            self.assertIn('window.addEventListener("keyup", onWireKey)', html)
+            self.assertIn("if (!wireKeyDown || !entry)", html)
+            self.assertIn('id="wireHint"', html)              # ...and the only hint it exists
             self.assertIn("const COUPLING =", html)
             self.assertIn("function showWiresFor", html)
             self.assertIn("function roofAnchor", html)
@@ -261,6 +267,12 @@ class RenderCodecityTest(unittest.TestCase):
             # Tubes, not THREE.Line: WebGL clamps line width to one pixel.
             self.assertIn("THREE.TubeGeometry", html)
             self.assertIn("THREE.ConeGeometry", html)
+            # Dot at the roof it leaves, cone at the roof it arrives at.
+            self.assertIn("THREE.SphereGeometry", html)
+            # Occluded by the skyline like a real cable, not floating over it.
+            self.assertNotIn("depthTest: false })", html.split("const wireMaterials")[1][:400])
+            # A capped or filtered-down bundle owns up to it in the tooltip.
+            self.assertIn("function wireNote", html)
 
             coupling = json.loads(
                 re.search(r"const COUPLING = (\{.*?\});\n", html, re.S).group(1)
@@ -295,7 +307,8 @@ class RenderCodecityTest(unittest.TestCase):
             )
             self.assertEqual({"classes": {}, "packages": {}, "modules": {}}, coupling)
             self.assertIn("const HAS_COUPLING =", html)
-            self.assertIn("couplingCheck.disabled = true", html)
+            # No edges => the ⌥ hint never shows, so nothing advertises a dead key.
+            self.assertIn("if (wireHintEl && HAS_COUPLING) wireHintEl.hidden = false", html)
 
     def test_change_set_auto_detects_pr_branch(self):
         """With NO config, a feature branch is recognised as a PR and its whole

@@ -599,10 +599,6 @@ html = """<!doctype html>
      it swallows the two checkbox columns so the dropdown keeps the 1fr column and
      therefore the exact width of the metric dropdowns above it. */
   .controls .spanRest { grid-column: 3 / -1; }
-  /* A row whose only control is a checkbox (Coupling): it takes the whole width
-     after the knob, so its wording is free to be a phrase rather than a "/kloc"-
-     sized tag squeezed into a checkbox column. */
-  .controls .spanRow { grid-column: 2 / -1; }
   /* Preset bubbles: ten colours, no words. The label is in the tooltip, because a row
      of ten names would be a menu, and this is meant to be poked at. */
   .presets { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1070,6 +1066,7 @@ html = """<!doctype html>
   Shift-click a floor/building to zoom in<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
+  <span id="wireHint" hidden><br>Hold &#8997; Alt over a building to trace its coupling</span>
 </aside>
 <section class="panel">
   <h1>__LOGO_SVG__<span>__TITLE__</span><select id="viewMode" class="titleView"
@@ -1155,13 +1152,6 @@ html = """<!doctype html>
       <option value="off">off</option>
     </select>
     <span class="spanRest"></span>
-
-    <span class="knob">Coupling</span>
-    <label class="checkbox spanRow" id="couplingWiresLabel"
-           title="Hover a building to trace its dependencies: blue arrows leave it, red arrows arrive.">
-      <input id="couplingWires" type="checkbox" aria-label="coupling wires"> Coupling wires
-      <span id="couplingCount" class="filterCount"></span>
-    </label>
 
     <span class="knob">Changes</span>
     <select id="changeMode" aria-label="change-set filter">
@@ -1318,8 +1308,6 @@ const moduleOpt = document.getElementById("moduleOpt");
 const pkgLabelSelect = document.getElementById("pkgLabelMode");
 const changeSelect = document.getElementById("changeMode");   // off / highlight / hide unchanged
 const changeCountEl = document.getElementById("changeCount");
-const couplingCheck = document.getElementById("couplingWires");   // draw dependency wires on hover
-const couplingCountEl = document.getElementById("couplingCount");
 const filterInput = document.getElementById("pkgFilter");
 const filterClearBtn = document.getElementById("pkgFilterClear");
 const filterCountEl = document.getElementById("pkgFilterCount");
@@ -1337,13 +1325,13 @@ if (changeSelect && !HAS_CHANGES) {
   changeSelect.title = "no files in the current git change set";
 }
 function changeMode() { return changeSelect ? changeSelect.value : "off"; }
-// Nothing to wire up if the tool that produced this page predates coupling-edges.tsv.
+// Nothing to trace if the tool that produced this page predates coupling-edges.tsv —
+// then ⌥ simply does nothing, and the hint that advertises it is not shown.
 const HAS_COUPLING = Object.values(COUPLING || {}).some(adj => Object.keys(adj).length);
-if (couplingCheck && !HAS_COUPLING) {
-  couplingCheck.disabled = true;
-  couplingCheck.parentElement.classList.add("off");
-  couplingCheck.parentElement.title = "no coupling data in this build (re-run compute_fanio.py)";
-}
+// A held modifier is invisible until someone tells you it exists — this is the only
+// affordance the overlay has now that there is no checkbox to see.
+const wireHintEl = document.getElementById("wireHint");
+if (wireHintEl && HAS_COUPLING) wireHintEl.hidden = false;
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
 // is staring at a delta and needs to know which one. The tag ("commit: a5d03cb")
@@ -2224,25 +2212,34 @@ function updateLabelVisibility() {
 }
 
 // ── Coupling wires ───────────────────────────────────────────────────────────
-// With the checkbox on, hovering a building traces the dependency edges it sits on:
+// HOLD ⌥/Alt and the building under the cursor traces the dependency edges it sits on:
 // BLUE arrows leave it (what it references — outgoing coupling, Ce) and RED arrows
-// arrive at it (what references it — incoming coupling, Ca). Hover only: a city with
-// every edge drawn at once is a hairball, and the question a reader actually has is
-// always about one building at a time.
+// arrive at it (what references it — incoming coupling, Ca). Held, not toggled: this is
+// a question you ask of one building for a second, not a layer you leave switched on —
+// and a city with every edge drawn at once is a hairball anyway. Release and it is gone,
+// so it costs nothing to try and there is no checkbox to remember you left ticked.
+const WIRE_KEY = "altKey";
 const WIRE_OUT = 0x1d4ed8;      // blue — outgoing
 const WIRE_IN = 0xdc2626;       // red — incoming
 const WIRE_CAP = 80;            // per direction; a hub with 900 dependants is not readable anyway
 // Tubes, not THREE.Line: WebGL ignores `linewidth`, so a Line is always one physical
 // pixel — over a city plate that reads as a scratch, not as a wire. A swept tube is a
 // real mesh, so it thickens with the zoom like everything else on screen.
-// depthTest off on both: a wire that dives behind a tower is exactly the wire you were
-// trying to follow, and this overlay is an answer to a question, not part of the city.
+// Opaque and depth-tested, so a wire passing behind a tower is CUT by it exactly like a
+// real cable would be. That occlusion is what puts the arc in the city rather than on a
+// pane of glass in front of it: which buildings a dependency flies over, and how far
+// away its far end really is, only become legible once the skyline can hide part of it.
 const wireMaterials = {
-  out: new THREE.MeshBasicMaterial({ color: WIRE_OUT, transparent: true, opacity: 0.9, depthTest: false }),
-  in: new THREE.MeshBasicMaterial({ color: WIRE_IN, transparent: true, opacity: 0.9, depthTest: false }),
+  out: new THREE.MeshBasicMaterial({ color: WIRE_OUT }),
+  in: new THREE.MeshBasicMaterial({ color: WIRE_IN }),
 };
 let wireGroup = null;           // the wires currently drawn (one hovered building's)
 let wiredPath = null;           // whose they are, so a pointermove inside the same roof is free
+let wireKeyDown = false;        // is ⌥ held right now?
+// How many wires the last draw actually put on screen per direction, vs how many peers
+// were there to draw: the hover tooltip says so on the coupling lines, so a capped or
+// filtered-down bundle never passes for the whole truth.
+const wireStatus = { out: null, in: null };
 const _incomingByView = new Map();   // view name -> transposed adjacency, built on first need
 
 function couplingViewName() { return viewSelect ? viewSelect.value : "classes"; }
@@ -2276,7 +2273,7 @@ function clearWires() {
     wireGroup = null;
   }
   wiredPath = null;
-  if (couplingCountEl) couplingCountEl.textContent = "";
+  wireStatus.out = wireStatus.in = null;
 }
 
 // Where a wire meets a roof. All of them leaving the exact centre knots into an
@@ -2300,20 +2297,30 @@ function roofAnchor(entry, towards) {
 }
 
 // An arc, not a straight line: a chord across a dense skyline disappears into the
-// buildings it crosses. Lifting it over the rooftops keeps both ends visible and makes
-// the direction readable at a glance.
+// buildings it crosses. The loop is deliberately tall — high enough that its apex clears
+// the towers between the two ends, so most of the wire is read against the sky and only
+// its ends dive back down into the city. A shallow arc reads as a scribble on the plate;
+// a tall one reads as a span between two points, which is what it is.
 function wireCurve(a, b) {
   const mid = a.clone().add(b).multiplyScalar(0.5);
-  mid.y = Math.max(a.y, b.y) + a.distanceTo(b) * 0.26 + 16 * cityUnit;
+  mid.y = Math.max(a.y, b.y) + a.distanceTo(b) * 0.42 + 26 * cityUnit;
   return new THREE.QuadraticBezierCurve3(a, mid, b);
 }
 
-// One arrow: the arc plus a cone at the ARRIVING end, so the head says which way the
-// dependency points without the reader having to remember which colour is which.
+// One arrow: a dot at the roof it LEAVES, the arc, and a cone at the roof it ARRIVES at.
+// Colour alone can't say which end is which (both ends of a red wire touch a roof); the
+// dot–arc–head grammar can, and it survives the arc being half-hidden behind a tower.
 const WIRE_RADIUS = 1.15;     // × cityUnit
 const _wireUp = new THREE.Vector3(0, 1, 0);
 function addWire(group, from, to, kind) {
   const curve = wireCurve(from, to);
+  const dot = new THREE.Mesh(
+    new THREE.SphereGeometry(2.6 * cityUnit, 12, 8),
+    wireMaterials[kind]
+  );
+  // Lifted off the slab by its own radius: sunk to the roof plane it z-fights with it.
+  dot.position.copy(from).addScaledVector(_wireUp, 1.6 * cityUnit);
+  group.add(dot);
   // Stop the tube short of the tip so the cone is the pointy end, not a bulge on a stick.
   const headLen = 9 * cityUnit;
   const shaftEnd = Math.max(0.05, 1 - headLen / Math.max(1e-6, curve.getLength()));
@@ -2328,7 +2335,6 @@ function addWire(group, from, to, kind) {
     ),
     wireMaterials[kind]
   );
-  shaft.renderOrder = 4;
   group.add(shaft);
   const head = new THREE.Mesh(
     new THREE.ConeGeometry(3 * cityUnit, headLen, 12),
@@ -2337,13 +2343,12 @@ function addWire(group, from, to, kind) {
   const dir = curve.getTangent(1).normalize();
   head.quaternion.setFromUnitVectors(_wireUp, dir);
   head.position.copy(curve.getPoint(1)).addScaledVector(dir, -headLen / 2);
-  head.renderOrder = 5;
   group.add(head);
 }
 
-// Draw the wires of one building (or clear them, for `null` / the checkbox being off).
+// Draw the wires of one building — or clear them, for `null` / ⌥ not being held.
 function showWiresFor(entry) {
-  if (!couplingCheck || !couplingCheck.checked || !entry) {
+  if (!wireKeyDown || !entry) {
     if (wiredPath !== null) clearWires();
     return;
   }
@@ -2353,17 +2358,18 @@ function showWiresFor(entry) {
   wiredPath = path;
 
   const group = new THREE.Group();
-  let drawn = 0, skipped = 0;
+  let drawn = 0;
   for (const [kind, peers] of [
     ["out", outgoingAdjacency()[path] || []],
     ["in", incomingAdjacency().get(path) || []],
   ]) {
-    let n = 0;
+    let reachable = 0, n = 0;
     for (const peerPath of peers) {
       // Peers filtered out, or outside the drilled-into scope, have no building to reach.
       const peer = buildingByPath.get(peerPath);
       if (!peer || peer === entry) continue;
-      if (n >= WIRE_CAP) { skipped++; continue; }
+      reachable++;
+      if (n >= WIRE_CAP) continue;
       const here = roofAnchor(entry, peer.mesh.position);
       const there = roofAnchor(peer, entry.mesh.position);
       // Blue leaves this roof and lands on the peer; red comes the other way.
@@ -2371,17 +2377,12 @@ function showWiresFor(entry) {
       else addWire(group, there, here, kind);
       n++; drawn++;
     }
+    // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
+    wireStatus[kind] = { drawn: n, reachable };
   }
-  if (!drawn) {
-    if (couplingCountEl) couplingCountEl.textContent = "no coupling";
-    return;
-  }
+  if (!drawn) return;
   scene.add(group);
   wireGroup = group;
-  if (couplingCountEl) {
-    couplingCountEl.textContent = drawn + " wire" + (drawn === 1 ? "" : "s") +
-      (skipped ? " (+" + skipped + " over cap)" : "");
-  }
 }
 
 // ── Package-name labels (two switchable styles) ──────────────────────────────
@@ -2630,10 +2631,24 @@ function formatHover(file) {
       label += ` <span class="perkloc">(${subVal} / KLOC)</span>`;
       on = on || active.has(p.sub);
     }
+    label += wireNote(p.key);
     items.push(`<li class="${on ? "on" : ""}"><span>${label}</span>${marksFor(file, p.key, p.sub)}</li>`);
   }
   // Identity header (class / folder / package) on top, metrics list below.
   return hoverHeaderForFile(file) + `<ul class="props">${items.join("")}</ul>`;
+}
+
+// While ⌥ is tracing this building, the two coupling lines say how much of that number is
+// actually on screen as a wire. Two ways it can be less than the metric: peers hidden by
+// the filter or the drill scope have no building to reach, and past WIRE_CAP we stop
+// drawing. Silence here would let a bundle of 80 pass for a fan-out of 300.
+function wireNote(key) {
+  const status = key === "fan_out" ? wireStatus.out : key === "fan_in" ? wireStatus.in : null;
+  if (!status || !status.reachable) return "";
+  const drawn = status.drawn === status.reachable
+    ? `${status.drawn} wire${status.drawn === 1 ? "" : "s"}`
+    : `${status.drawn} of ${status.reachable} drawn`;
+  return ` <span class="perkloc">(&#8997; ${drawn})</span>`;
 }
 
 function formatDistrictHover(district) {
@@ -2645,6 +2660,19 @@ function formatDistrictHover(district) {
     `<ul class="props"><li><span>Java files: <b>${count}</b></span></li></ul>`;
 }
 
+let lastPointerEvent = null;   // the most recent hover, replayed when ⌥ goes down or up
+
+// ⌥ pressed or released with the mouse parked: no pointer event will come, so re-run the
+// last one. `repeat` keydowns while it is held would redo the same work every ~30 ms.
+function onWireKey(event) {
+  if (event.key !== "Alt" || event.repeat) return;
+  const down = event.type === "keydown";
+  if (down === wireKeyDown) return;
+  wireKeyDown = down;
+  if (lastPointerEvent) onPointerMove(lastPointerEvent);
+  else if (!down) clearWires();
+}
+
 function onPointerMove(event) {
   // Promote a press into a drag once the pointer travels beyond a small threshold,
   // so a plain click (which does nothing here) never flashes the 4-way move cursor.
@@ -2652,11 +2680,16 @@ function onPointerMove(event) {
       Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y) > 3) {
     isDragging = true;
   }
+  // Same object back = onWireKey replaying this hover, in which case the event's own
+  // stale modifier flags must NOT overwrite the ⌥ state that triggered the replay.
+  const replay = event === lastPointerEvent;
+  lastPointerEvent = event;           // so a modifier press can replay this hover
   if (introEl) {                      // keep the intro uncluttered: no hover tooltips while it is up
     hover.classList.remove("visible");
     applyCursor(event);
     return;
   }
+  if (!replay) wireKeyDown = !!event[WIRE_KEY];   // a fresh pointer event is the truth about ⌥
   const navKey = event[NAV_KEY] && !event.metaKey && !event.ctrlKey && !event.altKey;
   const hit = pickBuilding(event);
   for (const entry of buildings) {
@@ -2664,7 +2697,7 @@ function onPointerMove(event) {
   }
   applyExternalHighlight();   // keep the codemap-linked building lit even while moving over the city
   postCityHover(hit && hit.object.userData.file ? hit.object.userData.file.path : null);
-  // Coupling wires follow the same hover as the tooltip (no-op while the box is off).
+  // Coupling wires follow the same hover as the tooltip (no-op unless ⌥ is held).
   showWiresFor(hit && hit.object.userData.file
     ? buildingByPath.get(hit.object.userData.file.path)
     : null);
@@ -3268,13 +3301,6 @@ if (changeSelect) changeSelect.addEventListener("change", () => {
   else rebuildCity();
 });
 
-// Coupling wires: nothing to redraw on toggle — the next hover draws them. Turning the
-// box off has to take down whatever is on screen right now, though.
-if (couplingCheck) couplingCheck.addEventListener("change", () => {
-  dismissIntro();
-  if (!couplingCheck.checked) clearWires();
-});
-
 // Package-pattern filter: recompile on every keystroke, flag invalid patterns,
 // reset the drill scope (the visible set changed) and reframe.
 // A suggestion picked from the datalist arrives with its " · 14 classes" tail (the
@@ -3319,6 +3345,15 @@ window.addEventListener("pointerup", onPointerUp);
 window.addEventListener("pointercancel", onPointerUp);
 window.addEventListener("keydown", applyCursor);
 window.addEventListener("keyup", applyCursor);
+// ⌥ is a modifier, so it fires no pointer event: pressing or releasing it while the
+// cursor sits still has to replay the last hover by hand, or the wires would only appear
+// after you jiggle the mouse. Replaying the whole pointermove (not just the wire call)
+// keeps the tooltip, cursor and wires derived from one code path.
+window.addEventListener("keydown", onWireKey);
+window.addEventListener("keyup", onWireKey);
+// Alt-Tabbing away releases the key somewhere we never hear about; without this the
+// wires would still be hanging in the city when you come back.
+window.addEventListener("blur", () => { wireKeyDown = false; clearWires(); });
 window.addEventListener("blur", () => { pointerIsDown = false; isDragging = false; renderer.domElement.style.cursor = "default"; });
 window.addEventListener("dblclick", onDoubleClick);
 window.addEventListener("click", onSceneClick);

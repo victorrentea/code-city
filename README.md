@@ -93,7 +93,7 @@ seen from higher up. That is also the honest picture: it IS the same city with m
   one monster class doesn't spike the whole skyline;
 - **streets narrow with nesting depth** — boulevards between top-level modules, alleys
   between leaf packages, instead of one flat gap that eats a deep tree's plate;
-- a class **name appears only once its roof is ≥ 26 px on screen**, so a huge city
+- a class **name appears only once its roof is ≥ 26 px on screen** (waived in *highlight changed*), so a huge city
   zoomed out is a clean plate and the names come back as you zoom in;
 - **package names are written flat on their own floor**, in a margin the treemap
   *reserves* on all four edges of every district, and written into each of them — so
@@ -116,7 +116,6 @@ visual axes read as independent choices rather than one wide toolbar:
 | `AREA` / `HEIGHT` / `COLOR` | the metric on that axis, plus a **`/kloc`** checkbox that swaps a raw count for its density twin (complexity, commits, bugfixes). Where no density exists the checkbox greys out instead of disappearing, so the rows keep their shape. Colour also carries **`lg`**, the log-vs-linear ramp: it ticks itself to what the chosen metric wants and remembers your override per metric for the session. |
 | `ZOOM TO` | drill into one package by name, with autocomplete over every package in the current lens — the typed form of shift-clicking a floor. |
 | `PACKAGES` | package-name style: floating tags, on the floor, or off. |
-| `COUPLING` | **Coupling wires** — hovering a building traces the dependency edges it sits on (below). |
 | `CHANGES` | the change-set filter (below). |
 
 Whatever one metric dropdown shows is greyed out in the other two — spending two of the
@@ -185,28 +184,46 @@ the three key spaces the datasets use — file path, dotted package, module dir 
 switching is a `Set` lookup per row and the Classes / Packages / Modules lenses all stay
 correct without re-deriving any path logic in the browser.
 
-**Coupling wires:** the `COUPLING` checkbox turns hovering into a dependency query. With
-it on, the hovered building grows a bundle of arrows: **blue leaving it** (what it
-references — outgoing coupling, `Ce`) and **red arriving at it** (what references it —
-incoming coupling, `Ca`). Everything else about the city stays as it was; nothing is
-drawn until you hover, because a city with every edge on screen at once is a hairball
-and the question is always about one building at a time.
+**Coupling wires:** **hold ⌥ / Alt** over a building and it grows a bundle of arrows:
+**blue leaving it** (what it references — outgoing coupling, `Ce`) and **red arriving at
+it** (what references it — incoming coupling, `Ca`). Release and they are gone. Held
+rather than toggled, because this is a question you ask of one building for a second, not
+a layer you leave switched on — it costs nothing to try, and there is no checkbox to
+remember you ticked. (It works with the mouse parked: pressing the key replays the hover.)
 
-Three details make the bundle readable:
+Four details make the bundle readable:
 
+- Every arrow has a **dot at the roof it leaves** and a **head at the roof it arrives
+  at**. Colour alone cannot say which end is which — both ends of a red wire touch a roof
+  — and the dot/head grammar survives the middle of the arc being hidden.
 - Wires **do not all meet at the roof's centre**. Each one leaves (or lands) at the point
   of the roof slab that faces its peer, so the bundle fans out around the roof in the
   directions the couplings actually run — which is itself information, the city being
   laid out by package.
-- They are **arcs over the skyline**, not chords through it: a straight line between two
-  roofs disappears into the towers it crosses.
-- They are **tubes, not lines**. WebGL clamps `linewidth` to one physical pixel, which
-  over a city plate reads as a scratch; a swept tube thickens with the zoom.
+- They are **tall arcs**, high enough to clear the towers between their two ends, so most
+  of a wire is read against the sky and only its ends dive into the city.
+- They are **opaque, depth-tested tubes**. Tubes because WebGL clamps `linewidth` to one
+  physical pixel, which over a city plate reads as a scratch. Depth-tested because a wire
+  passing behind a tower should be *cut* by it, exactly like a real cable: that occlusion
+  is what puts the arc **in** the city rather than on a pane of glass in front of it, and
+  it is how you read which buildings a dependency flies over and how far away its far end
+  really is.
+
+The two coupling lines in the hover tooltip say how many wires are actually on screen
+(`outgoing coupling (fan out): 17 (⌥ 17 wires)`). It reads `12 of 40 drawn` when peers are
+hidden by the filter or the drill scope, or when the per-direction cap of 80 kicks in — a
+bundle must never pass for the whole number above it.
 
 The edges come from `coupling-edges.tsv` and are baked into the page **per lens** — class
 → class, package → package, module → module — with a level's internal edges dropped, so a
 package never wires to itself. A build whose `codemap.tsv` has no `coupling-edges.tsv`
-beside it (an older run of the tool) renders normally with the checkbox greyed out.
+beside it (an older run of the tool) renders normally, and ⌥ simply does nothing.
+
+**What is not an edge.** `compute_fanio.py` finds same-package references by scanning the
+file for sibling class names, so comments and string literals are **blanked out first**: a
+`{@link SpecialtyRestController}` in a Javadoc block is a cross-reference for a human
+reader, not a compile-time dependency, and counting it both inflates `fan_out` and draws a
+wire between two classes that never call each other.
 
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the

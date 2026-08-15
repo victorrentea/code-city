@@ -37,6 +37,53 @@ CLASS_TSV = os.path.join(OUT_DIR, "complexity-per-class.tsv")
 OUT = os.path.join(OUT_DIR, "fanio-per-file.tsv")
 EDGES_OUT = os.path.join(OUT_DIR, "coupling-edges.tsv")
 
+def strip_comments_and_strings(src):
+    """Java source with every comment and string literal blanked out (newlines kept, so
+    line-anchored regexes still line up).
+
+    A `{@link SpecialtyRestController}` in a Javadoc block is a cross-reference for a
+    human reader, NOT a compile-time dependency — counting it inflates fan-out and, worse,
+    draws a coupling wire between two classes that never call each other. Same for a name
+    that only appears inside a string literal or a commented-out line. The sibling scan
+    below is a plain regex over the file, so the only place to draw that line is here.
+
+    Written as a scanner rather than a regex because the cases nest the wrong way round:
+    `"http://x"` is a string, not a comment, and `// says "hi` is a comment with an
+    unterminated string in it.
+    """
+    out = []
+    i, n = 0, len(src)
+    while i < n:
+        ch = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if ch == "/" and nxt == "/":
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif ch == "/" and nxt == "*":
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append("".join(c if c == "\n" else " " for c in src[i:j]))
+            i = j
+        elif src.startswith('"""', i):                     # text block (Java 15+)
+            j = src.find('"""', i + 3)
+            j = n if j < 0 else j + 3
+            out.append("".join(c if c == "\n" else " " for c in src[i:j]))
+            i = j
+        elif ch in "\"'":
+            j = i + 1
+            while j < n and src[j] != ch:
+                j += 2 if src[j] == "\\" else 1
+            j = min(j + 1, n)
+            out.append("".join(c if c == "\n" else " " for c in src[i:j]))
+            i = j
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
 PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
 IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?\s*;", re.MULTILINE)
 
@@ -99,6 +146,7 @@ def main():
                 src = f.read()
         except OSError:
             continue
+        src = strip_comments_and_strings(src)
         pkg_m = PACKAGE_RE.search(src)
         pkg = pkg_m.group(1) if pkg_m else None
 
