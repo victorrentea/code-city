@@ -210,11 +210,11 @@ class RenderCodecityTest(unittest.TestCase):
             # buildings, which only crowded the city.
             self.assertNotIn("addChangeOutline", html)
             self.assertNotIn("THREE.BackSide", html)
-            # The change set now defaults to "show everything" (was "highlight changed"):
-            # the city opens fully coloured, and the filter is opt-in.
-            self.assertIn('<option value="off" selected>show everything</option>', html)
-            self.assertNotIn('value="highlight" selected', html)
-            # An empty change set still disables the changed-only modes and stays on "off".
+            # The page opens ON the diff — a generated city is nearly always read to
+            # answer "what did this change?" — and an empty change set removes the row
+            # rather than leaving a selector whose three modes all draw the same city.
+            self.assertIn('<option value="highlight" selected>highlight changed</option>', html)
+            self.assertNotIn('value="off" selected', html)
             self.assertIn('changeSelect.value = "off"', html)
             # Cursor: hand over a building, arrow over empty space, 4-way move while dragging.
             self.assertIn('hoverCursor = hit ? "pointer" : "default"', html)
@@ -646,19 +646,41 @@ class RenderCodecityTest(unittest.TestCase):
             # Whole-repo metrics cannot be reconstructed from a blob and are left out on purpose.
             self.assertNotIn("fan_in", grew)
             self.assertNotIn("instability", grew)
-            # The city draws them: in highlight mode a changed building is split into the
-            # box it already was (old colour) and the space this diff won (new colour).
-            self.assertIn("function changeSplit", html)
-            self.assertIn("function boxDifference", html)
-            self.assertIn("function addDeltaSlabs", html)
-            self.assertIn('if (changeMode() !== "highlight") return null;', html)
-            self.assertIn("const gain = boxDifference(was, now);", html)
-            # Only growth is drawn — a file that got smaller renders as a plain block.
-            self.assertNotIn("boxDifference(now, was)", html)
-            self.assertIn("if (!gain.length) return null;", html)
-            self.assertIn("const DELTA_EDGE = 0x000000;", html)
-            # ...and a gained slab answers to hover/click like the core it grew out of.
-            self.assertIn("concat(deltaMeshes)", html)
+            # The city marks them: in highlight mode a grown building carries a dashed
+            # black band at its old height and a dashed black rectangle on the roof at
+            # its old footprint — drawn thick, which a plain THREE.Line cannot be.
+            self.assertIn("function addChangeMarks", html)
+            self.assertIn("function markRectangle", html)
+            self.assertIn('if (changeMode() !== "highlight") return;', html)
+            self.assertIn("LineSegments2", html)
+            self.assertIn("dashed: true", html)
+            self.assertIn("const MARK_COLOR = 0x000000;", html)
+            # Only growth is marked — a file that got smaller carries no mark at all.
+            self.assertIn("geo.height - wasHeight > MARK_LIFT * 2", html)
+            self.assertIn("geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2", html)
+            # Screen-space thickness has to survive a window resize.
+            self.assertIn("mark.material.resolution.set(window.innerWidth", html)
+
+    def test_opens_on_the_diff_and_hides_the_row_without_one(self):
+        """A city built from a checkout that HAS a change set is nearly always being read
+        to answer "what did this change?", so the page opens in "highlight changed". With
+        no change set the whole Changes row goes away — three modes that would all render
+        the same city are a choice not worth offering."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+            self.assertIn('<option value="highlight" selected>highlight changed</option>', html)
+            self.assertIn('<option value="off">show everything</option>', html)
+            self.assertIn('<span class="knob" id="changesKnob">Changes</span>', html)
+            self.assertIn("if (!HAS_CHANGES) {", html)
+            self.assertIn('el.style.display = "none"', html)
+            # ...and the mode is wound back to "off" so a hidden selector cannot filter.
+            self.assertIn('if (changeSelect) changeSelect.value = "off";', html)
             # ...measured with the building's own ruler, not a second copy of the maths.
             self.assertIn("function heightFor(", html)
             self.assertIn("function footprintFor(", html)

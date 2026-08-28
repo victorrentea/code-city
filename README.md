@@ -124,8 +124,9 @@ city's three channels on the same number says nothing twice.
 **Change-set filter:** a **Change set** selector focuses the city on the files in the
 *current git change set*, baked in when the page is generated. Three modes:
 
-1. **show everything** — the normal city (default).
-2. **highlight changed** — unchanged buildings drain to grey and drop to 50% opacity,
+1. **show everything** — the normal city.
+2. **highlight changed** (**the default**, whenever a change set was detected) — unchanged
+    buildings drain to grey and drop to 50% opacity,
     so the change set holds the only real colour on screen. It is also the only mode
     that **names** buildings: every changed building becomes a label candidate, ranked
     by how much of it the eye already caught — its **volume** (footprint × height) and
@@ -136,35 +137,37 @@ city's three channels on the same number says nothing twice.
 3. **only changed** — unchanged buildings are removed from the layout entirely, so the
     treemap collapses to just the change set.
 
-**The space the diff won, in the colour it won it with:** highlighting says *which* files
-a diff touched, never *what it did to them* — a class that doubled and one that lost a
-method are the same shade of not-grey. So in *highlight changed* a grown building is not
-one block but **two solids sharing one silhouette**:
+A generated city is nearly always being read to answer *what did this change?*, so the page
+**opens on the diff** rather than making the reader find the selector first. When no change
+set could be detected the **whole Changes row is removed** — three modes that would all draw
+the identical city are not a choice worth offering.
 
-- the **core** — the box the file already was, in the colour that revision's heat earned;
-- the **gain** — the space this diff won on x / y / z, in the colour the file wears **now**,
-  edged in **black** so it reads as its own object even when the two shades are one commit
-  apart (nothing else in the city is outlined, so the line itself means *new*).
+**Where a grown building used to end:** highlighting says *which* files a diff touched, never
+*what it did to them* — a class that doubled and one that only moved a line are the same shade
+of not-grey. So in *highlight changed* every building that GREW carries two dashed black marks,
+the only ink on a building anywhere in the city:
 
-core ∪ gain is *exactly* the building the city would have drawn anyway, so nothing is
-exaggerated: the silhouette stays honest and the new material is simply visible as new. A
-gained slab answers to hover, click-to-open and shift-click-to-drill like the core it grew
-out of, and the hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
+- a **band around the facade** at the height the block used to reach — the *height* axis;
+- a **rectangle on the roof** enclosing the footprint it used to have — the *area* axis.
 
-**Only growth is drawn.** A file that got *smaller* renders as a plain block — shrinking is
-the outcome nobody has to be warned about. Same for a file the diff **added** (all of it is
-new) and for one whose metrics did not move the geometry at all.
+The building itself is untouched — same size, same colour the city would give it anyway — so
+nothing is exaggerated: the marks simply say where it ended before. They are drawn with
+`Line2`, because WebGL ignores `linewidth` and one pixel is not a mark on a building. The
+hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
+
+**Only growth is marked.** A file that got *smaller* carries no mark — shrinking is the outcome
+nobody has to be warned about — and neither does one the diff **added** (all of it is new) nor
+one whose metrics did not move the geometry enough to separate a mark from the edge it sits on.
 
 The before-metrics are recovered from git at the very ref the change set is a diff of (the
 same one that decided which buildings light up — no second notion of "the diff"): size, LOC
 and cognitive complexity from the file's **blob** at that ref, scored in memory; commits,
 bugfix commits and committers from the history walk **stopped** at that ref. Stepping through
-the commit dropdown re-splits the buildings along with the highlight. Two limits, both
-deliberate: **fan-in / fan-out / instability** are whole-repo facts that would need every
-source re-parsed at the base ref, so a channel driven by one of them keeps the building's
-current value instead of guessing; and a **deleted** file has no row in the city at all any
-more. Package buildings sum their files' befores (classes and packages only — module rows
-carry no file→module map in the page).
+the commit dropdown re-marks the city along with the highlight. Two limits, both deliberate:
+**fan-in / fan-out / instability** are whole-repo facts that would need every source re-parsed
+at the base ref, so an axis driven by one of them gets no mark rather than a guess; and a
+**deleted** file has no row in the city at all any more. Package buildings sum their files'
+befores (classes and packages only — module rows carry no file→module map in the page).
 
 What counts as "changed" is **auto-detected** — no configuration needed (computed
 against `HEATMAP_REPO`, in precedence order):

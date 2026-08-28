@@ -1295,10 +1295,10 @@ html = """<!doctype html>
     </select>
     <span class="spanRest"></span>
 
-    <span class="knob">Changes</span>
+    <span class="knob" id="changesKnob">Changes</span>
     <select id="changeMode" aria-label="change-set filter">
-      <option value="off" selected>show everything</option>
-      <option value="highlight">highlight changed</option>
+      <option value="off">show everything</option>
+      <option value="highlight" selected>highlight changed</option>
       <option value="hide">only changed</option>
     </select>
     <span id="changeCount" class="filterCount spanRest"></span>
@@ -1404,6 +1404,12 @@ let activeColorLog = false;   // whether the active colour metric is on a log ra
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+// A plain THREE.Line is one pixel wide on every platform that matters (WebGL ignores
+// linewidth), and one pixel is not a mark on a building. Line2 draws its segments as
+// screen-space quads, so a change marker can be as thick — and as dashed — as it needs.
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
 
 const mount = document.getElementById("scene");
@@ -1462,13 +1468,15 @@ const scopeClearBtn = document.getElementById("scopePickClear");
 const scopeList = document.getElementById("allPackages");
 if (packageOpt && !PACKAGES.length) packageOpt.disabled = true;   // no package data → option greyed
 if (moduleOpt && MODULES.length < 2) moduleOpt.disabled = true;   // <2 modules → nothing to compare
-// "show everything" is the default; the highlight/hide modes only make sense when
-// there IS a change set. With none, disable them (leaving "off" selected and the
-// view unaffected) so the user can't pick a mode that would blank the whole city.
-if (changeSelect && !HAS_CHANGES) {
-  for (const opt of changeSelect.options) if (opt.value !== "off") opt.disabled = true;
-  changeSelect.value = "off";
-  changeSelect.title = "no files in the current git change set";
+// The page opens ON the diff: a city generated from a checkout that has one is nearly
+// always being read to answer "what did this change?", and making the reader find the
+// selector first buries the answer. With NO change set the whole row goes away instead
+// of offering three modes that would all render the very same city.
+if (!HAS_CHANGES) {
+  for (const el of [document.getElementById("changesKnob"), changeSelect, changeCountEl]) {
+    if (el) el.style.display = "none";
+  }
+  if (changeSelect) changeSelect.value = "off";
 }
 function changeMode() { return changeSelect ? changeSelect.value : "off"; }
 // Nothing to trace if the tool that produced this page predates coupling-edges.tsv —
@@ -1732,8 +1740,7 @@ function districtRing(node) {
 let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
-let deltaMeshes = [];    // the "gained" slabs a grown building is split into
-let deltaOutlines = [];  // their edges — kept out of the pick list, a line is not a target
+let changeMarks = [];    // dashed black marks where a grown building used to end
 let buildingByPath = new Map();   // row path -> its building entry (coupling wires resolve targets by path)
 let districts = [];
 let cityLabels = [];
@@ -1913,10 +1920,7 @@ function updatePointer(event) {
 function pickBuilding(event) {
   updatePointer(event);
   raycaster.setFromCamera(pointer, camera);
-  // A gained slab is part of its building as far as the reader is concerned, so it
-  // answers to hover, click-to-open and shift-click-to-drill exactly like the core.
-  return raycaster.intersectObjects(
-    buildings.map(b => b.mesh).concat(deltaMeshes), false)[0] || null;
+  return raycaster.intersectObjects(buildings.map(b => b.mesh), false)[0] || null;
 }
 
 function openInEditor(rel) {
@@ -2087,13 +2091,12 @@ function clearCity() {
     entry.mesh.material.dispose();
   }
   buildings = [];
-  for (const slab of [...deltaMeshes, ...deltaOutlines]) {
-    scene.remove(slab);
-    slab.geometry.dispose();
-    slab.material.dispose();
+  for (const mark of changeMarks) {
+    scene.remove(mark);
+    mark.geometry.dispose();
+    mark.material.dispose();
   }
-  deltaMeshes = [];
-  deltaOutlines = [];
+  changeMarks = [];
   buildingByPath = new Map();
   districts = [];
   districtByName = new Map();
@@ -2116,122 +2119,77 @@ function medianFootprint(root) {
   return sides.length ? sides[Math.floor(sides.length / 2)] : 0;
 }
 
-// ── A changed building, split into what it WAS and what this diff ADDED ──────
-// Highlighting says WHICH files a diff touched and stops there: a class that doubled
-// and one that lost a method are the same shade of not-grey. So in "highlight changed"
-// a changed building is not one block but two solids stacked into the same silhouette:
+// ── Where a changed building used to end ────────────────────────────────────
+// Highlighting says WHICH files a diff touched and stops there: a class that doubled and
+// one that only moved a line are the same shade of not-grey. So in "highlight changed"
+// every building that GREW carries two dashed black marks — the only ink on a building
+// anywhere in the city, so the marks can only mean one thing:
 //
-//   the core   — the box it already was, in the colour that revision's heat earned
-//   the gain   — the space this diff WON on x / y / z, in the colour the file wears now
+//   a band around the facade at the height the block used to reach  (height axis)
+//   a rectangle on the roof enclosing the footprint it used to have (area axis)
 //
-// core ∪ gain is exactly the building the city would have drawn anyway, so nothing is
-// exaggerated: the outline stays honest, and the new material is simply visible as new.
+// The building itself is untouched — same size, same colour the city would give it
+// anyway — so nothing is exaggerated; the marks simply say where it ended before.
 //
-// Only GROWTH is drawn. A file that got smaller renders as a plain block: shrinking is
-// the outcome nobody has to be warned about, and a husk of deleted code sticking out of
-// the skyline cost more attention than it ever repaid.
-const MIN_SLICE = 0.25;   // a sliver thinner than this is invisible and only z-fights
-// The two solids are coloured by the SAME metric one revision apart, so when that metric
-// barely moved they come out almost the same shade and the split would read as one block.
-// A black edge around the new volume is what makes it a distinct object without faking
-// any value — the buildings carry no outlines otherwise, so the line itself means "new".
-const DELTA_EDGE = 0x000000;
+// Only GROWTH is marked. A file that got smaller carries no mark: shrinking is the
+// outcome nobody has to be warned about.
+const MARK_COLOR = 0x000000;
+const MARK_PX = 3.5;        // screen-space thickness — the whole point of Line2
+const MARK_LIFT = 0.5;      // clear of the surface it sits on, or z-fighting eats it
 
-// The part of `outer` that `inner` does not cover, for two boxes that share a centre in x/z and a floor in y, as a list
-// of {w,h,d,x,y,z} slabs (y measured from the shared floor). Everything above the inner
-// roof is outer-only across the full outer footprint; below it, the outer footprint's
-// overhang splits into an x-band (full outer depth) and a z-band (narrowed to the inner
-// width) so the four corners are counted exactly once.
-function boxDifference(inner, outer) {
-  const pieces = [];
-  const shared = Math.min(inner.h, outer.h);
-  if (outer.h > inner.h) {
-    const t = outer.h - inner.h;
-    pieces.push({ w: outer.w, h: t, d: outer.d, x: 0, y: inner.h + t / 2, z: 0 });
+// One closed rectangle in the XZ plane at height `y`, as a Line2 the renderer can draw
+// thick and dashed. `dash` is in world units (the line distances are), so it is sized
+// from the rectangle itself and a small mark keeps roughly as many dashes as a big one.
+function markRectangle(cx, cz, y, w, d, dash) {
+  const hw = w / 2, hd = d / 2;
+  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
+  const points = [];
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i], b = corners[(i + 1) % 4];
+    points.push(cx + a[0], y, cz + a[1], cx + b[0], y, cz + b[1]);
   }
-  if (outer.w > inner.w) {
-    const t = (outer.w - inner.w) / 2;
-    for (const side of [-1, 1]) {
-      pieces.push({ w: t, h: shared, d: outer.d, x: side * (inner.w / 2 + t / 2), y: shared / 2, z: 0 });
-    }
-  }
-  if (outer.d > inner.d) {
-    const t = (outer.d - inner.d) / 2;
-    const w = Math.min(inner.w, outer.w);
-    for (const side of [-1, 1]) {
-      pieces.push({ w, h: shared, d: t, x: 0, y: shared / 2, z: side * (inner.d / 2 + t / 2) });
-    }
-  }
-  return pieces;
+  const geometry = new LineSegmentsGeometry();
+  geometry.setPositions(points);
+  const material = new LineMaterial({
+    color: MARK_COLOR,
+    linewidth: MARK_PX,
+    dashed: true,
+    dashSize: dash,
+    gapSize: dash * 0.8,
+  });
+  material.resolution.set(window.innerWidth, window.innerHeight);
+  const line = new LineSegments2(geometry, material);
+  line.computeLineDistances();
+  line.userData.kind = "mark";
+  scene.add(line);
+  changeMarks.push(line);
 }
 
-// The before/after split for one building, or null when there is nothing to split:
-// not in highlight mode, not a changed file, no recoverable "before", or a diff that
-// moved no geometry at all (then the building renders normally, in its current colour).
-function changeSplit(file, geo) {
-  if (changeMode() !== "highlight") return null;
+// `geo` carries the building as drawn plus everything needed to re-measure it from the
+// pre-diff metrics — with the very same footprintFor/heightFor the block itself used.
+function addChangeMarks(file, geo) {
+  if (changeMode() !== "highlight") return;
   const before = beforeRowFor(file);
-  if (!before) return null;
-  // A channel git cannot reconstruct (fan-in/out, instability) keeps the building's
-  // current value rather than guessing, so the split still shows whatever IS knowable.
+  if (!before) return;                       // unchanged, added by the diff, or an aggregate view
+
+  const wasHeightMetric = beforeValue(before, geo.heightMetric);
+  if (wasHeightMetric !== null) {
+    const wasHeight = heightFor(wasHeightMetric, geo.maxMetric, geo.heightScale);
+    // Only a band the eye can separate from the roofline is worth drawing.
+    if (geo.height - wasHeight > MARK_LIFT * 2) {
+      markRectangle(geo.cx, geo.cz, geo.baseY + wasHeight,
+                    geo.width + MARK_LIFT, geo.depth + MARK_LIFT,
+                    Math.max(1.2, Math.min(geo.width, geo.depth) / 6));
+    }
+  }
+
   const wasArea = beforeValue(before, geo.areaMetric);
-  const wasHeight = beforeValue(before, geo.heightMetric);
-  const wasColor = beforeValue(before, geo.colorMetric);
-  if (wasArea === null && wasHeight === null && wasColor === null) return null;
-
-  const [wasW, wasD] = wasArea === null
-    ? [geo.width, geo.depth]
-    : footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
-  const was = {
-    w: wasW,
-    h: wasHeight === null ? geo.height : heightFor(wasHeight, geo.maxMetric, geo.heightScale),
-    d: wasD,
-  };
-  const now = { w: geo.width, h: geo.height, d: geo.depth };
-  // Erase a gain too thin to see BY MOVING THE OLD SIZE UP TO THE NEW ONE, not by
-  // dropping the slab: the core is the intersection, so a skipped sliver would quietly
-  // shrink the whole building instead of just going unnoticed. A footprint gain is split
-  // across two opposite bands, so it needs twice the thickness to clear the same bar.
-  if (now.h - was.h > 0 && now.h - was.h < MIN_SLICE) was.h = now.h;
-  if (now.w - was.w > 0 && now.w - was.w < MIN_SLICE * 2) was.w = now.w;
-  if (now.d - was.d > 0 && now.d - was.d < MIN_SLICE * 2) was.d = now.d;
-
-  const gain = boxDifference(was, now);
-  if (!gain.length) return null;              // nothing won on any axis — draw a plain block
-
-  return {
-    // The core is the two boxes' intersection, so core ∪ gain is exactly `now` even when
-    // the file won height while losing footprint (or the other way round).
-    core: { w: Math.min(was.w, now.w), h: Math.min(was.h, now.h), d: Math.min(was.d, now.d) },
-    coreColor: colorFor(wasColor === null ? geo.colorValue : wasColor, geo.maxColor),
-    gain,
-  };
-}
-
-function addDeltaSlabs(pieces, color, cx, cz, baseY, file) {
-  for (const piece of pieces) {
-    const material = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.58,
-      metalness: 0.06,
-    });
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(piece.w, piece.h, piece.d), material);
-    slab.position.set(cx + piece.x, baseY + piece.y, cz + piece.z);
-    slab.castShadow = true;
-    slab.receiveShadow = true;
-    slab.userData.file = file;        // hover / click / coupling resolve it like any building
-    slab.userData.kind = "delta";
-    scene.add(slab);
-    deltaMeshes.push(slab);
-
-    const outline = new THREE.LineSegments(
-      new THREE.EdgesGeometry(slab.geometry),
-      new THREE.LineBasicMaterial({ color: DELTA_EDGE })
-    );
-    outline.position.copy(slab.position);
-    outline.userData.kind = "delta";
-    scene.add(outline);
-    deltaOutlines.push(outline);
+  if (wasArea !== null) {
+    const [wasW, wasD] = footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
+    if (geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2) {
+      markRectangle(geo.cx, geo.cz, geo.baseY + geo.height + MARK_LIFT, wasW, wasD,
+                    Math.max(1.2, Math.min(wasW, wasD) / 6));
+    }
   }
 }
 
@@ -2339,38 +2297,31 @@ function rebuildCity() {
     const metricValue = Number(file[heightMetric]) || 0;
     const colorValue = Number(file[colorMetric]) || 0;
     const height = heightFor(metricValue, maxMetric, heightScale);
-    const nowColor = colorFor(colorValue, maxColor);
     const baseY = leaf.parent.depth * districtStep;
     const cx = leaf.x0 + (leaf.x1 - leaf.x0) / 2 - cityW / 2;
     const cz = leaf.y0 + (leaf.y1 - leaf.y0) / 2 - cityD / 2;
-    // In highlight mode the solid block shrinks to the part that was already there;
-    // the space this diff won is raised beside it in the file's new colour.
-    const split = changeSplit(file, { cellW, cellD, areaScale, areaMetric, heightMetric,
-                                      colorMetric, maxMetric, maxColor, heightScale,
-                                      width, depth, height, colorValue });
-    const core = split ? split.core : { w: width, h: height, d: depth };
-    const geometry = new THREE.BoxGeometry(core.w, core.h, core.d);
+    const geometry = new THREE.BoxGeometry(width, height, depth);
     const material = new THREE.MeshStandardMaterial({
-      color: split ? split.coreColor : nowColor,
+      color: colorFor(colorValue, maxColor),
       roughness: 0.58,
       metalness: 0.06,
     });
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(cx, baseY + core.h / 2, cz);
+    mesh.position.set(cx, baseY + height / 2, cz);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.file = file;
     mesh.userData.baseColor = material.color.clone();
     scene.add(mesh);
-    // The entry keeps the FULL silhouette (labels, volume ranking, coupling anchors all
-    // want the building as the city draws it), plus the two heights every one of them
-    // used to recompute from the mesh — which no longer holds them once it is a core.
+    // roofY/baseY spare the labels, the intro and the coupling anchors from each
+    // recomputing the same two numbers off the mesh.
     buildings.push({ mesh, file, height, width, depth, colorValue, maxColor,
                      baseY, roofY: baseY + height,
                      footprint: Math.min(width, depth) });
     buildingByPath.set(file.path, buildings[buildings.length - 1]);
     cityTop = Math.max(cityTop, baseY + height);
-    if (split) addDeltaSlabs(split.gain, nowColor, cx, cz, baseY, file);
+    addChangeMarks(file, { cellW, cellD, areaScale, areaMetric, heightMetric,
+                           maxMetric, heightScale, width, depth, height, baseY, cx, cz });
   }
   styleForChanges();
   refreshScopeOptions();
@@ -2383,7 +2334,7 @@ function rebuildCity() {
   renderChangeSource();
   window.__CODEMAP_3D_READY__ = {
     buildings: buildings.length,
-    deltaSlabs: deltaMeshes.length,   // gained-volume slabs currently split out
+    changeMarks: changeMarks.length,   // "it used to end here" marks currently drawn
     areaMetric,
     heightMetric,
     colorMetric,
@@ -3302,6 +3253,9 @@ function onResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   labelRenderer.setSize(window.innerWidth, window.innerHeight);
+  // A Line2 is fattened in screen space, so it has to be told the canvas it lands on;
+  // stale resolution makes every change mark the wrong thickness after a resize.
+  for (const mark of changeMarks) mark.material.resolution.set(window.innerWidth, window.innerHeight);
 }
 
 // ── First-run intro ────────────────────────────────────────────────────────
