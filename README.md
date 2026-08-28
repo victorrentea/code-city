@@ -327,39 +327,53 @@ jump is, and a second copy of that curve in JS would be a second answer.
 
 ## Performance on a big repo
 
-Measured on Spring Framework (5003 classes, 565 packages, 31509 commits) in headless
-Chromium, against PetClinic (90 classes) as the small case. `profile_city.py` drives it —
-`./profile_city.py path/to/codecity.html "label"`, needing `pip install playwright &&
-playwright install chromium` — and reports page errors, time to first frame, GL draw
-calls per frame, and a CPU profile of each hover overlay.
+Measured in headless Chromium on Spring Framework (5003 classes, 565 packages, 31509
+commits), against PetClinic (90 classes) as the small case. Two scripts here do it, both
+needing `pip install playwright && playwright install chromium`:
+
+- `./profile_city.py page.html "label"` — page errors, time to first frame, GL draw calls
+  per frame, idle and panning frame rate, and a CPU profile of each hover overlay;
+- `./hover_cost.py page.html "label"` — the cost of ONE hover, timed inside the handler.
+  `onPointerMove` is a synchronous listener, so dispatching the event from in-page and
+  timing around it measures exactly what the main thread is asked to do when the mouse
+  crosses one building. This is the number that decides whether a held key freezes the tab.
+
+**Dismiss the first-run intro before measuring anything.** While it is up, `onPointerMove`
+returns early — no tooltip, no overlay, no work — so a probe that skips it profiles nothing
+and reports it as fast. The first round of these numbers was collected that way and said
+every overlay was free; the real ones were four orders of magnitude worse.
 
 | | PetClinic | Spring |
 | --- | --- | --- |
 | generate | 6 s | 29 s, 407 MB peak RSS |
-| page | 300 KB | **4.5 MB** (was 8.7 before the adjacency keys were interned) |
+| page | 300 KB | **4.5 MB** (8.7 before the adjacency keys were interned) |
 | draw calls / frame | 318 | **10334** |
-| ⌥ roads, CPU | below the sampler | below the sampler |
-| ⇧ co-change, CPU | below the sampler | below the sampler |
+| ⌥ hover, median / worst | 0.1 / 7.7 ms | 2.9 / 36.6 ms |
+| plain hover, median | 0.1 ms | 2.7 ms (raycasting 5003 meshes) |
 
-What that says:
+What that took:
 
-- **Neither overlay is the cost.** The road routing (a Dijkstra over the gridded plate) and
-  the co-change repaint (which touches all 5003 materials) do not appear in a 200 µs-interval
-  CPU profile at all. They were built to be one search and two draw calls per bundle, and
-  they are.
-- **The ceiling is draw calls**, and it is the city's own shape: one mesh per building, per
-  district floor, and per floor label — and floor labels are written into all four edges of
-  every district, which is 2260 objects on Spring for text that is unreadable at full-city
-  zoom. Gating those by district size on screen, the way class names are already gated by
-  roof size, is the obvious next 20%.
+- **The routing sweep was the freeze.** A grid of 120k cells x 4 headings, on a heap that
+  allocated a pair per pop, cost **2 to 22 SECONDS per hover** — on the 90-class city. Hold
+  the key, move the mouse, and the tab was gone. Three things fixed it, to 7.7 ms worst:
+  the grid is capped at 24k cells; the heap is two flat typed arrays with the pop landing
+  in scratch variables instead of a fresh pair; and the sweep **stops as soon as every peer
+  in the bundle has been reached**, which on a normal bundle of neighbours is a small
+  fraction of the plate. A coarse grid also has to mark a cell built-up only when a
+  footprint covers its CENTRE — "any overlap" walls off the gaps the treemap left.
 - **Interning the adjacency keys halved the page.** Written out in full, `COUPLING` and
-  `COCHANGE` were 5.8 MB of an 8.7 MB page — mostly the same long paths over and over.
-- **The co-change overlay used to drain buildings to translucent grey**, which moves five
-  thousand of them out of the opaque pass into the sorted one; that alone was 683 ms of
-  `drawElements` per hover sweep on Spring. It drains to opaque grey now.
-- **The shadow pass draws nothing** — the same 10334 calls per frame with shadows on, off,
-  or cached — so a big city has no real shadows and does not pay for them either. The sun's
-  shadow camera is not covering the plate; worth its own fix.
+  `COCHANGE` were 5.8 MB of an 8.7 MB page: mostly the same long paths over and over.
+- **A bundle of eighty roads is two draw calls**, one merged geometry per surface. A mesh
+  per straight run is a couple of thousand of them.
+- **The co-change overlay drains to OPAQUE grey.** Translucent moved five thousand
+  buildings out of the opaque pass into the sorted one: 683 ms of `drawElements` per hover.
+- **What is left is the city's own shape**: 10334 draw calls a frame on Spring, a fifth of
+  them floor labels written on all four edges of every district — unreadable at full-city
+  zoom. Gating those by district size on screen, the way class names are already gated by
+  roof size, is the obvious next cut.
+- **The shadow pass draws zero objects** in every city measured — same count with shadows
+  on, off, or cached — so a big city has no real shadows and does not pay for them either.
+  The sun's shadow camera is not covering the plate; that is a bug of its own.
 
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the

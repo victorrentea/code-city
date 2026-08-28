@@ -2829,9 +2829,14 @@ function baseAnchor(entry, towards) {
 //
 // ONE search per hover, not one per peer: a sweep from the hovered building reaches
 // every peer on the plate anyway, so eighty roads cost what one costs.
-const ROAD_CELL = 2.6;          // × cityUnit — grid pitch
+const ROAD_CELL = 3.2;          // × cityUnit — grid pitch
 const ROAD_TURN_COST = 2.4;     // cells' worth of detour a corner is worth avoiding
-const ROAD_MAX_CELLS = 120000;  // ...coarsen the grid rather than sweep more than this
+// The sweep is a per-hover cost on the main thread, so the grid is sized by what a hover
+// can afford, not by what would be pretty. 24k cells is ~155x155 over the plate: still
+// several cells across the narrowest building in a readable city, and ~100k states to
+// settle in the worst case. It was 120k cells once, which measured at 2-20 SECONDS of
+// heap traffic per hover — one held key and the tab was gone.
+const ROAD_MAX_CELLS = 24000;
 
 let roadGrid = null;            // invalidated by every rebuild; see rebuildCity
 
@@ -2851,15 +2856,17 @@ function ensureRoadGrid() {
     cols = Math.ceil((maxX - minX + 2 * margin) / size);
     rows = Math.ceil((maxZ - minZ + 2 * margin) / size);
     if (cols * rows <= ROAD_MAX_CELLS) break;
-    size *= 1.5;                // a 5000-class plate gets a coarser grid, not a slower hover
+    size *= 1.4;                // a 5000-class plate gets a coarser grid, not a frozen tab
   }
   const free = new Uint8Array(cols * rows).fill(1);
+  // A cell is built up when a footprint covers its CENTRE, not when one clips its corner:
+  // on a coarse grid, "any overlap" walls off the gaps the treemap actually left.
   for (const b of buildings) {
     const p = b.mesh.position;
-    const c0 = Math.max(0, Math.floor((p.x - b.width / 2 - x0) / size));
-    const c1 = Math.min(cols - 1, Math.floor((p.x + b.width / 2 - x0) / size));
-    const r0 = Math.max(0, Math.floor((p.z - b.depth / 2 - z0) / size));
-    const r1 = Math.min(rows - 1, Math.floor((p.z + b.depth / 2 - z0) / size));
+    const c0 = Math.max(0, Math.round((p.x - b.width / 2 - x0) / size));
+    const c1 = Math.min(cols - 1, Math.round((p.x + b.width / 2 - x0) / size) - 1);
+    const r0 = Math.max(0, Math.round((p.z - b.depth / 2 - z0) / size));
+    const r1 = Math.min(rows - 1, Math.round((p.z + b.depth / 2 - z0) / size) - 1);
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) free[r * cols + c] = 0;
     }
@@ -2891,58 +2898,83 @@ function roadRing(entry, grid) {
 const _ROAD_DC = [1, -1, 0, 0];
 const _ROAD_DR = [0, 0, 1, -1];
 
+// A binary heap over (cost, state) in two flat typed arrays. Not a library, and not an
+// array of pairs: at a hundred thousand states a hover, one small object per push — or
+// per POP, which is where the first version of this spent eight seconds — is the whole
+// budget spent on garbage.
+let _heapCost = new Float32Array(1024), _heapItem = new Int32Array(1024), _heapSize = 0;
+let _popCost = 0, _popItem = -1;
+
+function heapClear() { _heapSize = 0; }
+
+function heapPush(cost, item) {
+  if (_heapSize === _heapCost.length) {
+    const cost2 = new Float32Array(_heapSize * 2), item2 = new Int32Array(_heapSize * 2);
+    cost2.set(_heapCost); item2.set(_heapItem);
+    _heapCost = cost2; _heapItem = item2;
+  }
+  let i = _heapSize++;
+  _heapCost[i] = cost; _heapItem[i] = item;
+  while (i > 0) {
+    const parent = (i - 1) >> 1;
+    if (_heapCost[parent] <= _heapCost[i]) break;
+    const c = _heapCost[i], v = _heapItem[i];
+    _heapCost[i] = _heapCost[parent]; _heapItem[i] = _heapItem[parent];
+    _heapCost[parent] = c; _heapItem[parent] = v;
+    i = parent;
+  }
+}
+
+// Pops into _popCost / _popItem rather than returning a pair — see above.
+function heapPop() {
+  _popCost = _heapCost[0]; _popItem = _heapItem[0];
+  if (--_heapSize > 0) {
+    _heapCost[0] = _heapCost[_heapSize]; _heapItem[0] = _heapItem[_heapSize];
+    let i = 0;
+    for (;;) {
+      const l = 2 * i + 1, r = l + 1;
+      let m = i;
+      if (l < _heapSize && _heapCost[l] < _heapCost[m]) m = l;
+      if (r < _heapSize && _heapCost[r] < _heapCost[m]) m = r;
+      if (m === i) break;
+      const c = _heapCost[i], v = _heapItem[i];
+      _heapCost[i] = _heapCost[m]; _heapItem[i] = _heapItem[m];
+      _heapCost[m] = c; _heapItem[m] = v;
+      i = m;
+    }
+  }
+}
+
 // Dijkstra over (cell, heading) from every free cell touching the hovered building.
 // Heading is part of the state because that is the only way a turn can cost more than a
 // straight — without it the sweep is a BFS and every road comes out a staircase.
-function roadSweep(entry, grid) {
-  const n = grid.cols * grid.rows, states = n * 4;
+//
+// It STOPS as soon as every peer in this bundle has been reached, which is what keeps it
+// interactive: a bundle is usually a handful of neighbours, and settling the far corner of
+// a plate nobody asked about is most of the work a full sweep does.
+function roadSweep(entry, grid, wantedCells) {
+  const states = grid.cols * grid.rows * 4;
   const dist = new Float32Array(states).fill(Infinity);
   const prev = new Int32Array(states).fill(-1);
-  // A pairing of (cost, state) in one flat binary heap — no allocation per push.
-  const heapCost = [0], heapState = [0];
-  let size = 0;
-  const push = (cost, state) => {
-    let i = size++;
-    heapCost[i] = cost; heapState[i] = state;
-    while (i > 0) {
-      const parent = (i - 1) >> 1;
-      if (heapCost[parent] <= heapCost[i]) break;
-      const c = heapCost[i], s = heapState[i];
-      heapCost[i] = heapCost[parent]; heapState[i] = heapState[parent];
-      heapCost[parent] = c; heapState[parent] = s;
-      i = parent;
-    }
-  };
-  const pop = () => {
-    const top = heapState[0], topCost = heapCost[0];
-    size--;
-    if (size > 0) {
-      heapCost[0] = heapCost[size]; heapState[0] = heapState[size];
-      let i = 0;
-      for (;;) {
-        const l = 2 * i + 1, r = l + 1;
-        let m = i;
-        if (l < size && heapCost[l] < heapCost[m]) m = l;
-        if (r < size && heapCost[r] < heapCost[m]) m = r;
-        if (m === i) break;
-        const c = heapCost[i], s = heapState[i];
-        heapCost[i] = heapCost[m]; heapState[i] = heapState[m];
-        heapCost[m] = c; heapState[m] = s;
-        i = m;
-      }
-    }
-    return [topCost, top];
-  };
+  const wanted = new Uint8Array(grid.cols * grid.rows);
+  let remaining = 0;
+  for (const cell of wantedCells) {
+    if (!wanted[cell]) { wanted[cell] = 1; remaining++; }
+  }
+  heapClear();
   for (const cell of roadRing(entry, grid)) {
     for (let d = 0; d < 4; d++) {
       const state = cell * 4 + d;
-      if (dist[state] > 0) { dist[state] = 0; push(0, state); }
+      if (dist[state] > 0) { dist[state] = 0; heapPush(0, state); }
     }
+    if (wanted[cell] === 1) { wanted[cell] = 2; remaining--; }
   }
-  while (size) {
-    const [cost, state] = pop();
+  while (_heapSize && remaining > 0) {
+    heapPop();
+    const cost = _popCost, state = _popItem;
     if (cost > dist[state]) continue;
     const cell = state >> 2, dir = state & 3;
+    if (wanted[cell] === 1) { wanted[cell] = 2; if (--remaining === 0) break; }
     const c = cell % grid.cols, r = (cell / grid.cols) | 0;
     for (let d = 0; d < 4; d++) {
       const nc = c + _ROAD_DC[d], nr = r + _ROAD_DR[d];
@@ -2951,7 +2983,7 @@ function roadSweep(entry, grid) {
       if (!grid.free[nIdx]) continue;               // built up: a road does not go through it
       const next = nIdx * 4 + d;
       const step = cost + 1 + (d === dir ? 0 : ROAD_TURN_COST);
-      if (step < dist[next]) { dist[next] = step; prev[next] = state; push(step, next); }
+      if (step < dist[next]) { dist[next] = step; prev[next] = state; heapPush(step, next); }
     }
   }
   return { dist, prev };
@@ -2978,12 +3010,11 @@ function roadRoute(sweep, peer, grid) {
     const point = new THREE.Vector3(grid.x0 + (c + 0.5) * grid.size, 0,
                                     grid.z0 + (r + 0.5) * grid.size);
     if (i > 0 && i < cells.length - 1) {
-      const p = points[points.length - 1], q = point;
+      const p = points[points.length - 1];
       const nc = cells[i + 1] % grid.cols, nr = (cells[i + 1] / grid.cols) | 0;
-      const next = new THREE.Vector3(grid.x0 + (nc + 0.5) * grid.size, 0,
-                                     grid.z0 + (nr + 0.5) * grid.size);
-      const straight = (Math.abs(q.x - p.x) < 1e-6 && Math.abs(next.x - q.x) < 1e-6) ||
-                       (Math.abs(q.z - p.z) < 1e-6 && Math.abs(next.z - q.z) < 1e-6);
+      const nx = grid.x0 + (nc + 0.5) * grid.size, nz = grid.z0 + (nr + 0.5) * grid.size;
+      const straight = (Math.abs(point.x - p.x) < 1e-6 && Math.abs(nx - point.x) < 1e-6) ||
+                       (Math.abs(point.z - p.z) < 1e-6 && Math.abs(nz - point.z) < 1e-6);
       if (straight) continue;
     }
     points.push(point);
@@ -3053,7 +3084,7 @@ function addRoad(road, lane, points, width, y) {
   }
 }
 
-// Draw the roads of one building — or clear them, for `null` / the checkbox being off.
+// Draw the roads of one building — or clear them, for `null` / the key being up.
 function showStreetsFor(entry) {
   if (!streetsOn() || !entry) {
     if (streetedPath !== null) clearStreets();
@@ -3064,10 +3095,10 @@ function showStreetsFor(entry) {
   clearStreets();
   streetedPath = path;
 
-  const grid = ensureRoadGrid();
-  const sweep = grid ? roadSweep(entry, grid) : null;
-  const road = roadSink(), lane = roadSink();
-  let drawn = 0;
+  // Who is in this bundle is settled BEFORE any routing: the sweep needs to know which
+  // cells it is trying to reach so it can stop once it has them all, and the tooltip
+  // needs the counts whether or not a single road turns out to be drawable.
+  const bundle = [];
   for (const [kind, peers] of [
     ["out", outgoingAdjacency()[path] || {}],
     ["in", incomingAdjacency().get(path) || {}],
@@ -3079,33 +3110,48 @@ function showStreetsFor(entry) {
       if (!peer || peer === entry) continue;
       reachable++;
       if (n >= PIPE_CAP) continue;
-      const here = baseAnchor(entry, peer.mesh.position);
-      const there = baseAnchor(peer, entry.mesh.position);
-      // The sweep runs FROM the hovered building, so the route always comes back
-      // hovered-first; an incoming edge is the same tarmac driven the other way.
-      let points = sweep ? roadRoute(sweep, peer, grid) : null;
-      if (points && points.length >= 2) {
-        points = [here.clone(), ...points, there.clone()];
-      } else {
-        // Fenced in, or no grid: fall back to the straight L rather than drawing nothing.
-        const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
-          ? new THREE.Vector3(there.x, here.y, here.z)
-          : new THREE.Vector3(here.x, here.y, there.z);
-        points = [here.clone(), bend, there.clone()];
-      }
-      if (kind === "in") points.reverse();
-      addRoad(road, lane, points, roadWidth(weight),
-              Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
-      n++; drawn++;
+      bundle.push({ kind, peer, weight });
+      n++;
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
     wireStatus[kind] = { drawn: n, reachable };
   }
-  if (!drawn) return;
+  if (!bundle.length) return;
+
+  const grid = ensureRoadGrid();
+  let sweep = null;
+  if (grid) {
+    const wanted = [];
+    for (const { peer } of bundle) wanted.push(...roadRing(peer, grid));
+    sweep = roadSweep(entry, grid, wanted);
+  }
+
+  const road = roadSink(), lane = roadSink();
+  for (const { kind, peer, weight } of bundle) {
+    const here = baseAnchor(entry, peer.mesh.position);
+    const there = baseAnchor(peer, entry.mesh.position);
+    // The sweep runs FROM the hovered building, so a route always comes back hovered-first;
+    // an incoming edge is the same tarmac driven the other way.
+    let points = sweep ? roadRoute(sweep, peer, grid) : null;
+    if (points && points.length >= 2) {
+      points = [here.clone(), ...points, there.clone()];
+    } else {
+      // Fenced in, or no grid: fall back to the straight L rather than drawing nothing.
+      const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
+        ? new THREE.Vector3(there.x, here.y, here.z)
+        : new THREE.Vector3(here.x, here.y, there.z);
+      points = [here.clone(), bend, there.clone()];
+    }
+    if (kind === "in") points.reverse();
+    addRoad(road, lane, points, roadWidth(weight),
+            Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
+  }
+
   const group = new THREE.Group();
   for (const mesh of [sinkMesh(road, roadMaterial, 0), sinkMesh(lane, flowMaterial, 1)]) {
     if (mesh) group.add(mesh);
   }
+  if (!group.children.length) return;
   scene.add(group);
   streetGroup = group;
 }

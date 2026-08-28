@@ -96,6 +96,14 @@ with sync_playwright() as p:
     else:
         print("page errors       none")
 
+    # The first-run intro returns out of every hover; a profile taken under it profiles
+    # nothing. (This is how the first round of these numbers came out reassuring.)
+    got_it = page.locator("button.intro-dismiss")
+    if got_it.count():
+        got_it.click()
+        page.wait_for_timeout(400)
+    print("intro              dismissed")
+
     idle = fps_probe(page)
     print(f"idle              {idle['fps']:.1f} fps (worst frame {idle['worstFrameMs']:.0f} ms)")
     draws = page.evaluate(
