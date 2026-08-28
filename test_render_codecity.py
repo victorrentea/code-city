@@ -574,6 +574,90 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function applyCommitChoice", html)
             self.assertIn("hasCommitHistory", html)
 
+    def test_bakes_the_before_of_every_changed_building(self):
+        """"highlight changed" only says WHICH files a diff touched. The page also bakes
+        what each of them measured on the other side of that diff — recovered from the
+        blob at the very ref the change set is a diff of — so a changed building can be
+        sketched dashed as it was, and the reader sees the direction of the change."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                subprocess.run(
+                    ["git", "-C", str(repo), *args],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            git("init", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "Grew.java").write_text("class Grew {\n  void a() {}\n}\n")
+            (src / "Same.java").write_text("class Same {}\n")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            git("checkout", "-b", "feature")
+            # One class grows a branch (complexity 0 -> 1) and a lot of text...
+            (src / "Grew.java").write_text(
+                "class Grew {\n  void a(int n) {\n    if (n > 0) { a(n - 1); }\n  }\n}\n")
+            # ...and one is brand new, so it has no "before" at all.
+            (src / "Added.java").write_text("class Added {}\n")
+            git("add", "-A")
+            git("commit", "-m", "feat: grow one class, add another")
+
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
+            row = lambda p, b, l, c: f"{p}\t{b}\t{l}\t2\t0\t0\t0\t0\t{c}\t0\t0\t0\t1\n"
+            tsv = repo / "codemap.tsv"
+            tsv.write_text(hdr
+                           + row("src/main/java/app/Grew.java", 74, 5, 1)
+                           + row("src/main/java/app/Added.java", 18, 1, 0)
+                           + row("src/main/java/app/Same.java", 17, 1, 0))
+
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            env.pop("HEATMAP_CHANGED_BASE", None)
+            env.pop("GITHUB_BASE_REF", None)
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                check=True,
+                cwd=str(repo),
+                env=env,
+            )
+
+            html = (repo / "codecity.html").read_text()
+            before = json.loads(re.search(r"const BEFORE = (\{.*?\});\n", html, re.S).group(1))
+            grew = before["src/main/java/app/Grew.java"]
+            self.assertEqual(grew["lines"], 3)                     # 3 lines before, 5 now
+            self.assertEqual(grew["bytes"], len("class Grew {\n  void a() {}\n}\n"))
+            self.assertEqual(grew["cognitive_complexity"], 0)      # the `if` came with the branch
+            self.assertEqual(grew["commits"], 1)                   # only the base commit is behind it
+            # A file the diff ADDED has no before — the whole block on screen is all it
+            # has ever been, so there is nothing to sketch behind it.
+            self.assertNotIn("src/main/java/app/Added.java", before)
+            # ...and an untouched file is not in the change set at all.
+            self.assertNotIn("src/main/java/app/Same.java", before)
+            # Whole-repo metrics cannot be reconstructed from a blob and are left out on purpose.
+            self.assertNotIn("fan_in", grew)
+            self.assertNotIn("instability", grew)
+            # The city draws them: a dashed wireframe per changed building, in highlight mode only.
+            self.assertIn("function addBeforeGhost", html)
+            self.assertIn('if (changeMode() !== "highlight") return;', html)
+            self.assertIn("LineDashedMaterial", html)
+            self.assertIn("computeLineDistances()", html)
+            # ...measured with the building's own ruler, not a second copy of the maths.
+            self.assertIn("function heightFor(", html)
+            self.assertIn("function footprintFor(", html)
+            self.assertIn("const [width, depth] = footprintFor(leaf.value", html)
+            # ...and the numbers behind the sketch are readable in the hover.
+            self.assertIn("function wasNote", html)
+
 
 if __name__ == "__main__":
     unittest.main()

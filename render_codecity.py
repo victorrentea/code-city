@@ -259,9 +259,15 @@ def _working_source(working, branch):
     where = f" on {branch}" if branch and branch != "HEAD" else ""
     return {"kind": "working", "label": "working tree",
             "detail": f"{n} uncommitted file{'' if n == 1 else 's'}{where}",
+            "before": "HEAD",
             "tooltip": "Uncommitted changes (staged + unstaged + untracked):\n"
                       + "\n".join(sorted(working)[:40]),
             "url": ""}
+
+
+def _parent_of(sha):
+    """The commit right before `sha`, or "" for a root commit (nothing came before it)."""
+    return _run_git(["rev-parse", "--verify", "--quiet", f"{sha}^"]).strip()
 
 
 def _change_set(analyzed):
@@ -289,10 +295,14 @@ def _change_set(analyzed):
     if base:
         diff = {l.strip() for l in _run_git(["diff", "--name-only", f"{base}...HEAD"]).splitlines()
                 if l.strip()}
+        # `base...HEAD` is a diff against the MERGE BASE, so that — not the moving tip
+        # of the base branch — is where these files were before this branch touched them.
+        merge_base = _run_git(["merge-base", base, "HEAD"]).strip() or base
         pr = _pr_meta()
         if pr:
             source = {"kind": "pr", "label": f"PR #{pr['number']}",
                       "detail": pr["title"] or f"{branch} → {base}",
+                      "before": merge_base,
                       "tooltip": "\n\n".join(x for x in (pr["title"], pr["body"]) if x)
                                 or f"{branch} → {base}",
                       "url": pr["url"]}
@@ -300,6 +310,7 @@ def _change_set(analyzed):
             head = base.split("/")[-1]
             source = {"kind": "branch", "label": f"branch {branch}",
                       "detail": f"all commits since {base}, plus uncommitted edits",
+                      "before": merge_base,
                       "tooltip": f"Everything {branch} changes relative to {base} "
                                 f"(no open PR found), plus uncommitted edits.",
                       "url": f"{GITHUB_URL}/compare/{head}...{branch}" if GITHUB_URL and branch else ""}
@@ -312,12 +323,14 @@ def _change_set(analyzed):
         meta = _commit_meta(sha) or {"sha": sha, "short": sha[:7], "subject": "", "message": ""}
         return touched, {"kind": "commit", "label": f"commit: {meta['short']}",
                         "detail": meta["subject"],
+                        "before": _parent_of(meta["sha"]),
                         "tooltip": meta["message"] or meta["subject"],
                         "url": f"{GITHUB_URL}/commit/{meta['sha']}" if GITHUB_URL else "",
                         "history": history}   # popped out below into the commit dropdown
     if working:                                            # nothing analysed was ever touched
         return working, _working_source(working, branch)
-    return set(), {"kind": "none", "label": "no changes", "detail": "", "tooltip": "", "url": ""}
+    return set(), {"kind": "none", "label": "no changes", "detail": "", "tooltip": "", "url": "",
+                  "before": ""}
 
 
 CHANGED_FILES, CHANGE_SOURCE = _change_set(ANALYZED_PATHS)
@@ -327,8 +340,134 @@ _SCOPE = _change_scope(CHANGED_FILES)
 _changed_districts = set(_SCOPE["districts"])
 _changed_dirs = set(_SCOPE["dirs"])
 
+_HISTORY = CHANGE_SOURCE.pop("history", [])
+
+
+# ── The "before" of the change set ───────────────────────────────────────────
+# codemap.tsv is a snapshot of the working tree, so a changed building only knows
+# what it is NOW. To sketch what it was, the metrics are recovered from git at the
+# very ref the change set is a diff of (the same one that decided which buildings
+# light up — no second notion of "the diff" is invented here):
+#
+#   size / LOC / cognitive complexity -> the file's blob at that ref, scored in memory
+#   commits / bugfixes / committers   -> the history walk, stopped at that ref
+#
+# fan-in / fan-out / instability are deliberately absent: they are whole-repo facts
+# and would need every source file re-parsed at the base ref. The page simply draws
+# no ghost while one of those drives the geometry, rather than sketching a guess.
+try:
+    import compute_complexity as _complexity_tool
+except Exception:                                   # tree-sitter not vendored (page still renders)
+    _complexity_tool = None
+
+# Same bug-fix rule build_heatmap.py counted the CURRENT numbers with, so "before"
+# and "after" are measured with one ruler.
+_BUG_SUBJECT_SRC = os.environ.get("HEATMAP_BUG_COMMIT_REGEX")
+_BUG_SUBJECT_RE = re.compile(_BUG_SUBJECT_SRC, re.IGNORECASE) if _BUG_SUBJECT_SRC else None
+
+_reachable_cache = {}
+
+
+def _reachable_from(ref):
+    """Every commit reachable from `ref` — how a per-file history gets truncated to
+    "as of that revision" without re-walking the log once per change set."""
+    if ref not in _reachable_cache:
+        _reachable_cache[ref] = set(_run_git(["rev-list", ref]).split())
+    return _reachable_cache[ref]
+
+
+def _file_history(paths):
+    """path -> [(sha, author email, is bug-fix)] over the whole history, for these paths
+    only. One walk serves every "before" snapshot the page offers."""
+    history = {}
+    if not paths:
+        return history
+    out = _run_git(["log", "--no-merges", "--name-only",
+                    "--pretty=format:%x00%H%x1f%ae%x1f%s", "--", *sorted(paths)])
+    for chunk in out.split("\x00"):
+        lines = [l for l in chunk.splitlines() if l.strip()]
+        if not lines:
+            continue
+        header = (lines[0].split("\x1f") + ["", "", ""])[:3]
+        entry = (header[0], header[1], bool(_BUG_SUBJECT_RE and _BUG_SUBJECT_RE.search(header[2])))
+        for touched in lines[1:]:
+            if touched.strip() in paths:
+                history.setdefault(touched.strip(), []).append(entry)
+    return history
+
+
+def _blob_at(ref, path):
+    """`path`'s bytes at `ref`, or None when it did not exist there — i.e. the diff
+    ADDED it, and the full block on screen is all this file has ever been."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(REPO_ABS), "show", f"{ref}:{path}"], stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+
+
+def _derive(lines, commits, bug_commits, cog):
+    """The ratio columns, recomputed from the totals exactly as build_heatmap.py does."""
+    kloc = lines / 1000.0 if lines else 0
+    return {
+        "commits_per_kloc": (commits / kloc) if kloc else 0,
+        "bugs_per_kloc": (bug_commits / kloc) if kloc else 0,
+        "bugs_per_commit": (bug_commits / commits) if commits else 0,
+        "complexity_per_kloc": (cog / kloc) if kloc else 0,
+    }
+
+
+def _before_rows(ref, paths, file_history):
+    """Row-shaped metrics for the changed files AS OF `ref`, keyed by path.
+
+    A path that has no blob at `ref` is left out entirely: the file is new, so there
+    is nothing to sketch behind it."""
+    paths = sorted(p for p in paths if p in ANALYZED_PATHS)
+    if not ref or not paths:
+        return {}
+    reachable = _reachable_from(ref)
+    before = {}
+    for path in paths:
+        blob = _blob_at(ref, path)
+        if blob is None:
+            continue
+        # Line count the way build_heatmap.py counts it: a trailing partial line counts.
+        lines = blob.count(b"\n") + (1 if blob and not blob.endswith(b"\n") else 0)
+        past = [e for e in file_history.get(path, []) if e[0] in reachable]
+        commits = len(past)
+        bug_commits = sum(1 for e in past if e[2])
+        row = {
+            "bytes": len(blob),
+            "lines": lines,
+            "commits": commits,
+            "bug_commits": bug_commits,
+            "committers": len({e[1] for e in past}),
+        }
+        cog = None
+        if _complexity_tool is not None:
+            try:
+                cog = _complexity_tool.complexity_of_source(blob)
+            except Exception:                       # unparseable old revision — skip that metric
+                cog = None
+        if cog is not None:
+            row["cognitive_complexity"] = cog
+        derived = _derive(lines, commits, bug_commits, cog or 0)
+        if cog is None:
+            derived.pop("complexity_per_kloc")
+        row.update(derived)
+        before[path] = row
+    return before
+
+
+_FILE_HISTORY = _file_history(
+    (CHANGED_FILES & ANALYZED_PATHS).union(*(set(c["files"]) for c in _HISTORY)) if _HISTORY
+    else CHANGED_FILES & ANALYZED_PATHS
+)
+BEFORE_FILES = _before_rows(CHANGE_SOURCE.get("before", ""), CHANGED_FILES, _FILE_HISTORY)
+
 # The commit dropdown: every recent commit that really touched rendered code, each
-# carrying the row keys needed to re-flag the city against it. Empty unless the change
+# carrying the row keys needed to re-flag the city against it, plus its own "before"
+# so stepping through history re-sketches the ghosts too. Empty unless the change
 # set came from history — a PR diff or uncommitted work has no history to step through.
 COMMIT_CHOICES = [
     {
@@ -336,9 +475,10 @@ COMMIT_CHOICES = [
         "subject": c["subject"],
         "when": c["when"],
         "url": f"{GITHUB_URL}/commit/{c['sha']}" if GITHUB_URL else "",
+        "before": _before_rows(_parent_of(c["sha"]), c["files"], _FILE_HISTORY),
         **_change_scope(c["files"]),
     }
-    for c in CHANGE_SOURCE.pop("history", [])
+    for c in _HISTORY
 ]
 
 
@@ -819,6 +959,8 @@ html = """<!doctype html>
   /* The folded-in /KLOC density: same line as its base metric, dimmed. */
   #hover .props .perkloc { color: #94a3b8; font-weight: 400; }
   #hover .props li.on .perkloc { color: #cbd5e1; }
+  /* "was 214" — a changed row's pre-diff value, the number the dashed ghost is drawn from. */
+  #hover .props .was { color: #fbbf24; font-weight: 600; border-bottom: 1px dashed currentColor; }
   #hover .props li::before {
     content: "\\2022";
     color: #64748b;
@@ -1209,6 +1351,10 @@ const BUILD_CMD = __BUILD_CMD__;
 const HAS_CHANGES = __HAS_CHANGES__;  // any file in the current git change set?
 const CHANGE_SOURCE = __CHANGE_SOURCE__;  // what that change set is a diff OF (PR / commit / working tree)
 const COMMIT_CHOICES = __COMMIT_CHOICES__;   // recent commits that touched rendered code; empty unless the diff came from history
+// What the changed files measured on the other side of the diff: path -> a partial row
+// (size, LOC, complexity, commit counts). Only the change set is in here, and only the
+// metrics git can reconstruct — a file the diff ADDED is absent, having no "before".
+const BEFORE = __BEFORE_JSON__;
 // Coupling adjacency per view: { classes|packages|modules: { path: [paths it references] } }.
 // Only the outgoing direction is stored; incoming is its transpose, built once per view below.
 const COUPLING = __COUPLING_JSON__;
@@ -1357,6 +1503,7 @@ function applyCommitChoice() {
   for (const row of FILES) row.changed = files.has(row.path);
   for (const row of PACKAGES) row.changed = districts.has(row.path);
   for (const row of MODULES) row.changed = dirs.has(row.path);
+  pkgBeforeMap = null;   // a different commit is a different "before"
 }
 
 function renderChangeSource() {
@@ -1414,6 +1561,67 @@ function activeDataset() {
   if (v === "packages" && PACKAGES.length) return PACKAGES;
   if (v === "modules" && MODULES.length) return MODULES;
   return FILES;
+}
+
+// ── "Before": what the change set looked like on the other side of the diff ──
+// Every changed building can be sketched as it WAS, dashed, next to what it is now.
+// The snapshot follows whichever commit the reader has picked, so stepping through
+// history re-sketches the ghosts along with the highlight.
+function beforeRows() {
+  const choice = hasCommitHistory() ? COMMIT_CHOICES[commitChoice] : null;
+  return (choice ? choice.before : BEFORE) || {};
+}
+
+// The snapshot is keyed by FILE. A package building is the sum of the files sitting
+// directly in it (build_heatmap.py aggregates it exactly that way), so its "before" is
+// that same sum with every changed file wound back — nothing at all for one the diff
+// added, its own current row for one the diff never touched. Files the diff DELETED are
+// gone from FILES entirely and cannot be added back, so a package that only lost code
+// sketches no bigger than it is. Module rows carry no file→module map here and get no ghost.
+let pkgBeforeMap = null;   // built lazily, dropped whenever the change set moves
+
+function packageBeforeRows() {
+  if (pkgBeforeMap) return pkgBeforeMap;
+  const rows = beforeRows();
+  pkgBeforeMap = new Map();
+  for (const f of FILES) {
+    const was = f.changed ? rows[f.path] : f;   // untouched files are their own "before"
+    const total = pkgBeforeMap.get(f.district) ||
+      { bytes: 0, lines: 0, cognitive_complexity: 0, scored: true };
+    if (was) {
+      total.bytes += Number(was.bytes) || 0;
+      total.lines += Number(was.lines) || 0;
+      // One unscorable old revision makes the whole package total a guess — drop the
+      // metric rather than sketch a plausible-looking wrong number.
+      if (was.cognitive_complexity === undefined) total.scored = false;
+      else total.cognitive_complexity += Number(was.cognitive_complexity) || 0;
+    }
+    pkgBeforeMap.set(f.district, total);
+  }
+  for (const total of pkgBeforeMap.values()) {
+    if (!total.scored) {
+      delete total.cognitive_complexity;
+      continue;
+    }
+    const kloc = total.lines / 1000;
+    total.complexity_per_kloc = kloc ? total.cognitive_complexity / kloc : 0;
+  }
+  return pkgBeforeMap;
+}
+
+function beforeRowFor(row) {
+  if (!row || !row.changed) return null;
+  const view = activeDataset();
+  if (view === FILES) return beforeRows()[row.path] || null;
+  if (view === PACKAGES) return packageBeforeRows().get(row.path) || null;
+  return null;
+}
+
+// A metric only has a "before" if git could reconstruct it: fan-in, fan-out and
+// instability are whole-repo facts and are simply not in the snapshot.
+function beforeValue(before, metric) {
+  const v = before ? before[metric] : undefined;
+  return v === undefined || v === null ? null : Number(v);
 }
 
 // ── Package-pattern filter ───────────────────────────────────────────────────
@@ -1524,6 +1732,7 @@ function districtRing(node) {
 let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
+let ghosts = [];   // dashed "before" wireframes, one per changed building in highlight mode
 let buildingByPath = new Map();   // row path -> its building entry (coupling wires resolve targets by path)
 let districts = [];
 let cityLabels = [];
@@ -1796,6 +2005,33 @@ function grayFor(value, max) {
   return new THREE.Color(0xdfe3e8).lerp(new THREE.Color(0x6b7280), colorT(value, max));
 }
 
+// The two pieces of geometry math a building is made of, pulled out of rebuildCity so
+// the dashed "before" ghost is measured with exactly the same ruler as the solid block
+// it stands in — any drift between the two would turn the comparison into a lie.
+//
+// maxMetric is the p95, so the handful of files above it land past 1.0 — left
+// unbounded, one monster class turns the whole skyline into needles. Above the
+// p95 the curve goes logarithmic: outliers still visibly tower, but the city
+// keeps the boxy proportions of the original CodeCity plates.
+function heightFor(metricValue, maxMetric, heightScale) {
+  const ratio = (Number(metricValue) || 0) / (maxMetric || 1);
+  const scaled = ratio <= 1 ? Math.pow(ratio, 0.62) : 1 + Math.log10(ratio) * 0.8;
+  return minHeight + scaled * heightScale;
+}
+
+// Keep the cell's shape, take only the area the metric earns.
+function footprintFor(areaValue, cellW, cellD, areaScale) {
+  const fit = Math.min(1, Math.sqrt(Math.max(0, Number(areaValue) || 0) * areaScale / (cellW * cellD)));
+  return [Math.max(2, cellW * fit), Math.max(2, cellD * fit)];
+}
+
+// The city's own area metric is d3's leaf value, floored at 1 (see insertPackage), so
+// a "before" area has to be floored the same way or a shrunken file would sketch a
+// footprint the layout would never have given it.
+function areaValueOf(row, areaMetric) {
+  return Math.max(1, Number(row[areaMetric]) || 0);
+}
+
 function insertPackage(parent, parts, file, areaMetric) {
   if (parts.length === 0) {
     parent.children.push({ name: file.name, value: Math.max(1, Number(file[areaMetric]) || 0), file });
@@ -1847,6 +2083,12 @@ function clearCity() {
     entry.mesh.material.dispose();
   }
   buildings = [];
+  for (const ghost of ghosts) {
+    scene.remove(ghost);
+    ghost.geometry.dispose();
+    ghost.material.dispose();
+  }
+  ghosts = [];
   buildingByPath = new Map();
   districts = [];
   districtByName = new Map();
@@ -1867,6 +2109,71 @@ function clearCity() {
 function medianFootprint(root) {
   const sides = root.leaves().map(l => Math.min(l.x1 - l.x0, l.y1 - l.y0)).sort((a, b) => a - b);
   return sides.length ? sides[Math.floor(sides.length / 2)] : 0;
+}
+
+// Sketch what a changed building USED TO BE: a dashed wireframe of the block the same
+// treemap would have raised from the pre-diff metrics, standing on the same slab, in
+// the colour that revision's heat earned. A ghost inside the block means the file grew;
+// a ghost wrapped around it means the file shrank — the direction of the change, not
+// just the fact of it, which is all the highlight colour can say on its own.
+//
+// depthTest is off on purpose: a ghost smaller than its building is buried inside solid
+// geometry and would never be seen. That costs it correct occlusion behind other towers,
+// which is the cheaper of the two errors here.
+//
+// Drawn only in "highlight changed" — the mode whose whole job is reading a diff.
+const GHOST_OPACITY = 0.95;
+
+function addBeforeGhost(leaf, mesh, geo) {
+  if (changeMode() !== "highlight") return;
+  const before = beforeRowFor(leaf.data.file);
+  if (!before) return;                       // unchanged, added by the diff, or an aggregate view
+
+  // Any of the three channels may be missing a "before" (fan-in/out, instability);
+  // that channel then simply keeps the building's current value, so a ghost still
+  // shows whatever git COULD reconstruct instead of vanishing entirely.
+  const wasArea = beforeValue(before, geo.areaMetric);
+  const wasHeightMetric = beforeValue(before, geo.heightMetric);
+  const wasColorMetric = beforeValue(before, geo.colorMetric);
+  if (wasArea === null && wasHeightMetric === null && wasColorMetric === null) return;
+
+  const [width, depth] = wasArea === null
+    ? [geo.width, geo.depth]
+    : footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
+  const height = wasHeightMetric === null
+    ? geo.height
+    : heightFor(wasHeightMetric, geo.maxMetric, geo.heightScale);
+
+  // Nothing moved on any axis the eye can read — a wireframe welded to the block's own
+  // edges is noise, not information.
+  const same = Math.abs(width - geo.width) < 0.5 &&
+               Math.abs(depth - geo.depth) < 0.5 &&
+               Math.abs(height - geo.height) < 0.5;
+  if (same) return;
+
+  const box = new THREE.BoxGeometry(width, height, depth);
+  const edges = new THREE.EdgesGeometry(box);
+  box.dispose();
+  // Dashes scale with the block: a fixed dash length reads as a solid line on a small
+  // building and as three lonely ticks on a tower.
+  const dash = Math.max(1.6, Math.min(width, depth, height) / 5);
+  const ghost = new THREE.LineSegments(edges, new THREE.LineDashedMaterial({
+    color: wasColorMetric === null
+      ? mesh.userData.baseColor.clone()
+      : colorFor(wasColorMetric, geo.maxColor),
+    dashSize: dash,
+    gapSize: dash * 0.75,
+    transparent: true,
+    opacity: GHOST_OPACITY,
+    depthTest: false,
+  }));
+  ghost.computeLineDistances();
+  ghost.position.set(mesh.position.x, geo.baseY + height / 2, mesh.position.z);
+  ghost.renderOrder = 2;
+  ghost.userData.kind = "ghost";
+  scene.add(ghost);
+  ghosts.push(ghost);
+  cityTop = Math.max(cityTop, geo.baseY + height);   // a shrunken file's ghost still has to fit on screen
 }
 
 function rebuildCity() {
@@ -1969,19 +2276,10 @@ function rebuildCity() {
     const file = leaf.data.file;
     const cellW = Math.max(4, leaf.x1 - leaf.x0 - 1);
     const cellD = Math.max(4, leaf.y1 - leaf.y0 - 1);
-    // Keep the cell's shape, take only the area the metric earns.
-    const fit = Math.min(1, Math.sqrt((leaf.value || 0) * areaScale / (cellW * cellD)));
-    const width = Math.max(2, cellW * fit);
-    const depth = Math.max(2, cellD * fit);
+    const [width, depth] = footprintFor(leaf.value, cellW, cellD, areaScale);
     const metricValue = Number(file[heightMetric]) || 0;
     const colorValue = Number(file[colorMetric]) || 0;
-    // maxMetric is the p95, so the handful of files above it land past 1.0 — left
-    // unbounded, one monster class turns the whole skyline into needles. Above the
-    // p95 the curve goes logarithmic: outliers still visibly tower, but the city
-    // keeps the boxy proportions of the original CodeCity plates.
-    const ratio = metricValue / (maxMetric || 1);
-    const scaled = ratio <= 1 ? Math.pow(ratio, 0.62) : 1 + Math.log10(ratio) * 0.8;
-    const height = minHeight + scaled * heightScale;
+    const height = heightFor(metricValue, maxMetric, heightScale);
     const geometry = new THREE.BoxGeometry(width, height, depth);
     const material = new THREE.MeshStandardMaterial({
       color: colorFor(colorValue, maxColor),
@@ -2004,6 +2302,9 @@ function rebuildCity() {
                      footprint: Math.min(width, depth) });
     buildingByPath.set(file.path, buildings[buildings.length - 1]);
     cityTop = Math.max(cityTop, baseY + height);
+    addBeforeGhost(leaf, mesh, { cellW, cellD, areaScale, areaMetric, heightMetric,
+                                 colorMetric, maxMetric, maxColor, heightScale, baseY,
+                                 width, depth, height });
   }
   styleForChanges();
   refreshScopeOptions();
@@ -2016,6 +2317,7 @@ function rebuildCity() {
   renderChangeSource();
   window.__CODEMAP_3D_READY__ = {
     buildings: buildings.length,
+    ghosts: ghosts.length,        // dashed "before" wireframes currently sketched
     areaMetric,
     heightMetric,
     colorMetric,
@@ -2618,17 +2920,27 @@ function marksFor(file, ...keys) {
   return marks.length ? `<span class="marks">${marks.join("")}</span>` : "";
 }
 
+// "was 1.2 KB" beside a changed row's metric: the very number the dashed ghost is drawn
+// from, so the shape on screen can be read back as an actual before -> after.
+function wasNote(file, key, fmt) {
+  if (changeMode() === "off") return "";   // no diff on screen, no before to speak of
+  const was = beforeValue(beforeRowFor(file), key);
+  if (was === null) return "";
+  if (Math.abs(was - (Number(file[key]) || 0)) < 1e-9) return "";
+  return ` <span class="was">was ${fmt ? fmt(was) : fmtMetric(was)}</span>`;
+}
+
 function formatHover(file) {
   const active = new Set([areaMetricKey(), heightMetricKey(), colorMetricKey()]);
   const items = [];
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
     const val = p.fmt ? p.fmt(file[p.key]) : fmtMetric(Number(file[p.key]) || 0);
-    let label = `${p.label}: <b>${val}</b>`;
+    let label = `${p.label}: <b>${val}</b>${wasNote(file, p.key, p.fmt)}`;
     let on = active.has(p.key);
     if (p.sub) {   // fold the /KLOC density onto the same line: "commits: 4 (181.82 / KLOC)"
       const subVal = fmtMetric(Number(file[p.sub]) || 0);
-      label += ` <span class="perkloc">(${subVal} / KLOC)</span>`;
+      label += ` <span class="perkloc">(${subVal} / KLOC)</span>${wasNote(file, p.sub)}`;
       on = on || active.has(p.sub);
     }
     label += wireNote(p.key);
@@ -3450,6 +3762,7 @@ html = (html
                                                 if ANALYZED_PATHS else bool(CHANGED_FILES)))
         .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE))
         .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES))
+        .replace("__BEFORE_JSON__", json.dumps(BEFORE_FILES))
         .replace("__COUPLING_JSON__", json.dumps(COUPLING)))
 OUT.write_text(html)
 print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")

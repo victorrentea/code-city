@@ -423,6 +423,23 @@ def should_skip(path: Path) -> bool:
     return False
 
 
+def complexity_of_source(src: bytes) -> int:
+    """Cognitive complexity of one Java source blob, with no file on disk.
+
+    Same number process_file() reports for a file, fed from memory instead — which
+    is what lets the Code City score a *past* revision of a class straight out of
+    `git show`, without checking the whole tree out again.
+    """
+    global SRC
+    SRC = src
+    root = parser.parse(src).root_node
+    total = 0
+    for _package, _stack, cnode in collect_classes(root, src):
+        for method in class_directly_declared_methods(cnode):
+            total += compute_method_complexity(method, get_name(method, src))
+    return total
+
+
 def process_file(abs_path: Path):
     """Return (per_class_rows, per_file_row, parse_error_bool).
 
