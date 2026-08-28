@@ -156,6 +156,15 @@ nothing is exaggerated: the marks simply say where it ended before. They are dra
 `Line2`, because WebGL ignores `linewidth` and one pixel is not a mark on a building. The
 hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
 
+**And an arrow up the wall.** The dashed line says where the building used to end; it does
+not say, at a glance, which way the change went or by how much — you have to find the
+roofline, find the mark, and work out which is higher. So a building that GREW also gets a
+black arrow rising off its dashed line to today's ceiling, drawn flat against the wall.
+Which wall is decided **every frame**, from where the camera is standing: an arrow nailed
+to one face at build time spends most of an orbit buried inside its own building. A
+building that shrank gets no arrow, for the same reason it gets no dashed line — there is
+no rise to draw.
+
 **Only growth is marked.** A file that got *smaller* carries no mark — shrinking is the outcome
 nobody has to be warned about — and neither does one the diff **added** (all of it is new) nor
 one whose metrics did not move the geometry enough to separate a mark from the edge it sits on.
@@ -262,6 +271,21 @@ The two coupling lines in the hover tooltip say how many roads are actually on s
 hidden by the filter or the drill scope, or when the per-direction cap of 80 kicks in — a
 bundle must never pass for the whole number above it.
 
+
+**Roads to peers that are not on the plate.** Drill into a package, or narrow the filter,
+and most of a building's peers stop being rendered. Dropping those edges makes the bundle
+quietly under-report what the building is tied to, which is the one thing it must never do.
+So the road is drawn anyway: it runs to the **edge of what is rendered and stops there**,
+with nothing at the far end — which is exactly the fact. Those exits are staggered along
+whichever edge of the plate is nearest, so a building with six absent peers does not stack
+six roads on one spot, and they are routed around the blocks like every other road.
+
+**Three caps**, because "show me what this touches" stops being that at three different
+sizes: past **80 per direction** the bundle is truncated and the tooltip says so; past **24
+roads** the traffic stops moving, because two dozen streams of wedges crossing each other is
+a screensaver rather than a reading; past **100 roads** nothing is drawn at all — a god class
+with two hundred references paints the plate solid and answers nothing, and the honest
+output is the tooltip reading `0 of 214 drawn`.
 
 **The city from underneath.** Orbit below the horizon and the plate is between your eye and
 the only things down there worth looking at. So once the camera drops under the plate's top
@@ -389,9 +413,29 @@ repo"** button in the **bottom-left corner**, which opens the three-line recipe 
 of this README. It clones *this* repo — a reader who opens a published city has no local
 checkout of the generators to point at.
 
-`fetch_bugs.py` is the Spring-specific GitHub bug-label crawler from the original; it is
-kept for provenance but **not** used by `generate.sh`, which reads the bug signal from
-Conventional-Commit `fix:` subjects instead (`HEATMAP_BUG_COMMIT_REGEX`).
+**Bug signal, and why one subject regex is not enough on its own:** the colour metric
+"bugfix commits" only lights the city up if `build_heatmap.py` can tell which commits were
+bug fixes, and repos disagree wildly on how they say so. Early on this repo hardcoded
+petclinic's own convention — Conventional Commits, `^(fix|bugfix)(\(|:|!)` — into
+`generate.sh` for every run. That worked for petclinic and was silently wrong for Spring:
+of Spring's 31509 commits exactly one used a Conventional-Commit `fix:` subject, so the
+Code City rendered dead flat under that metric. `build_heatmap.py` now ships a broader
+*default* subject regex, `^(fix|fixed|fixes|bugfix)\b`, which reads the plain "Fix ..."
+leading verb most of the wild actually writes (Spring: "Fix last flag check in
+JettyWebSocketSession") as well as the Conventional-Commit form petclinic uses — the same
+`\b` after the verb keeps it from firing on "Fixture"/"Fixings". That default flags 2689 of
+Spring's 31509 commits (8.5%), spot-checked clean; `HEATMAP_BUG_COMMIT_REGEX` still
+overrides it for a repo that spells fixes some other way, or disables it (`""`) entirely.
+
+`fetch_bugs.py` is the Spring-specific GitHub bug-label crawler from the original,
+generalised to any `owner/repo` via `FETCH_BUGS_REPO`. It is a second, more precise signal
+on top of the subject heuristic: it turns "type: bug" / "type: regression" GitHub issues
+into a `bug_issues.txt` that `build_heatmap.py` cross-references against `Closes gh-N` /
+`Fixes #N` trailers, catching a fix commit whose subject does not say "fix" at all.
+`generate.sh` runs it automatically, but **only when `GITHUB_TOKEN`/`GH_TOKEN` is set** —
+GitHub's search API caps an unauthenticated caller at 10 req/min, which turns a history the
+size of Spring's into an hours-long crawl, so the accurate path is opt-in and the subject
+heuristic is what a token-less run gets out of the box.
 
 ## Tests
 
@@ -412,8 +456,10 @@ Every script is repo-agnostic and driven by env vars (`generate.sh` sets them):
 | `HEATMAP_OUT` | directory for all `.tsv` / `.html` output (default: `HEATMAP_REPO`) |
 | `HEATMAP_PRUNE` | comma-separated dir names to skip (build output, worktrees, …) |
 | `HEATMAP_PYLIBS` | path to vendored tree-sitter (for `compute_complexity.py`) |
-| `HEATMAP_BUG_COMMIT_REGEX` | regex on the commit subject that flags a bug-fix commit |
-| `HEATMAP_BUG_FILE` | optional file of bug **issue numbers** (Spring mode; matched via `gh-NNN`/`#NNN` refs) |
+| `HEATMAP_BUG_COMMIT_REGEX` | regex on the commit subject that flags a bug-fix commit (default: `^(fix|fixed|fixes|bugfix)\b`; `""` disables the subject heuristic) |
+| `HEATMAP_BUG_FILE` | optional file of bug **issue numbers**, matched via `gh-NNN`/`#NNN` refs (default: `bug_issues.txt` in `HEATMAP_OUT`, written by `fetch_bugs.py`) |
+| `FETCH_BUGS_REPO` | `owner/repo` for `fetch_bugs.py`'s GitHub label crawl (default: `spring-projects/spring-framework`; `generate.sh` derives it from the analysed repo's origin remote) |
+| `GITHUB_TOKEN` / `GH_TOKEN` | GitHub token that turns on the `fetch_bugs.py` crawl inside `generate.sh` (see above) and lifts its search-API rate limit |
 | `HEATMAP_TITLE` / `HEATMAP_SUBTITLE` | page heading text |
 | `HEATMAP_OPEN_IN` | `vscode` / `intellij` to enable ⌘/Ctrl-click-to-open (empty = off) |
 | `HEATMAP_REPO_ABS` | absolute repo root for editor links (default: `HEATMAP_REPO`) |

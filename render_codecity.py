@@ -1848,6 +1848,7 @@ let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
 let changeMarks = [];    // dashed black marks where a grown building used to end
+let growthArrows = [];   // ...and the arrow from that mark up to today's roof
 const UNDERSIDE_Y = -1;          // the plate's top face: below it, the eye is under the city
 const UNDERSIDE_OPACITY = 0.12;
 let undersideGlass = null;       // null = "not applied yet", so a rebuild re-applies it
@@ -2217,6 +2218,11 @@ function clearCity() {
     mark.material.dispose();
   }
   changeMarks = [];
+  for (const arrow of growthArrows) {
+    scene.remove(arrow);
+    arrow.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  }
+  growthArrows = [];
   buildingByPath = new Map();
   districts = [];
   districtByName = new Map();
@@ -2306,6 +2312,51 @@ function markRectangle(cx, cz, y, w, d, dash, axis) {
 
 // `geo` carries the building as drawn plus everything needed to re-measure it from the
 // pre-diff metrics — with the very same footprintFor/heightFor the block itself used.
+// The dashed rectangle says where the building USED to end. It does not say, at a glance,
+// which way the change went or by how much — you have to find the roofline, find the mark,
+// and decide which is higher. So the mark also gets an arrow: rising off the dashed line,
+// tip at today's ceiling, drawn flat against the wall.
+//
+// Which wall is decided EVERY FRAME (see updateGrowthArrowFacing), because "the visible
+// one" is a property of where you happen to be standing. An arrow nailed to one wall at
+// build time is an arrow that spends most of an orbit buried inside its own building.
+const growthMaterial = new THREE.MeshBasicMaterial({ color: MARK_COLOR });
+
+function addGrowthArrow(geo, y0, y1) {
+  const rise = y1 - y0;
+  if (rise <= MARK_MIN_DELTA) return;
+  const shaft = Math.max(0.5 * cityUnit, Math.min(geo.width, geo.depth) * 0.05);
+  const head = Math.min(rise * 0.45, Math.max(2.5 * cityUnit, shaft * 3.5));
+  const group = new THREE.Group();
+  const stem = new THREE.Mesh(
+    new THREE.BoxGeometry(shaft, rise - head, shaft), growthMaterial);
+  stem.position.y = (rise - head) / 2;
+  group.add(stem);
+  // Four sides, turned 45°, so the head reads as a flat triangle against the wall from
+  // any angle you can actually see that wall from.
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(shaft * 2.2, head, 4), growthMaterial);
+  tip.position.y = rise - head / 2;
+  tip.rotation.y = Math.PI / 4;
+  group.add(tip);
+  group.userData = { cx: geo.cx, cz: geo.cz, hw: geo.width / 2, hd: geo.depth / 2, y0 };
+  scene.add(group);
+  growthArrows.push(group);
+}
+
+// Slide every arrow around to the wall whose outward normal points most at the camera.
+// Cheap by construction: the arrows exist only for the change set, and each one is a
+// position write — no geometry is rebuilt, nothing is re-materialised.
+function updateGrowthArrowFacing() {
+  for (const arrow of growthArrows) {
+    const { cx, cz, hw, hd, y0 } = arrow.userData;
+    const dx = camera.position.x - cx, dz = camera.position.z - cz;
+    const alongX = Math.abs(dx) >= Math.abs(dz);
+    const nx = alongX ? Math.sign(dx) || 1 : 0;
+    const nz = alongX ? 0 : Math.sign(dz) || 1;
+    arrow.position.set(cx + nx * (hw + MARK_HUG * 3), y0, cz + nz * (hd + MARK_HUG * 3));
+  }
+}
+
 function addChangeMarks(file, geo) {
   if (changeMode() !== "highlight") return;
   const before = beforeRowFor(file);
@@ -2319,6 +2370,7 @@ function addChangeMarks(file, geo) {
       markRectangle(geo.cx, geo.cz, geo.baseY + wasHeight,
                     geo.width + MARK_HUG, geo.depth + MARK_HUG,
                     markDash(Math.min(geo.width, geo.depth)), "height");
+      addGrowthArrow(geo, geo.baseY + wasHeight, geo.baseY + geo.height);
     }
   }
 
@@ -2682,7 +2734,15 @@ function updateLabelVisibility() {
 //
 // On HOVER only: a city with every edge drawn at once is unreadable, whichever side of
 // the plate it is drawn on.
-const PIPE_CAP = 80;            // per direction; a hub with 900 dependants is not readable anyway
+// Three caps, because "show me what this touches" stops being that at three different
+// sizes. Past ROAD_CAP the bundle is truncated (and the tooltip says so); past
+// ROAD_FLOW_MAX the traffic stops moving, because thirty streams of wedges crossing each
+// other is a screensaver, not a reading; past ROAD_DRAW_MAX nothing is drawn at all — a
+// god class with two hundred references paints the plate solid and answers nothing, and
+// the honest output is the count in the tooltip reading `0 of 214 drawn`.
+const ROAD_CAP = 80;            // per direction
+const ROAD_FLOW_MAX = 24;
+const ROAD_DRAW_MAX = 100;
 // Two blues: the roadway, and the traffic on it. One object, one hue — a second colour
 // would be a second meaning, and the city underneath is already spending red.
 const ROAD_PALE = 0x93c5fd;
@@ -2731,6 +2791,7 @@ const flowMaterial = new THREE.MeshBasicMaterial({
 
 let streetGroup = null;         // the roads currently drawn (one hovered building's)
 let streetedPath = null;        // whose they are, so a pointermove inside the same roof is free
+let streetFlowFrozen = false;   // a bundle past ROAD_FLOW_MAX: drawn, but the traffic holds still
 // How many roads the last draw actually put on screen per direction, vs how many peers
 // were there to draw: the hover tooltip says so on the coupling lines, so a capped or
 // filtered-down bundle never passes for the whole truth.
@@ -2798,6 +2859,7 @@ function clearStreets() {
     streetGroup = null;
   }
   streetedPath = null;
+  streetFlowFrozen = false;
   wireStatus.out = wireStatus.in = null;
 }
 
@@ -2871,7 +2933,7 @@ function ensureRoadGrid() {
       for (let c = c0; c <= c1; c++) free[r * cols + c] = 0;
     }
   }
-  roadGrid = { cols, rows, size, x0, z0, free };
+  roadGrid = { cols, rows, size, x0, z0, free, minX, maxX, minZ, maxZ };
   return roadGrid;
 }
 
@@ -2989,29 +3051,63 @@ function roadSweep(entry, grid, wantedCells) {
   return { dist, prev };
 }
 
-// Walk the sweep back from whichever cell around `peer` it reached most cheaply, and
-// hand back the corner points of that route, source first.
-function roadRoute(sweep, peer, grid) {
+// The free cell nearest (x, z), so a road can be routed to a POINT rather than to a
+// building — which is what an edge leaving the drilled-into scope needs.
+function freeCellNear(grid, x, z) {
+  const c0 = Math.max(0, Math.min(grid.cols - 1, Math.floor((x - grid.x0) / grid.size)));
+  const r0 = Math.max(0, Math.min(grid.rows - 1, Math.floor((z - grid.z0) / grid.size)));
+  if (grid.free[r0 * grid.cols + c0]) return r0 * grid.cols + c0;
+  for (let ring = 1; ring <= 8; ring++) {
+    for (let dr = -ring; dr <= ring; dr++) {
+      for (let dc = -ring; dc <= ring; dc++) {
+        if (Math.abs(dr) !== ring && Math.abs(dc) !== ring) continue;
+        const r = r0 + dr, c = c0 + dc;
+        if (c < 0 || r < 0 || c >= grid.cols || r >= grid.rows) continue;
+        if (grid.free[r * grid.cols + c]) return r * grid.cols + c;
+      }
+    }
+  }
+  return -1;
+}
+
+// Where a road leaves the picture, for a peer that is not in it. It aims at whichever edge
+// of the plate is nearest, staggered so a building with six absent peers does not stack six
+// roads on one exit.
+function offPlateExit(entry, grid, index, count) {
+  const p = entry.mesh.position;
+  const gaps = [p.x - grid.minX, grid.maxX - p.x, p.z - grid.minZ, grid.maxZ - p.z];
+  const side = gaps.indexOf(Math.min(...gaps));
+  const spread = (index - (count - 1) / 2) * 3 * grid.size;
+  const out = 2 * grid.size;
+  if (side === 0) return new THREE.Vector3(grid.minX - out, entry.baseY, p.z + spread);
+  if (side === 1) return new THREE.Vector3(grid.maxX + out, entry.baseY, p.z + spread);
+  if (side === 2) return new THREE.Vector3(p.x + spread, entry.baseY, grid.minZ - out);
+  return new THREE.Vector3(p.x + spread, entry.baseY, grid.maxZ + out);
+}
+
+// Walk the sweep back from whichever of `cells` it reached most cheaply, and hand back the
+// corner points of that route, source first.
+function roadRouteTo(sweep, cells, grid) {
   let best = -1, bestCost = Infinity;
-  for (const cell of roadRing(peer, grid)) {
+  for (const cell of cells) {
     for (let d = 0; d < 4; d++) {
       const state = cell * 4 + d;
       if (sweep.dist[state] < bestCost) { bestCost = sweep.dist[state]; best = state; }
     }
   }
   if (best < 0 || !isFinite(bestCost)) return null;   // fenced in: no route on this plate
-  const cells = [];
-  for (let state = best; state >= 0; state = sweep.prev[state]) cells.push(state >> 2);
-  cells.reverse();
+  const route = [];
+  for (let state = best; state >= 0; state = sweep.prev[state]) route.push(state >> 2);
+  route.reverse();
   // Cell centres, with the straight runs collapsed: only the corners survive.
   const points = [];
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i] % grid.cols, r = (cells[i] / grid.cols) | 0;
+  for (let i = 0; i < route.length; i++) {
+    const c = route[i] % grid.cols, r = (route[i] / grid.cols) | 0;
     const point = new THREE.Vector3(grid.x0 + (c + 0.5) * grid.size, 0,
                                     grid.z0 + (r + 0.5) * grid.size);
-    if (i > 0 && i < cells.length - 1) {
+    if (i > 0 && i < route.length - 1) {
       const p = points[points.length - 1];
-      const nc = cells[i + 1] % grid.cols, nr = (cells[i + 1] / grid.cols) | 0;
+      const nc = route[i + 1] % grid.cols, nr = (route[i + 1] / grid.cols) | 0;
       const nx = grid.x0 + (nc + 0.5) * grid.size, nz = grid.z0 + (nr + 0.5) * grid.size;
       const straight = (Math.abs(point.x - p.x) < 1e-6 && Math.abs(nx - point.x) < 1e-6) ||
                        (Math.abs(point.z - p.z) < 1e-6 && Math.abs(nz - point.z) < 1e-6);
@@ -3096,43 +3192,65 @@ function showStreetsFor(entry) {
   streetedPath = path;
 
   // Who is in this bundle is settled BEFORE any routing: the sweep needs to know which
-  // cells it is trying to reach so it can stop once it has them all, and the tooltip
-  // needs the counts whether or not a single road turns out to be drawable.
+  // cells it is trying to reach so it can stop once it has them all, and the tooltip needs
+  // the counts whether or not a single road turns out to be drawable.
   const bundle = [];
   for (const [kind, peers] of [
     ["out", outgoingAdjacency()[path] || {}],
     ["in", incomingAdjacency().get(path) || {}],
   ]) {
-    let reachable = 0, n = 0;
+    let n = 0;
     for (const [peerPath, weight] of Object.entries(peers)) {
-      // Peers filtered out, or outside the drilled-into scope, have no building to reach.
-      const peer = buildingByPath.get(peerPath);
-      if (!peer || peer === entry) continue;
-      reachable++;
-      if (n >= PIPE_CAP) continue;
-      bundle.push({ kind, peer, weight });
+      if (peerPath === path) continue;
+      if (n >= ROAD_CAP) { n++; continue; }
+      // A peer with no building is not absent from the truth, only from the picture:
+      // filtered out, or outside the package you drilled into. Its road is drawn anyway,
+      // running to the edge of what IS rendered and stopping there with nothing at the far
+      // end — which is exactly the fact. Dropping it silently makes the bundle under-report
+      // what the building is tied to, and that is the one thing it must never do.
+      bundle.push({ kind, weight, peer: buildingByPath.get(peerPath) || null });
       n++;
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
-    wireStatus[kind] = { drawn: n, reachable };
+    wireStatus[kind] = { drawn: Math.min(n, ROAD_CAP), reachable: n };
   }
   if (!bundle.length) return;
+  if (bundle.length > ROAD_DRAW_MAX) {          // a wash of tarmac answers nothing
+    for (const kind of ["out", "in"]) {
+      if (wireStatus[kind]) wireStatus[kind].drawn = 0;
+    }
+    return;
+  }
+  streetFlowFrozen = bundle.length > ROAD_FLOW_MAX;
 
   const grid = ensureRoadGrid();
   let sweep = null;
   if (grid) {
+    // Each road's destination, resolved to grid cells up front: a peer's own doorstep, or
+    // a point on the plate's edge for the ones that are not on it.
+    const offPlate = bundle.filter(b => !b.peer);
+    offPlate.forEach((b, i) => {
+      b.exit = offPlateExit(entry, grid, i, offPlate.length);
+      const cell = freeCellNear(grid, b.exit.x, b.exit.z);
+      b.cells = cell >= 0 ? [cell] : [];
+    });
+    for (const b of bundle) {
+      if (b.peer) b.cells = roadRing(b.peer, grid);
+    }
     const wanted = [];
-    for (const { peer } of bundle) wanted.push(...roadRing(peer, grid));
+    for (const b of bundle) wanted.push(...b.cells);
     sweep = roadSweep(entry, grid, wanted);
   }
 
   const road = roadSink(), lane = roadSink();
-  for (const { kind, peer, weight } of bundle) {
-    const here = baseAnchor(entry, peer.mesh.position);
-    const there = baseAnchor(peer, entry.mesh.position);
+  for (const b of bundle) {
+    const target = b.peer ? b.peer.mesh.position : b.exit;
+    if (!target) continue;
+    const here = baseAnchor(entry, target);
+    const there = b.peer ? baseAnchor(b.peer, entry.mesh.position) : b.exit.clone();
     // The sweep runs FROM the hovered building, so a route always comes back hovered-first;
     // an incoming edge is the same tarmac driven the other way.
-    let points = sweep ? roadRoute(sweep, peer, grid) : null;
+    let points = sweep && b.cells && b.cells.length ? roadRouteTo(sweep, b.cells, grid) : null;
     if (points && points.length >= 2) {
       points = [here.clone(), ...points, there.clone()];
     } else {
@@ -3142,8 +3260,8 @@ function showStreetsFor(entry) {
         : new THREE.Vector3(here.x, here.y, there.z);
       points = [here.clone(), bend, there.clone()];
     }
-    if (kind === "in") points.reverse();
-    addRoad(road, lane, points, roadWidth(weight),
+    if (b.kind === "in") points.reverse();
+    addRoad(road, lane, points, roadWidth(b.weight),
             Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
   }
 
@@ -3494,7 +3612,7 @@ function formatHover(file) {
 
 // While this building's pipes are up, the two coupling lines say how much of that number
 // is actually on screen. Two ways it can be less than the metric: peers hidden by the
-// filter or the drill scope have no building to reach, and past PIPE_CAP we stop drawing.
+// filter or the drill scope leave the plate instead, and past the caps we stop drawing.
 // Silence here would let a bundle of 80 pass for a fan-out of 300.
 function wireNote(key) {
   const status = key === "fan_out" ? wireStatus.out : key === "fan_in" ? wireStatus.in : null;
@@ -4359,7 +4477,7 @@ function syncUndersideView() {
 // crosses a long road and a short one at the same speed. Negative because a texture offset
 // slides the pattern the opposite way, and +v is the far end of every run.
 function updateStreetFlow() {
-  if (!streetGroup) return;
+  if (!streetGroup || streetFlowFrozen) return;
   flowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / FLOW_SPACING)) % 1;
 }
 
@@ -4368,6 +4486,7 @@ function animate() {
   updateStreetFlow();
   syncUndersideView();
   updateFloorLabelFacing();       // keep flat package names turned toward the viewer (never upside down)
+  updateGrowthArrowFacing();      // ...and the growth arrows on the wall you can see
   renderer.render(scene, camera);
   updateLabelVisibility();        // resolve which class labels are non-overlapping from this angle
   labelRenderer.render(scene, camera);

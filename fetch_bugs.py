@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Fetch all type:bug and type:regression issue numbers from spring-projects/spring-framework.
+"""Fetch all "type: bug" and "type: regression" issue numbers from a GitHub repo (default:
+spring-projects/spring-framework, the repo this crawler was originally written for; pass a
+different owner/repo via FETCH_BUGS_REPO for any other GitHub-hosted project).
+
+generate.sh runs this automatically, but only when GITHUB_TOKEN or GH_TOKEN is set: the
+search API's unauthenticated cap of 10 req/min turns a history the size of Spring's into an
+hours-long crawl, so without a token the pipeline skips straight to build_heatmap.py's
+subject-regex heuristic instead. Run this by hand (with a token exported) to get the
+precise "Closes gh-N" / "Fixes #N" signal on top of the heuristic.
 
 Strategy: GitHub search API is capped at 1000 results/query and 10 req/min unauth.
 We partition by created-date range, recursively splitting any window whose count >= 1000.

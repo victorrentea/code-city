@@ -32,23 +32,41 @@ OUT_DIR = os.path.abspath(os.environ.get("HEATMAP_OUT") or REPO_DIR)
 os.makedirs(OUT_DIR, exist_ok=True)
 EXTRA_PRUNE = {d for d in os.environ.get("HEATMAP_PRUNE", "").split(",") if d}
 BUG_FILE = os.environ.get("HEATMAP_BUG_FILE", os.path.join(OUT_DIR, "bug_issues.txt"))
-# Optional: a regex on the commit SUBJECT flags a bug-fix commit directly
-# (used for repos like petclinic that have no GitHub bug labels but use
-# conventional commits, e.g. HEATMAP_BUG_COMMIT_REGEX="^(fix|bugfix)(\\(|:|!)").
-_bug_subj_src = os.environ.get("HEATMAP_BUG_COMMIT_REGEX")
+# A regex on the commit SUBJECT flags a bug-fix commit directly. Two conventions feed
+# this: strict Conventional Commits (petclinic: "fix:", "fix(scope):", "fix!:") and the
+# looser "Fix ..." leading verb that far more of the wild uses without ever adopting
+# Conventional Commits (Spring: "Fix last flag check in JettyWebSocketSession", "Fixed
+# build by suppressing unchecked warnings"). \b after the verb is what keeps the two
+# readings from colliding with "Fixture"/"Fixings": both "fix" and the next character
+# have to be word characters for \b to fail, so a bare noun that merely starts with
+# "fix" is correctly left alone. Override with HEATMAP_BUG_COMMIT_REGEX for a repo whose
+# convention this default does not fit, or set it to the empty string to disable the
+# subject heuristic entirely and rely only on the bug-issue list below.
+DEFAULT_BUG_SUBJECT_RE = r"^(fix|fixed|fixes|bugfix)\b"
+_bug_subj_env = os.environ.get("HEATMAP_BUG_COMMIT_REGEX")
+_bug_subj_is_default = _bug_subj_env is None
+if _bug_subj_is_default:
+    _bug_subj_src = DEFAULT_BUG_SUBJECT_RE
+else:
+    _bug_subj_src = _bug_subj_env or None  # "" opts out of the subject heuristic
 BUG_SUBJECT_RE = re.compile(_bug_subj_src, re.IGNORECASE) if _bug_subj_src else None
 OUT_FILE = os.path.join(OUT_DIR, "codemap.tsv")
 COMPLEXITY_FILE = os.path.join(OUT_DIR, "complexity-per-file.tsv")
 FANIO_FILE = os.path.join(OUT_DIR, "fanio-per-file.tsv")
 
-# load bug issue set (optional — absent for repos without a bug-issue list)
+# load bug issue set (optional — absent for repos without a bug-issue list, e.g. when
+# fetch_bugs.py was never run because no GITHUB_TOKEN/GH_TOKEN was available)
 bug_ids = set()
 if os.path.exists(BUG_FILE):
     with open(BUG_FILE) as f:
         bug_ids = {int(line.strip()) for line in f if line.strip()}
 print(f"loaded {len(bug_ids)} bug/regression issue numbers", file=sys.stderr)
 if BUG_SUBJECT_RE:
-    print(f"also flagging bug commits via subject regex: {_bug_subj_src!r}", file=sys.stderr)
+    origin = "default heuristic" if _bug_subj_is_default else "HEATMAP_BUG_COMMIT_REGEX override"
+    print(f"flagging bug commits via subject regex ({origin}): {_bug_subj_src!r}", file=sys.stderr)
+else:
+    print("subject-regex heuristic disabled (HEATMAP_BUG_COMMIT_REGEX=\"\"); "
+          "relying solely on the bug-issue list above", file=sys.stderr)
 
 # regex for gh-NNN refs (case-insensitive). also accept "#NNN" when paired with closes/fixes.
 GH_RE = re.compile(r'\bgh-(\d+)\b', re.IGNORECASE)

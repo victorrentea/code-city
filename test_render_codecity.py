@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -251,6 +252,29 @@ class RenderCodecityTest(unittest.TestCase):
             # "as many as fit on the screen" excludes the space under the opaque panel.
             self.assertIn("function panelBoxes", html)
             self.assertIn("const placed = panelBoxes();", html)
+
+    def test_generated_javascript_parses(self):
+        """The page is one big inlined script: a stray redeclared identifier takes the
+        WHOLE city down — no canvas, no error anyone sees until they open it. Python
+        tests happily assert on the text of a page that never runs, so parse it."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+            blocks = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S)
+            self.assertTrue(blocks, "the page should carry an inline script")
+            module = Path(tmp) / "inline.mjs"
+            module.write_text(max(blocks, key=len))
+            done = subprocess.run([node, "--check", str(module)],
+                                  capture_output=True, text=True)
+            self.assertEqual(0, done.returncode, done.stderr)
 
     def test_coupling_streets(self):
         """The coupling overlay: a checkbox (off by default) that lays the dependency
