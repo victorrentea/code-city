@@ -2144,7 +2144,7 @@ function markDash(size) {
   return Math.max(0.6, size / 12);
 }
 
-function markRectangle(cx, cz, y, w, d, dash) {
+function markRectangle(cx, cz, y, w, d, dash, axis) {
   const hw = w / 2, hd = d / 2;
   const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
   const points = [];
@@ -2165,6 +2165,11 @@ function markRectangle(cx, cz, y, w, d, dash) {
   const line = new LineSegments2(geometry, material);
   line.computeLineDistances();
   line.userData.kind = "mark";
+  // Kept so the first-run intro can single one out and trace it in SVG: a dashed
+  // rectangle in the sky explains nothing until something says what it measures.
+  line.userData.axis = axis;
+  line.userData.y = y;
+  line.userData.corners = corners.map(([dx, dz]) => [cx + dx, cz + dz]);
   scene.add(line);
   changeMarks.push(line);
 }
@@ -2183,7 +2188,7 @@ function addChangeMarks(file, geo) {
     if (geo.height - wasHeight > MARK_LIFT * 2) {
       markRectangle(geo.cx, geo.cz, geo.baseY + wasHeight,
                     geo.width + MARK_LIFT, geo.depth + MARK_LIFT,
-                    markDash(Math.min(geo.width, geo.depth)));
+                    markDash(Math.min(geo.width, geo.depth)), "height");
     }
   }
 
@@ -2192,7 +2197,7 @@ function addChangeMarks(file, geo) {
     const [wasW, wasD] = footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
     if (geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2) {
       markRectangle(geo.cx, geo.cz, geo.baseY + geo.height + MARK_LIFT, wasW, wasD,
-                    markDash(Math.min(wasW, wasD)));
+                    markDash(Math.min(wasW, wasD)), "area");
     }
   }
 }
@@ -3306,6 +3311,36 @@ const INTRO_CHANNELS = [
   { key: "height", color: "#0f766e", title: "HEIGHT", select: () => heightSelect },
   { key: "color", color: "#9d174d", title: "COLOR", select: () => colorSelect },
 ];
+const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-black, like them
+
+// The clearest change mark on screen, or null when the city carries none. A dashed
+// rectangle floating over a roof is the one thing on a building that the three metric
+// selectors do NOT explain, so if one is up at startup the intro has to name it.
+// Roof marks win over facade bands: a band wraps the block, so half of it is behind
+// geometry the SVG overlay would happily draw straight through.
+function clearestChangeMark(project) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  let best = null;
+  for (const mark of changeMarks) {
+    const points = mark.userData.corners.map(([x, z]) => project(x, mark.userData.y, z));
+    if (points.some(p => p.z >= 1)) continue;
+    const x = points.reduce((sum, p) => sum + p.x, 0) / 4;
+    const y = points.reduce((sum, p) => sum + p.y, 0) / 4;
+    if (x < W * 0.34 || x > W * 0.9 || y < H * 0.12 || y > H * 0.85) continue;
+    let area = 0;   // shoelace, so "clearest" means "biggest on screen"
+    for (let i = 0; i < 4; i++) {
+      const a = points[i], b = points[(i + 1) % 4];
+      area += a.x * b.y - b.x * a.y;
+    }
+    const candidate = { score: Math.abs(area) / 2, points, axis: mark.userData.axis, anchor: { x, y } };
+    const better = !best
+      || (candidate.axis === "area" && best.axis !== "area")
+      || (candidate.axis === best.axis && candidate.score > best.score);
+    if (better) best = candidate;
+  }
+  return best;
+}
 
 function escapeXml(value) {
   return String(value).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -3379,15 +3414,29 @@ function buildIntro() {
     area: roofCentroid,
   };
 
-  // Stack the three label cards just right of the hero.
+  // The dashed marks are the one thing on a building the metric selectors do not
+  // explain, so when the city opens with some up, they get a card of their own —
+  // pointing at a real mark, not at the hero, and saying which axis it measures.
+  const channels = INTRO_CHANNELS.slice();
+  const changeMark = clearestChangeMark(project);
+  if (changeMark && changeSelect) {
+    channels.push({
+      key: "changes", color: MARK_INK, title: "CHANGED",
+      select: () => changeSelect,
+      sub: changeMark.axis === "area" ? "dashed = its old footprint" : "dashed = its old height",
+    });
+    anchors.changes = changeMark.anchor;
+  }
+
+  // Stack the label cards just right of the hero.
   const LW = 200;
   const LH = 50;
   const lx = Math.min(heroRight + 46, W - LW - 18);
-  let ly = Math.max(70, Math.min(edgeTop.y - 12, H - 3 * (LH + 18) - 40));
-  const rows = INTRO_CHANNELS.map(ch => {
+  let ly = Math.max(70, Math.min(edgeTop.y - 12, H - channels.length * (LH + 18) - 40));
+  const rows = channels.map(ch => {
     const select = ch.select();
     const row = {
-      ...ch, select, sub: metricLabel(select), anchor: anchors[ch.key],
+      ...ch, select, sub: ch.sub || metricLabel(select), anchor: anchors[ch.key],
       rect: select.getBoundingClientRect(), box: { x: lx, y: ly, w: LW, h: LH },
     };
     ly += LH + 18;
@@ -3424,6 +3473,14 @@ function buildIntro() {
     `<circle cx="${bodyMid.x.toFixed(1)}" cy="${bodyMid.y.toFixed(1)}" r="9" ` +
     `fill="${swatch}" stroke="#fff" stroke-width="2.5"/>`
   );
+  // CHANGED: re-draw the picked mark in the overlay, fatter and in the same dashes, so
+  // the eye finds the 1.75 px rule on the building the card is talking about.
+  if (changeMark) {
+    parts.push(
+      `<polygon points="${changeMark.points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")}" ` +
+      `fill="none" stroke="${MARK_INK}" stroke-width="3" stroke-dasharray="7 5"/>`
+    );
+  }
 
   // Every connector plugs into its selector on the EAST side and leaves the panel
   // sideways, toward the thing it explains. Leaving from the bottom edge sent each wire

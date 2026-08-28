@@ -261,8 +261,11 @@ wire between two classes that never call each other.
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the
 *area* metric, the **height** dimension line = the *height* metric, the **colour swatch** =
-the *colour* metric — each tied by a connector line to the `<select>` that drives it.
-Dismissed on the first drag/scroll/metric-change (or the "Got it" button).
+the *colour* metric — each tied by a connector line to the `<select>` that drives it. When the
+city opens with **change marks** up, a fourth card joins them, pointing at a real dashed
+rectangle and naming the axis it measures (`dashed = its old footprint`): the marks are the
+one thing on a building the three metric selectors do not explain. Dismissed on the first
+drag/scroll/metric-change (or the "Got it" button).
 
 **Build it for your own repo:** every generated page carries a compact **"⚒ Build for your
 repo"** button in the **bottom-left corner**, which opens the three-line recipe at the top

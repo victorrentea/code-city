@@ -660,6 +660,13 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2", html)
             # Screen-space thickness has to survive a window resize.
             self.assertIn("mark.material.resolution.set(window.innerWidth", html)
+            # The intro explains the marks the way it explains area/height/colour: a
+            # fourth card, wired to a REAL mark, naming the axis that mark measures.
+            self.assertIn("function clearestChangeMark", html)
+            self.assertIn('title: "CHANGED"', html)
+            self.assertIn('"dashed = its old footprint" : "dashed = its old height"', html)
+            # ...and it only appears when a mark is actually on screen at startup.
+            self.assertIn("if (changeMark && changeSelect) {", html)
 
     def test_opens_on_the_diff_and_hides_the_row_without_one(self):
         """A city built from a checkout that HAS a change set is nearly always being read
