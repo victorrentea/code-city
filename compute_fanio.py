@@ -10,14 +10,17 @@ Output: /Users/victorrentea/workspace/spring-framework/fanio-per-file.tsv
   file \t fan_in \t fan_out
 
 ...and, beside it, the EDGES those two counts are aggregates of:
-  coupling-edges.tsv:  source \t target      (one row per "source references target")
+  coupling-edges.tsv:  source \t target \t weight
 The counts answer "how coupled is this file"; the edge list answers "to WHAT", which
-is what the Code City needs to draw a dependency wire from a building to its peers.
+is what the Code City needs to draw a dependency pipe from a building to its peers.
+`weight` is how many times the source names the target (comments and string literals
+already stripped) — an import alone says *that* A depends on B, the count says how
+hard, and it is what the pipe's thickness is drawn from.
 """
 import os
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import subprocess
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -137,7 +140,7 @@ def main():
     java_files = list_java_files()
     print(f"scanning {len(java_files)} java files", file=sys.stderr)
 
-    fan_out = defaultdict(set)  # file -> set of target files
+    fan_out = defaultdict(dict)  # file -> {target file: how many times it is named}
 
     for ap in java_files:
         rel = os.path.relpath(ap, REPO)
@@ -150,7 +153,10 @@ def main():
         pkg_m = PACKAGE_RE.search(src)
         pkg = pkg_m.group(1) if pkg_m else None
 
-        targets = set()
+        # Simple name -> the target file(s) it would resolve to. Imports and
+        # same-package siblings are both just candidate names to look for in the body;
+        # the single scan below decides which of them are real references, and how many.
+        candidates = defaultdict(set)
         for imp in IMPORT_RE.findall(src):
             # static import targets a method/field; the class is everything before the last dot
             # but our regex already trimmed the .* wildcard; for static, the last segment is member name
@@ -158,21 +164,23 @@ def main():
             for candidate in (imp, imp.rsplit(".", 1)[0] if "." in imp else imp):
                 tf = fqn_to_file.get(candidate)
                 if tf and tf != rel:
-                    targets.add(tf)
+                    candidates[candidate.rsplit(".", 1)[-1]].add(tf)
                     break
-
-        # same-package siblings: regex-search for any sibling simple name (word boundary)
         if pkg and pkg in pkg_to_classes:
-            siblings = [(s, f) for (s, f) in pkg_to_classes[pkg] if f != rel]
-            if siblings:
-                # build a single regex with all sibling names for one pass
-                names = list({s for (s, _) in siblings})
-                if names:
-                    pattern = r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\b"
-                    found = set(re.findall(pattern, src))
-                    for s, tf in siblings:
-                        if s in found:
-                            targets.add(tf)
+            for simple, tf in pkg_to_classes[pkg]:
+                if tf != rel:
+                    candidates[simple].add(tf)
+
+        # ONE regex pass for every candidate name at once — per-name scans turn a big
+        # repo into an O(classes x filesize) crawl. A sibling that never appears scores
+        # zero and is simply not a dependency; an imported class always scores at least
+        # the one occurrence on its own import line.
+        targets = {}
+        if candidates:
+            pattern = r"\b(?:" + "|".join(re.escape(n) for n in sorted(candidates)) + r")\b"
+            for name, hits in Counter(re.findall(pattern, src)).items():
+                for tf in candidates[name]:
+                    targets[tf] = targets.get(tf, 0) + hits
 
         fan_out[rel] = targets
 
@@ -180,12 +188,12 @@ def main():
     fan_in = defaultdict(int)
     for src_file, tgts in fan_out.items():
         for tf in tgts:
-            fan_in[tf] += 1
+            fan_in[tf] += 1        # DISTINCT dependants, as before — not their reference counts
 
     rows = []
     all_files = set(fan_out.keys()) | set(fan_in.keys())
     for f in all_files:
-        rows.append((f, fan_in.get(f, 0), len(fan_out.get(f, set()))))
+        rows.append((f, fan_in.get(f, 0), len(fan_out.get(f, {}))))
     rows.sort()
 
     with open(OUT, "w") as f:
@@ -198,10 +206,10 @@ def main():
     # produces a byte-identical file and the diff stays about the code.
     edges = 0
     with open(EDGES_OUT, "w") as f:
-        f.write("source\ttarget\n")
+        f.write("source\ttarget\tweight\n")
         for src_file in sorted(fan_out):
             for tf in sorted(fan_out[src_file]):
-                f.write(f"{src_file}\t{tf}\n")
+                f.write(f"{src_file}\t{tf}\t{fan_out[src_file][tf]}\n")
                 edges += 1
     print(f"wrote {edges} edges to {EDGES_OUT}", file=sys.stderr)
 

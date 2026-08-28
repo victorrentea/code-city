@@ -237,9 +237,9 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function panelBoxes", html)
             self.assertIn("const placed = panelBoxes();", html)
 
-    def test_coupling_wires(self):
-        """The coupling overlay: held on the Alt key (no checkbox), with the dependency
-        EDGES (not just the fan-in/out counts) baked in, folded per view."""
+    def test_coupling_pipes(self):
+        """The coupling overlay: a checkbox (off by default) that runs the dependency
+        EDGES as pipes UNDER the city on hover, thickness from the edge's weight."""
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
@@ -249,28 +249,35 @@ class RenderCodecityTest(unittest.TestCase):
             )
             html = (Path(tmp) / "codecity.html").read_text()
 
-            # Held, not toggled: the checkbox is gone, ⌥ drives it.
-            self.assertNotIn('id="couplingWires"', html)
-            self.assertIn('const WIRE_KEY = "altKey"', html)
-            self.assertIn("function onWireKey", html)
-            self.assertIn('window.addEventListener("keydown", onWireKey)', html)
-            self.assertIn('window.addEventListener("keyup", onWireKey)', html)
-            self.assertIn("if (!wireKeyDown || !entry)", html)
-            self.assertIn('id="wireHint"', html)              # ...and the only hint it exists
+            # A checkbox, off by default — and the held ⌥ key it replaces is gone.
+            self.assertIn('<input id="couplingPipes" type="checkbox"', html)
+            self.assertNotIn('id="couplingPipes" type="checkbox" checked', html)
+            self.assertNotIn("function onWireKey", html)
+            self.assertNotIn('addEventListener("keyup", onWireKey)', html)
+            self.assertNotIn('id="wireHint"', html)
+            self.assertIn("function pipesOn", html)
+            self.assertIn("if (!pipesOn() || !entry)", html)
             self.assertIn("const COUPLING =", html)
-            self.assertIn("function showWiresFor", html)
-            self.assertIn("function roofAnchor", html)
+            self.assertIn("function showPipesFor", html)
             self.assertIn("function incomingAdjacency", html)
-            # Blue leaves, red arrives.
-            self.assertIn("const WIRE_OUT = 0x1d4ed8", html)
-            self.assertIn("const WIRE_IN = 0xdc2626", html)
+            # Under the city, not over it: the pipe leaves the BASE and dips below it.
+            self.assertIn("function baseAnchor", html)
+            self.assertIn("function pipeCurve", html)
+            self.assertIn("const PIPE_DIP = 26;", html)
+            self.assertIn("entry.baseY", html)
+            # Grey normally, red while a diff is on screen.
+            self.assertIn("const PIPE_GREY = 0x64748b;", html)
+            self.assertIn("const PIPE_RED = 0xdc2626;", html)
+            self.assertIn('changeMode() === "highlight" ? pipeMaterials.red : pipeMaterials.grey', html)
+            # Thickness from the edge's weight, on a scale read off the whole view.
+            self.assertIn("function pipeRadius", html)
+            self.assertIn("function pipeWeightScale", html)
             # Tubes, not THREE.Line: WebGL clamps line width to one pixel.
             self.assertIn("THREE.TubeGeometry", html)
             self.assertIn("THREE.ConeGeometry", html)
-            # Dot at the roof it leaves, cone at the roof it arrives at.
             self.assertIn("THREE.SphereGeometry", html)
-            # Occluded by the skyline like a real cable, not floating over it.
-            self.assertNotIn("depthTest: false })", html.split("const wireMaterials")[1][:400])
+            # Everything they run under is opaque, so they are drawn through it.
+            self.assertIn("depthTest: false }),", html.split("const pipeMaterials")[1][:400])
             # A capped or filtered-down bundle owns up to it in the tooltip.
             self.assertIn("function wireNote", html)
 
@@ -281,17 +288,23 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertTrue(classes, "the fixture's edges should reach the page")
             rest = "petclinic-backend/src/main/java/victor/training/petclinic/rest"
             domain = "petclinic-backend/src/main/java/victor/training/petclinic/domain"
-            self.assertIn(f"{domain}/Owner.java", classes[f"{rest}/OwnerRestController.java"])
+            # Weighted now: peer -> how many references the pair carries.
+            owner_edges = classes[f"{rest}/OwnerRestController.java"]
+            self.assertIn(f"{domain}/Owner.java", owner_edges)
+            self.assertGreaterEqual(owner_edges[f"{domain}/Owner.java"], 1)
             # Folded up to packages, and self-edges (a package's own internals) dropped.
             packages = coupling["packages"]
-            self.assertIn("victor.training.petclinic.domain",
-                          packages["victor.training.petclinic.rest"])
+            rest_pkg = packages["victor.training.petclinic.rest"]
+            self.assertIn("victor.training.petclinic.domain", rest_pkg)
+            # A package pair sums its classes' references, so it outweighs a class pair.
+            self.assertGreater(rest_pkg["victor.training.petclinic.domain"],
+                               owner_edges[f"{domain}/Owner.java"])
             for src, targets in packages.items():
-                self.assertNotIn(src, targets, "a package must not wire to itself")
+                self.assertNotIn(src, targets, "a package must not pipe to itself")
 
-    def test_coupling_wires_absent_without_the_edge_file(self):
+    def test_coupling_pipes_absent_without_the_edge_file(self):
         """A codemap.tsv from an older tool run has no coupling-edges.tsv beside it:
-        the page still renders, with the checkbox greyed out rather than broken."""
+        the page still renders, with the whole Coupling row removed rather than broken."""
         with tempfile.TemporaryDirectory() as tmp:
             solo = Path(tmp) / "codemap.tsv"
             solo.write_text(SAMPLE_TSV.read_text())
@@ -307,8 +320,9 @@ class RenderCodecityTest(unittest.TestCase):
             )
             self.assertEqual({"classes": {}, "packages": {}, "modules": {}}, coupling)
             self.assertIn("const HAS_COUPLING =", html)
-            # No edges => the ⌥ hint never shows, so nothing advertises a dead key.
-            self.assertIn("if (wireHintEl && HAS_COUPLING) wireHintEl.hidden = false", html)
+            # No edges => no row at all, so nothing advertises a checkbox that does nothing.
+            self.assertIn("if (!HAS_COUPLING) {", html)
+            self.assertIn('document.getElementById("couplingKnob")', html)
 
     def test_change_set_auto_detects_pr_branch(self):
         """With NO config, a feature branch is recognised as a PR and its whole

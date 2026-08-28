@@ -590,12 +590,14 @@ if MOD_TSV.exists():
             })
 
 # ── Coupling edges, per view ─────────────────────────────────────────────────
-# fan_in / fan_out are counts; the "Coupling wires" overlay needs the relation
+# fan_in / fan_out are counts; the "Coupling pipes" overlay needs the relation
 # itself, so compute_fanio.py also writes coupling-edges.tsv (source -> target,
-# one row per reference). Here it is folded into an adjacency list keyed exactly
-# like each view's rows, so the same lookup works whether a building is a class,
-# a package or a module. Absent file (an older tool run) => no wires, and the
-# checkbox simply has nothing to draw.
+# one row per reference). Here it is folded into a WEIGHTED adjacency list keyed
+# exactly like each view's rows, so the same lookup works whether a building is a
+# class, a package or a module. The weight is how many references the pair carries
+# — one at class level, often dozens once classes fold into packages — and it is
+# what a pipe's thickness is drawn from. Absent file (an older tool run) => no
+# pipes, and the checkbox simply has nothing to draw.
 def _coupling_adjacency():
     edges_tsv = TSV.with_name("coupling-edges.tsv")
     if not edges_tsv.exists():
@@ -620,6 +622,12 @@ def _coupling_adjacency():
         for row in csv.DictReader(f, delimiter="\t"):
             src = (row.get("source") or "").lstrip("./")
             dst = (row.get("target") or "").lstrip("./")
+            # `weight` arrived with the pipes; an edge file from an older tool run has
+            # none, and every edge there is worth exactly the one reference it recorded.
+            try:
+                weight = max(1, int(row.get("weight") or 1))
+            except ValueError:
+                weight = 1
             # Only edges between two rendered buildings can be drawn.
             if src not in class_paths or dst not in class_paths or src == dst:
                 continue
@@ -627,11 +635,15 @@ def _coupling_adjacency():
                               ("packages", pkg_of.get),
                               ("modules", mod_of)):
                 a, b = key(src), key(dst)
-                # A package depending on itself is just its own internals: no wire.
+                # A package depending on itself is just its own internals: no pipe.
                 if a is None or b is None or a == b:
                     continue
-                views[view].setdefault(a, set()).add(b)
-    return {view: {k: sorted(v) for k, v in sorted(adj.items())} for view, adj in views.items()}
+                peers = views[view].setdefault(a, {})
+                peers[b] = peers.get(b, 0) + weight
+    return {
+        view: {k: dict(sorted(v.items())) for k, v in sorted(adj.items())}
+        for view, adj in views.items()
+    }
 
 
 COUPLING = _coupling_adjacency()
@@ -1208,7 +1220,6 @@ html = """<!doctype html>
   Shift-click a floor/building to zoom in<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
-  <span id="wireHint" hidden><br>Hold &#8997; Alt over a building to trace its coupling</span>
 </aside>
 <section class="panel">
   <h1>__LOGO_SVG__<span>__TITLE__</span><select id="viewMode" class="titleView"
@@ -1293,6 +1304,13 @@ html = """<!doctype html>
       <option value="floor" selected>on the floor (edges)</option>
       <option value="off">off</option>
     </select>
+    <span class="spanRest"></span>
+
+    <span class="knob" id="couplingKnob">Coupling</span>
+    <label class="checkbox" id="couplingLabel"
+           title="Hover a building to see the dependencies it sits on, run as pipes under the city. A thicker pipe means more references between the two.">
+      <input id="couplingPipes" type="checkbox" aria-label="coupling pipes"> pipes, on hover
+    </label>
     <span class="spanRest"></span>
 
     <span class="knob" id="changesKnob">Changes</span>
@@ -1482,10 +1500,14 @@ function changeMode() { return changeSelect ? changeSelect.value : "off"; }
 // Nothing to trace if the tool that produced this page predates coupling-edges.tsv —
 // then ⌥ simply does nothing, and the hint that advertises it is not shown.
 const HAS_COUPLING = Object.values(COUPLING || {}).some(adj => Object.keys(adj).length);
-// A held modifier is invisible until someone tells you it exists — this is the only
-// affordance the overlay has now that there is no checkbox to see.
-const wireHintEl = document.getElementById("wireHint");
-if (wireHintEl && HAS_COUPLING) wireHintEl.hidden = false;
+// No coupling data (a page from an older tool run) => nothing the checkbox could draw,
+// so the row goes, the same way the Changes row goes when there is no diff.
+if (!HAS_COUPLING) {
+  for (const el of [document.getElementById("couplingKnob"),
+                    document.getElementById("couplingLabel")]) {
+    if (el) el.style.display = "none";
+  }
+}
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
 // is staring at a delta and needs to know which one. The tag ("commit: a5d03cb")
@@ -2072,7 +2094,7 @@ function buildHierarchy(areaMetric) {
 }
 
 function clearCity() {
-  clearWires();          // they point at meshes this rebuild is about to dispose
+  clearPipes();          // they point at meshes this rebuild is about to dispose
   for (const label of cityLabels) {
     label.obj.removeFromParent();
     label.el.remove();
@@ -2549,43 +2571,53 @@ function updateLabelVisibility() {
   }
 }
 
-// ── Coupling wires ───────────────────────────────────────────────────────────
-// HOLD ⌥/Alt and the building under the cursor traces the dependency edges it sits on:
-// BLUE arrows leave it (what it references — outgoing coupling, Ce) and RED arrows
-// arrive at it (what references it — incoming coupling, Ca). Held, not toggled: this is
-// a question you ask of one building for a second, not a layer you leave switched on —
-// and a city with every edge drawn at once is a hairball anyway. Release and it is gone,
-// so it costs nothing to try and there is no checkbox to remember you left ticked.
-const WIRE_KEY = "altKey";
-const WIRE_OUT = 0x1d4ed8;      // blue — outgoing
-const WIRE_IN = 0xdc2626;       // red — incoming
-const WIRE_CAP = 80;            // per direction; a hub with 900 dependants is not readable anyway
-// Tubes, not THREE.Line: WebGL ignores `linewidth`, so a Line is always one physical
-// pixel — over a city plate that reads as a scratch, not as a wire. A swept tube is a
-// real mesh, so it thickens with the zoom like everything else on screen.
-// Opaque and depth-tested, so a wire passing behind a tower is CUT by it exactly like a
-// real cable would be. That occlusion is what puts the arc in the city rather than on a
-// pane of glass in front of it: which buildings a dependency flies over, and how far
-// away its far end really is, only become legible once the skyline can hide part of it.
-const wireMaterials = {
-  out: new THREE.MeshBasicMaterial({ color: WIRE_OUT }),
-  in: new THREE.MeshBasicMaterial({ color: WIRE_IN }),
+// ── Coupling pipes ──────────────────────────────────────────────────────────
+// Tick "pipes" and the building under the cursor shows the dependency edges it sits on,
+// run as PLUMBING under the city: each one leaves the building's base, drops below the
+// plate, crosses beneath the districts and climbs back up into its peer. Dependencies
+// really are the city's utilities — nobody put them there for the view, everything
+// stands on them — and a pipe network says that where a wire strung between two roofs
+// said "cable", which is a thing you can re-route. It is also what lets a hub's bundle
+// stay readable: eighty arcs over the skyline is a hairball, eighty pipes under it is a
+// service map.
+//
+// On HOVER only, and off by default: this is a question you ask of one building for a
+// second, not a layer to leave switched on — a city with every edge drawn at once is
+// unreadable whichever side of the plate it is drawn on.
+const PIPE_CAP = 80;            // per direction; a hub with 900 dependants is not readable anyway
+const PIPE_GREY = 0x64748b;     // the city's own slate — a utility, not an alarm
+const PIPE_RED = 0xdc2626;      // ...but while a diff is on screen, coupling IS the alarm
+const PIPE_MIN_R = 0.55;        // × cityUnit — a single reference
+const PIPE_MAX_R = 3.4;         // × cityUnit — the 95th-percentile edge and up
+const PIPE_DIP = 26;            // × cityUnit below the base — clear of the deepest terrace
+
+// Depth-tested OFF on purpose. Everything the pipes run under — the ground slab, every
+// district terrace — is opaque, so a faithfully buried pipe is a pipe nobody ever sees.
+// Drawn through the plate instead, at 0.9, they read as the x-ray they are; the dip
+// below the buildings' feet is what still says "under" rather than "over".
+const pipeMaterials = {
+  grey: new THREE.MeshBasicMaterial({ color: PIPE_GREY, transparent: true, opacity: 0.9, depthTest: false }),
+  red: new THREE.MeshBasicMaterial({ color: PIPE_RED, transparent: true, opacity: 0.9, depthTest: false }),
 };
-let wireGroup = null;           // the wires currently drawn (one hovered building's)
-let wiredPath = null;           // whose they are, so a pointermove inside the same roof is free
-let wireKeyDown = false;        // is ⌥ held right now?
-// How many wires the last draw actually put on screen per direction, vs how many peers
+let pipeGroup = null;           // the pipes currently drawn (one hovered building's)
+let pipedPath = null;           // whose they are, so a pointermove inside the same roof is free
+// How many pipes the last draw actually put on screen per direction, vs how many peers
 // were there to draw: the hover tooltip says so on the coupling lines, so a capped or
 // filtered-down bundle never passes for the whole truth.
 const wireStatus = { out: null, in: null };
 const _incomingByView = new Map();   // view name -> transposed adjacency, built on first need
+const _pipeScaleByView = new Map();  // view name -> the weight a pipe is drawn full-thickness at
+
+const couplingCheck = document.getElementById("couplingPipes");
+function pipesOn() { return !!(couplingCheck && couplingCheck.checked && HAS_COUPLING); }
 
 function couplingViewName() { return viewSelect ? viewSelect.value : "classes"; }
 
+// { peer path -> reference count } for everything this row points at.
 function outgoingAdjacency() { return (COUPLING && COUPLING[couplingViewName()]) || {}; }
 
-// Incoming = the transpose of outgoing. Built lazily and kept: the adjacency is a
-// property of the data, not of the camera or the hover.
+// Incoming = the transpose of outgoing, weights carried across. Built lazily and kept:
+// the adjacency is a property of the data, not of the camera or the hover.
 function incomingAdjacency() {
   const view = couplingViewName();
   let map = _incomingByView.get(view);
@@ -2593,9 +2625,9 @@ function incomingAdjacency() {
     map = new Map();
     const out = outgoingAdjacency();
     for (const src of Object.keys(out)) {
-      for (const dst of out[src]) {
-        if (!map.has(dst)) map.set(dst, []);
-        map.get(dst).push(src);
+      for (const [dst, weight] of Object.entries(out[src])) {
+        if (!map.has(dst)) map.set(dst, {});
+        map.get(dst)[src] = weight;
       }
     }
     _incomingByView.set(view, map);
@@ -2603,116 +2635,133 @@ function incomingAdjacency() {
   return map;
 }
 
-function clearWires() {
-  if (wireGroup) {
-    scene.remove(wireGroup);
-    // Materials are the four shared ones above — only the per-wire geometry is ours to free.
-    wireGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
-    wireGroup = null;
+// Thickness is read off the whole view, not off the hovered bundle: a pipe has to mean
+// the same thing on every building, or "thick" degrades to "the fattest one here".
+// p95 for the same reason the height ramp uses it — one 300-reference god class would
+// otherwise flatten every honest edge in the repo to a thread.
+function pipeWeightScale() {
+  const view = couplingViewName();
+  if (!_pipeScaleByView.has(view)) {
+    const weights = [];
+    const out = outgoingAdjacency();
+    for (const src of Object.keys(out)) weights.push(...Object.values(out[src]));
+    _pipeScaleByView.set(view, percentile(weights, 0.95) || 1);
   }
-  wiredPath = null;
+  return _pipeScaleByView.get(view);
+}
+
+function pipeRadius(weight) {
+  const scale = pipeWeightScale();
+  const t = Math.min(1, Math.log1p(Math.max(1, weight)) / Math.log1p(Math.max(2, scale)));
+  return (PIPE_MIN_R + (PIPE_MAX_R - PIPE_MIN_R) * t) * cityUnit;
+}
+
+function clearPipes() {
+  if (pipeGroup) {
+    scene.remove(pipeGroup);
+    // Materials are the two shared ones above — only the per-pipe geometry is ours to free.
+    pipeGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    pipeGroup = null;
+  }
+  pipedPath = null;
   wireStatus.out = wireStatus.in = null;
 }
 
-// Where a wire meets a roof. All of them leaving the exact centre knots into an
-// unreadable star the moment a building has more than a handful of peers, so each one
-// leaves (or lands) at the point of the roof slab that FACES its peer: the roof
-// rectangle cut along the horizontal direction to the other building, at 70% of the
-// way out. The bundle then fans around the roof in the directions the couplings
-// actually run — which is itself information, since the city is laid out by package.
-function roofAnchor(entry, towards) {
+// Where a pipe meets the ground under a building. All of them leaving the exact centre
+// knot into an unreadable star the moment a building has more than a handful of peers,
+// so each one leaves (or arrives) at the point of the FOOTPRINT that faces its peer: the
+// base rectangle cut along the horizontal direction to the other building, at 70% of the
+// way out. The bundle then fans around the base in the directions the couplings actually
+// run — which is itself information, since the city is laid out by package.
+function baseAnchor(entry, towards) {
   const c = entry.mesh.position;
-  const roofY = entry.roofY;
   let dx = towards.x - c.x, dz = towards.z - c.z;
   const len = Math.hypot(dx, dz);
-  if (len < 1e-6) return new THREE.Vector3(c.x, roofY, c.z);
+  if (len < 1e-6) return new THREE.Vector3(c.x, entry.baseY, c.z);
   dx /= len; dz /= len;
   const reach = Math.min(
     Math.abs(dx) > 1e-6 ? (entry.width / 2) / Math.abs(dx) : Infinity,
     Math.abs(dz) > 1e-6 ? (entry.depth / 2) / Math.abs(dz) : Infinity
   ) * 0.7;
-  return new THREE.Vector3(c.x + dx * reach, roofY, c.z + dz * reach);
+  return new THREE.Vector3(c.x + dx * reach, entry.baseY, c.z + dz * reach);
 }
 
-// An arc, not a straight line: a chord across a dense skyline disappears into the
-// buildings it crosses. The loop is deliberately tall — high enough that its apex clears
-// the towers between the two ends, so most of the wire is read against the sky and only
-// its ends dive back down into the city. A shallow arc reads as a scribble on the plate;
-// a tall one reads as a span between two points, which is what it is.
-function wireCurve(a, b) {
-  const mid = a.clone().add(b).multiplyScalar(0.5);
-  mid.y = Math.max(a.y, b.y) + a.distanceTo(b) * 0.42 + 26 * cityUnit;
-  return new THREE.QuadraticBezierCurve3(a, mid, b);
-}
-
-// One arrow: a dot at the roof it LEAVES, the arc, and a cone at the roof it ARRIVES at.
-// Colour alone can't say which end is which (both ends of a red wire touch a roof); the
-// dot–arc–head grammar can, and it survives the arc being half-hidden behind a tower.
-const WIRE_RADIUS = 1.15;     // × cityUnit
-const _wireUp = new THREE.Vector3(0, 1, 0);
-function addWire(group, from, to, kind) {
-  const curve = wireCurve(from, to);
-  const dot = new THREE.Mesh(
-    new THREE.SphereGeometry(2.6 * cityUnit, 12, 8),
-    wireMaterials[kind]
+// Down, across, up — with rounded elbows, the way a buried service run is drawn. The
+// centripetal parameterisation is what keeps the curve from overshooting back up through
+// the plate at the two ends, which a uniform Catmull-Rom does on a right-angle turn.
+function pipeCurve(a, b) {
+  const y = Math.min(a.y, b.y) - PIPE_DIP * cityUnit;
+  return new THREE.CatmullRomCurve3(
+    [a, new THREE.Vector3(a.x, y, a.z), new THREE.Vector3(b.x, y, b.z), b],
+    false, "centripetal"
   );
-  // Lifted off the slab by its own radius: sunk to the roof plane it z-fights with it.
-  dot.position.copy(from).addScaledVector(_wireUp, 1.6 * cityUnit);
-  group.add(dot);
+}
+
+// One run: a collar at the base it LEAVES, the pipe, and a cone rising into the base it
+// FEEDS. Colour cannot say which end is which (both ends of a grey pipe touch a base);
+// the collar–pipe–head grammar can, and it survives half the run being off screen.
+const _pipeUp = new THREE.Vector3(0, 1, 0);
+function addPipe(group, from, to, weight, material) {
+  const curve = pipeCurve(from, to);
+  const radius = pipeRadius(weight);
+  const collar = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.7, 12, 8), material);
+  collar.position.copy(from);
+  group.add(collar);
   // Stop the tube short of the tip so the cone is the pointy end, not a bulge on a stick.
-  const headLen = 9 * cityUnit;
-  const shaftEnd = Math.max(0.05, 1 - headLen / Math.max(1e-6, curve.getLength()));
-  // de Casteljau: the sub-curve [0, shaftEnd] of a quadratic Bézier is itself quadratic,
-  // with control point lerp(P0, P1, t) — reusing P1 unchanged would bend the shaft away
-  // from the arc its own arrowhead sits on.
-  const shaftCtrl = curve.v0.clone().lerp(curve.v1, shaftEnd);
+  const headLen = Math.max(7 * cityUnit, radius * 4);
+  const total = Math.max(1e-6, curve.getLength());
+  const shaftEnd = Math.max(0.05, 1 - headLen / total);
   const shaft = new THREE.Mesh(
     new THREE.TubeGeometry(
-      new THREE.QuadraticBezierCurve3(curve.v0, shaftCtrl, curve.getPoint(shaftEnd)),
-      24, WIRE_RADIUS * cityUnit, 6, false
+      new THREE.CatmullRomCurve3(
+        curve.getSpacedPoints(48).slice(0, Math.max(2, Math.round(48 * shaftEnd) + 1)),
+        false, "centripetal"
+      ),
+      40, radius, 10, false
     ),
-    wireMaterials[kind]
+    material
   );
   group.add(shaft);
-  const head = new THREE.Mesh(
-    new THREE.ConeGeometry(3 * cityUnit, headLen, 12),
-    wireMaterials[kind]
-  );
+  const head = new THREE.Mesh(new THREE.ConeGeometry(radius * 2.3, headLen, 12), material);
   const dir = curve.getTangent(1).normalize();
-  head.quaternion.setFromUnitVectors(_wireUp, dir);
+  head.quaternion.setFromUnitVectors(_pipeUp, dir);
   head.position.copy(curve.getPoint(1)).addScaledVector(dir, -headLen / 2);
   group.add(head);
 }
 
-// Draw the wires of one building — or clear them, for `null` / ⌥ not being held.
-function showWiresFor(entry) {
-  if (!wireKeyDown || !entry) {
-    if (wiredPath !== null) clearWires();
+// Draw the pipes of one building — or clear them, for `null` / the checkbox being off.
+function showPipesFor(entry) {
+  if (!pipesOn() || !entry) {
+    if (pipedPath !== null) clearPipes();
     return;
   }
   const path = entry.file.path;
-  if (path === wiredPath) return;         // same building as last frame — nothing to redo
-  clearWires();
-  wiredPath = path;
+  if (path === pipedPath) return;         // same building as last frame — nothing to redo
+  clearPipes();
+  pipedPath = path;
 
+  // Grey normally; red while a diff is on screen, where "what else does this touch?" is
+  // the follow-up question to every changed building and deserves to shout.
+  const material = changeMode() === "highlight" ? pipeMaterials.red : pipeMaterials.grey;
   const group = new THREE.Group();
+  group.renderOrder = -1;   // first of the transparents, so the greyed city veils them
   let drawn = 0;
   for (const [kind, peers] of [
-    ["out", outgoingAdjacency()[path] || []],
-    ["in", incomingAdjacency().get(path) || []],
+    ["out", outgoingAdjacency()[path] || {}],
+    ["in", incomingAdjacency().get(path) || {}],
   ]) {
     let reachable = 0, n = 0;
-    for (const peerPath of peers) {
+    for (const [peerPath, weight] of Object.entries(peers)) {
       // Peers filtered out, or outside the drilled-into scope, have no building to reach.
       const peer = buildingByPath.get(peerPath);
       if (!peer || peer === entry) continue;
       reachable++;
-      if (n >= WIRE_CAP) continue;
-      const here = roofAnchor(entry, peer.mesh.position);
-      const there = roofAnchor(peer, entry.mesh.position);
-      // Blue leaves this roof and lands on the peer; red comes the other way.
-      if (kind === "out") addWire(group, here, there, kind);
-      else addWire(group, there, here, kind);
+      if (n >= PIPE_CAP) continue;
+      const here = baseAnchor(entry, peer.mesh.position);
+      const there = baseAnchor(peer, entry.mesh.position);
+      // "out" feeds the peer; "in" arrives here.
+      if (kind === "out") addPipe(group, here, there, weight, material);
+      else addPipe(group, there, here, weight, material);
       n++; drawn++;
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
@@ -2720,7 +2769,7 @@ function showWiresFor(entry) {
   }
   if (!drawn) return;
   scene.add(group);
-  wireGroup = group;
+  pipeGroup = group;
 }
 
 // ── Package-name labels (two switchable styles) ──────────────────────────────
@@ -2986,17 +3035,17 @@ function formatHover(file) {
   return hoverHeaderForFile(file) + `<ul class="props">${items.join("")}</ul>`;
 }
 
-// While ⌥ is tracing this building, the two coupling lines say how much of that number is
-// actually on screen as a wire. Two ways it can be less than the metric: peers hidden by
-// the filter or the drill scope have no building to reach, and past WIRE_CAP we stop
-// drawing. Silence here would let a bundle of 80 pass for a fan-out of 300.
+// While this building's pipes are up, the two coupling lines say how much of that number
+// is actually on screen. Two ways it can be less than the metric: peers hidden by the
+// filter or the drill scope have no building to reach, and past PIPE_CAP we stop drawing.
+// Silence here would let a bundle of 80 pass for a fan-out of 300.
 function wireNote(key) {
   const status = key === "fan_out" ? wireStatus.out : key === "fan_in" ? wireStatus.in : null;
   if (!status || !status.reachable) return "";
   const drawn = status.drawn === status.reachable
-    ? `${status.drawn} wire${status.drawn === 1 ? "" : "s"}`
+    ? `${status.drawn} pipe${status.drawn === 1 ? "" : "s"}`
     : `${status.drawn} of ${status.reachable} drawn`;
-  return ` <span class="perkloc">(&#8997; ${drawn})</span>`;
+  return ` <span class="perkloc">(${drawn})</span>`;
 }
 
 function formatDistrictHover(district) {
@@ -3008,17 +3057,16 @@ function formatDistrictHover(district) {
     `<ul class="props"><li><span>Java files: <b>${count}</b></span></li></ul>`;
 }
 
-let lastPointerEvent = null;   // the most recent hover, replayed when ⌥ goes down or up
+let lastPointerEvent = null;   // the most recent hover, replayed when the checkbox flips
 
-// ⌥ pressed or released with the mouse parked: no pointer event will come, so re-run the
-// last one. `repeat` keydowns while it is held would redo the same work every ~30 ms.
-function onWireKey(event) {
-  if (event.key !== "Alt" || event.repeat) return;
-  const down = event.type === "keydown";
-  if (down === wireKeyDown) return;
-  wireKeyDown = down;
-  if (lastPointerEvent) onPointerMove(lastPointerEvent);
-  else if (!down) clearWires();
+// Ticked or unticked with the mouse parked over a building: no pointer event will come,
+// so re-run the last one rather than making the reader jiggle the mouse to see it work.
+if (couplingCheck) {
+  couplingCheck.addEventListener("change", () => {
+    dismissIntro();
+    if (!couplingCheck.checked) clearPipes();
+    else if (lastPointerEvent) onPointerMove(lastPointerEvent);
+  });
 }
 
 function onPointerMove(event) {
@@ -3028,16 +3076,12 @@ function onPointerMove(event) {
       Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y) > 3) {
     isDragging = true;
   }
-  // Same object back = onWireKey replaying this hover, in which case the event's own
-  // stale modifier flags must NOT overwrite the ⌥ state that triggered the replay.
-  const replay = event === lastPointerEvent;
-  lastPointerEvent = event;           // so a modifier press can replay this hover
+  lastPointerEvent = event;           // so the pipes checkbox can replay this hover
   if (introEl) {                      // keep the intro uncluttered: no hover tooltips while it is up
     hover.classList.remove("visible");
     applyCursor(event);
     return;
   }
-  if (!replay) wireKeyDown = !!event[WIRE_KEY];   // a fresh pointer event is the truth about ⌥
   const navKey = event[NAV_KEY] && !event.metaKey && !event.ctrlKey && !event.altKey;
   const hit = pickBuilding(event);
   for (const entry of buildings) {
@@ -3045,8 +3089,8 @@ function onPointerMove(event) {
   }
   applyExternalHighlight();   // keep the codemap-linked building lit even while moving over the city
   postCityHover(hit && hit.object.userData.file ? hit.object.userData.file.path : null);
-  // Coupling wires follow the same hover as the tooltip (no-op unless ⌥ is held).
-  showWiresFor(hit && hit.object.userData.file
+  // Coupling pipes follow the same hover as the tooltip (no-op unless "pipes" is ticked).
+  showPipesFor(hit && hit.object.userData.file
     ? buildingByPath.get(hit.object.userData.file.path)
     : null);
   let tooltipObj = null;
@@ -3764,11 +3808,10 @@ window.addEventListener("keyup", applyCursor);
 // cursor sits still has to replay the last hover by hand, or the wires would only appear
 // after you jiggle the mouse. Replaying the whole pointermove (not just the wire call)
 // keeps the tooltip, cursor and wires derived from one code path.
-window.addEventListener("keydown", onWireKey);
-window.addEventListener("keyup", onWireKey);
+
 // Alt-Tabbing away releases the key somewhere we never hear about; without this the
 // wires would still be hanging in the city when you come back.
-window.addEventListener("blur", () => { wireKeyDown = false; clearWires(); });
+window.addEventListener("blur", clearPipes);
 window.addEventListener("blur", () => { pointerIsDown = false; isDragging = false; renderer.domElement.style.cursor = "default"; });
 window.addEventListener("dblclick", onDoubleClick);
 window.addEventListener("click", onSceneClick);

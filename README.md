@@ -57,7 +57,7 @@ unsetting `HEATMAP_OPEN_IN`.
 | `commits` | non-merge commits that touched the file (full history) |
 | `bug_commits` | of those, commits whose subject is a Conventional-Commit `fix:` |
 | `cognitive_complexity` | Sonar-style cognitive complexity (tree-sitter, summed over methods) |
-| `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, which is what the Coupling-wires overlay draws |
+| `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, weighted by reference count — what the Coupling-pipes overlay draws |
 
 ## Pipeline
 
@@ -217,40 +217,48 @@ the three key spaces the datasets use — file path, dotted package, module dir 
 switching is a `Set` lookup per row and the Classes / Packages / Modules lenses all stay
 correct without re-deriving any path logic in the browser.
 
-**Coupling wires:** **hold ⌥ / Alt** over a building and it grows a bundle of arrows:
-**blue leaving it** (what it references — outgoing coupling, `Ce`) and **red arriving at
-it** (what references it — incoming coupling, `Ca`). Release and they are gone. Held
-rather than toggled, because this is a question you ask of one building for a second, not
-a layer you leave switched on — it costs nothing to try, and there is no checkbox to
-remember you ticked. (It works with the mouse parked: pressing the key replays the hover.)
+**Coupling pipes:** tick **Coupling → pipes** (off by default) and the building under the
+cursor shows the dependency edges it sits on, run as **plumbing under the city**: each one
+leaves the building's base, drops below the plate, crosses beneath the districts and climbs
+back up into its peer. Dependencies really are the city's utilities — nobody put them there
+for the view, everything stands on them — and a pipe network says that, where a cable strung
+between two roofs says "re-routable". It is also what keeps a hub readable: eighty arcs over
+the skyline is a hairball, eighty pipes under it is a service map. On **hover only**, so the
+question stays "what does *this* building touch", never a layer left switched on. (It works
+with the mouse parked: ticking the box replays the hover.)
 
-Four details make the bundle readable:
+What makes the bundle readable:
 
-- Every arrow has a **dot at the roof it leaves** and a **head at the roof it arrives
-  at**. Colour alone cannot say which end is which — both ends of a red wire touch a roof
-  — and the dot/head grammar survives the middle of the arc being hidden.
-- Wires **do not all meet at the roof's centre**. Each one leaves (or lands) at the point
-  of the roof slab that faces its peer, so the bundle fans out around the roof in the
-  directions the couplings actually run — which is itself information, the city being
-  laid out by package.
-- They are **tall arcs**, high enough to clear the towers between their two ends, so most
-  of a wire is read against the sky and only its ends dive into the city.
-- They are **opaque, depth-tested tubes**. Tubes because WebGL clamps `linewidth` to one
-  physical pixel, which over a city plate reads as a scratch. Depth-tested because a wire
-  passing behind a tower should be *cut* by it, exactly like a real cable: that occlusion
-  is what puts the arc **in** the city rather than on a pane of glass in front of it, and
-  it is how you read which buildings a dependency flies over and how far away its far end
-  really is.
+- **Thickness is coupling strength.** `coupling-edges.tsv` now carries a `weight` — how many
+  times the source names the target, with comments and string literals already stripped — so
+  an import that is used once and one used thirty times are not the same pipe. The scale is
+  read off the whole lens (95th percentile, log ramp), not off the hovered bundle, so "thick"
+  means the same thing on every building instead of "the fattest one here".
+- **Grey, or red on a diff.** Slate normally: coupling is infrastructure, not an alarm. But in
+  *highlight changed*, "what else does this touch?" is the follow-up question to every changed
+  building, and the pipes go red to answer it.
+- Every pipe has a **collar at the base it leaves** and a **head rising into the base it
+  feeds**. Colour cannot say which end is which — both ends of a grey pipe touch a base — and
+  the collar/head grammar survives half the run being off screen.
+- Pipes **do not all meet under the building's centre**. Each one leaves (or arrives) at the
+  point of the footprint facing its peer, so the bundle fans out in the directions the
+  couplings actually run — which is itself information, the city being laid out by package.
+- They are **tubes drawn through the plate**. Tubes because WebGL clamps `linewidth` to one
+  physical pixel, which over a city plate reads as a scratch. Drawn through because everything
+  a pipe runs under — the ground slab, every district terrace — is opaque, so a faithfully
+  buried pipe is one nobody ever sees; at 0.9 opacity they read as the x-ray they are, and the
+  dip below the buildings' feet is what still says *under* rather than *over*.
 
-The two coupling lines in the hover tooltip say how many wires are actually on screen
-(`outgoing coupling (fan out): 17 (⌥ 17 wires)`). It reads `12 of 40 drawn` when peers are
+The two coupling lines in the hover tooltip say how many pipes are actually on screen
+(`outgoing coupling (fan out): 17 (17 pipes)`). It reads `12 of 40 drawn` when peers are
 hidden by the filter or the drill scope, or when the per-direction cap of 80 kicks in — a
 bundle must never pass for the whole number above it.
 
-The edges come from `coupling-edges.tsv` and are baked into the page **per lens** — class
-→ class, package → package, module → module — with a level's internal edges dropped, so a
-package never wires to itself. A build whose `codemap.tsv` has no `coupling-edges.tsv`
-beside it (an older run of the tool) renders normally, and ⌥ simply does nothing.
+The edges are baked into the page **per lens** — class → class, package → package, module →
+module — with a level's internal edges dropped (so a package never pipes to itself) and their
+weights summed as they fold up. A build whose `codemap.tsv` has no `coupling-edges.tsv` beside
+it (an older run of the tool) renders normally, with the Coupling row removed; an edge file
+from before the weights simply values every edge at one reference.
 
 **What is not an edge.** `compute_fanio.py` finds same-package references by scanning the
 file for sibling class names, so comments and string literals are **blanked out first**: a
