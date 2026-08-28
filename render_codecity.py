@@ -3316,30 +3316,39 @@ const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-b
 // The clearest change mark on screen, or null when the city carries none. A dashed
 // rectangle floating over a roof is the one thing on a building that the three metric
 // selectors do NOT explain, so if one is up at startup the intro has to name it.
-// Roof marks win over facade bands: a band wraps the block, so half of it is behind
-// geometry the SVG overlay would happily draw straight through.
-function clearestChangeMark(project) {
+//
+// `cardsLeft` is where the label stack begins. Every leader in this overlay leaves its
+// card by the LEFT edge, so a mark to the right of the stack can only be reached by a
+// line drawn straight across the other three cards — which is exactly what it looked
+// like. Anything at or past that edge is therefore not a candidate at all.
+//
+// Among what is left the pick goes in tiers, best first:
+//   1. a roof mark low on screen   2. any mark low on screen   3. anything reachable
+// Low wins because the CHANGED card sits at the BOTTOM of the stack: a leader that
+// leaves it heading down-left passes under the other three leaders instead of through
+// them. Roof marks win over facade bands: a band wraps the block, so half of it is
+// behind geometry the SVG overlay would happily draw through.
+function clearestChangeMark(project, cardsLeft) {
   const W = window.innerWidth;
   const H = window.innerHeight;
-  let best = null;
+  const tiers = [null, null, null];
   for (const mark of changeMarks) {
     const points = mark.userData.corners.map(([x, z]) => project(x, mark.userData.y, z));
     if (points.some(p => p.z >= 1)) continue;
     const x = points.reduce((sum, p) => sum + p.x, 0) / 4;
     const y = points.reduce((sum, p) => sum + p.y, 0) / 4;
-    if (x < W * 0.34 || x > W * 0.9 || y < H * 0.12 || y > H * 0.85) continue;
+    if (x < W * 0.34 || x > cardsLeft - 24 || y < H * 0.12 || y > H * 0.9) continue;
     let area = 0;   // shoelace, so "clearest" means "biggest on screen"
     for (let i = 0; i < 4; i++) {
       const a = points[i], b = points[(i + 1) % 4];
       area += a.x * b.y - b.x * a.y;
     }
+    const low = y > H * 0.5;
+    const tier = low && mark.userData.axis === "area" ? 0 : low ? 1 : 2;
     const candidate = { score: Math.abs(area) / 2, points, axis: mark.userData.axis, anchor: { x, y } };
-    const better = !best
-      || (candidate.axis === "area" && best.axis !== "area")
-      || (candidate.axis === best.axis && candidate.score > best.score);
-    if (better) best = candidate;
+    if (!tiers[tier] || candidate.score > tiers[tier].score) tiers[tier] = candidate;
   }
-  return best;
+  return tiers.find(Boolean) || null;
 }
 
 function escapeXml(value) {
@@ -3414,11 +3423,17 @@ function buildIntro() {
     area: roofCentroid,
   };
 
+  // Where the label stack begins — needed BEFORE the channels are known, because the
+  // change mark has to be picked from the marks that column can be reached from.
+  const LW = 200;
+  const LH = 50;
+  const lx = Math.min(heroRight + 46, W - LW - 18);
+
   // The dashed marks are the one thing on a building the metric selectors do not
   // explain, so when the city opens with some up, they get a card of their own —
   // pointing at a real mark, not at the hero, and saying which axis it measures.
   const channels = INTRO_CHANNELS.slice();
-  const changeMark = clearestChangeMark(project);
+  const changeMark = clearestChangeMark(project, lx);
   if (changeMark && changeSelect) {
     channels.push({
       key: "changes", color: MARK_INK, title: "CHANGED",
@@ -3429,9 +3444,6 @@ function buildIntro() {
   }
 
   // Stack the label cards just right of the hero.
-  const LW = 200;
-  const LH = 50;
-  const lx = Math.min(heroRight + 46, W - LW - 18);
   let ly = Math.max(70, Math.min(edgeTop.y - 12, H - channels.length * (LH + 18) - 40));
   const rows = channels.map(ch => {
     const select = ch.select();
