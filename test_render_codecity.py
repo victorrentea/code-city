@@ -653,7 +653,10 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function addDeltaSlabs", html)
             self.assertIn('if (changeMode() !== "highlight") return null;', html)
             self.assertIn("const gain = boxDifference(was, now);", html)
-            self.assertIn("const loss = boxDifference(now, was);", html)
+            # Only growth is drawn — a file that got smaller renders as a plain block.
+            self.assertNotIn("boxDifference(now, was)", html)
+            self.assertIn("if (!gain.length) return null;", html)
+            self.assertIn("const DELTA_EDGE = 0x000000;", html)
             # ...and a gained slab answers to hover/click like the core it grew out of.
             self.assertIn("concat(deltaMeshes)", html)
             # ...measured with the building's own ruler, not a second copy of the maths.

@@ -138,21 +138,22 @@ city's three channels on the same number says nothing twice.
 
 **The space the diff won, in the colour it won it with:** highlighting says *which* files
 a diff touched, never *what it did to them* — a class that doubled and one that lost a
-method are the same shade of not-grey. So in *highlight changed* a changed building is not
+method are the same shade of not-grey. So in *highlight changed* a grown building is not
 one block but **two solids sharing one silhouette**:
 
 - the **core** — the box the file already was, in the colour that revision's heat earned;
 - the **gain** — the space this diff won on x / y / z, in the colour the file wears **now**,
-  outlined so it reads as a distinct object even when the two shades are one commit apart;
-- the **loss** — the space it gave up, a translucent husk in the old colour, sticking out
-  past the block the city draws today.
+  edged in **black** so it reads as its own object even when the two shades are one commit
+  apart (nothing else in the city is outlined, so the line itself means *new*).
 
 core ∪ gain is *exactly* the building the city would have drawn anyway, so nothing is
-exaggerated: the outline stays honest and the new material is simply visible as new. A
+exaggerated: the silhouette stays honest and the new material is simply visible as new. A
 gained slab answers to hover, click-to-open and shift-click-to-drill like the core it grew
 out of, and the hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
-Nothing is split when the diff moved no geometry at all, and a file the diff **added** is
-one solid block in its current colour — all of it is new.
+
+**Only growth is drawn.** A file that got *smaller* renders as a plain block — shrinking is
+the outcome nobody has to be warned about. Same for a file the diff **added** (all of it is
+new) and for one whose metrics did not move the geometry at all.
 
 The before-metrics are recovered from git at the very ref the change set is a diff of (the
 same one that decided which buildings light up — no second notion of "the diff"): size, LOC
@@ -162,8 +163,8 @@ the commit dropdown re-splits the buildings along with the highlight. Two limits
 deliberate: **fan-in / fan-out / instability** are whole-repo facts that would need every
 source re-parsed at the base ref, so a channel driven by one of them keeps the building's
 current value instead of guessing; and a **deleted** file has no row in the city at all any
-more, so it cannot be drawn back in. Package buildings sum their files' befores (classes and
-packages only — module rows carry no file→module map in the page).
+more. Package buildings sum their files' befores (classes and packages only — module rows
+carry no file→module map in the page).
 
 What counts as "changed" is **auto-detected** — no configuration needed (computed
 against `HEATMAP_REPO`, in precedence order):

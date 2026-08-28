@@ -1732,7 +1732,7 @@ function districtRing(node) {
 let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
-let deltaMeshes = [];    // the "gained"/"lost" slabs a changed building is split into
+let deltaMeshes = [];    // the "gained" slabs a grown building is split into
 let deltaOutlines = [];  // their edges — kept out of the pick list, a line is not a target
 let buildingByPath = new Map();   // row path -> its building entry (coupling wires resolve targets by path)
 let districts = [];
@@ -2123,17 +2123,19 @@ function medianFootprint(root) {
 //
 //   the core   — the box it already was, in the colour that revision's heat earned
 //   the gain   — the space this diff WON on x / y / z, in the colour the file wears now
-//   the loss   — the space it gave up, a translucent husk in the old colour
 //
 // core ∪ gain is exactly the building the city would have drawn anyway, so nothing is
 // exaggerated: the outline stays honest, and the new material is simply visible as new.
-const LOSS_OPACITY = 0.3;
+//
+// Only GROWTH is drawn. A file that got smaller renders as a plain block: shrinking is
+// the outcome nobody has to be warned about, and a husk of deleted code sticking out of
+// the skyline cost more attention than it ever repaid.
 const MIN_SLICE = 0.25;   // a sliver thinner than this is invisible and only z-fights
 // The two solids are coloured by the SAME metric one revision apart, so when that metric
 // barely moved they come out almost the same shade and the split would read as one block.
-// A crisp seam around the new volume is what makes it a distinct object without faking
+// A black edge around the new volume is what makes it a distinct object without faking
 // any value — the buildings carry no outlines otherwise, so the line itself means "new".
-const DELTA_EDGE = 0x1f2937;
+const DELTA_EDGE = 0x000000;
 
 // The part of `outer` that `inner` does not cover, for two boxes that share a centre in x/z and a floor in y, as a list
 // of {w,h,d,x,y,z} slabs (y measured from the shared floor). Everything above the inner
@@ -2143,17 +2145,17 @@ const DELTA_EDGE = 0x1f2937;
 function boxDifference(inner, outer) {
   const pieces = [];
   const shared = Math.min(inner.h, outer.h);
-  if (outer.h - inner.h > MIN_SLICE) {
+  if (outer.h > inner.h) {
     const t = outer.h - inner.h;
     pieces.push({ w: outer.w, h: t, d: outer.d, x: 0, y: inner.h + t / 2, z: 0 });
   }
-  if (outer.w - inner.w > MIN_SLICE * 2) {
+  if (outer.w > inner.w) {
     const t = (outer.w - inner.w) / 2;
     for (const side of [-1, 1]) {
       pieces.push({ w: t, h: shared, d: outer.d, x: side * (inner.w / 2 + t / 2), y: shared / 2, z: 0 });
     }
   }
-  if (outer.d - inner.d > MIN_SLICE * 2) {
+  if (outer.d > inner.d) {
     const t = (outer.d - inner.d) / 2;
     const w = Math.min(inner.w, outer.w);
     for (const side of [-1, 1]) {
@@ -2186,35 +2188,37 @@ function changeSplit(file, geo) {
     d: wasD,
   };
   const now = { w: geo.width, h: geo.height, d: geo.depth };
+  // Erase a gain too thin to see BY MOVING THE OLD SIZE UP TO THE NEW ONE, not by
+  // dropping the slab: the core is the intersection, so a skipped sliver would quietly
+  // shrink the whole building instead of just going unnoticed. A footprint gain is split
+  // across two opposite bands, so it needs twice the thickness to clear the same bar.
+  if (now.h - was.h > 0 && now.h - was.h < MIN_SLICE) was.h = now.h;
+  if (now.w - was.w > 0 && now.w - was.w < MIN_SLICE * 2) was.w = now.w;
+  if (now.d - was.d > 0 && now.d - was.d < MIN_SLICE * 2) was.d = now.d;
+
   const gain = boxDifference(was, now);
-  const loss = boxDifference(now, was);
-  if (!gain.length && !loss.length) return null;
+  if (!gain.length) return null;              // nothing won on any axis — draw a plain block
 
   return {
-    was,
+    // The core is the two boxes' intersection, so core ∪ gain is exactly `now` even when
+    // the file won height while losing footprint (or the other way round).
     core: { w: Math.min(was.w, now.w), h: Math.min(was.h, now.h), d: Math.min(was.d, now.d) },
     coreColor: colorFor(wasColor === null ? geo.colorValue : wasColor, geo.maxColor),
     gain,
-    loss,
   };
 }
 
-function addDeltaSlabs(pieces, color, translucent, cx, cz, baseY, file) {
+function addDeltaSlabs(pieces, color, cx, cz, baseY, file) {
   for (const piece of pieces) {
     const material = new THREE.MeshStandardMaterial({
       color,
       roughness: 0.58,
       metalness: 0.06,
     });
-    if (translucent) {
-      material.transparent = true;
-      material.opacity = LOSS_OPACITY;
-      material.depthWrite = false;
-    }
     const slab = new THREE.Mesh(new THREE.BoxGeometry(piece.w, piece.h, piece.d), material);
     slab.position.set(cx + piece.x, baseY + piece.y, cz + piece.z);
-    slab.castShadow = !translucent;   // a husk of deleted code should not darken the city
-    slab.receiveShadow = !translucent;
+    slab.castShadow = true;
+    slab.receiveShadow = true;
     slab.userData.file = file;        // hover / click / coupling resolve it like any building
     slab.userData.kind = "delta";
     scene.add(slab);
@@ -2222,11 +2226,7 @@ function addDeltaSlabs(pieces, color, translucent, cx, cz, baseY, file) {
 
     const outline = new THREE.LineSegments(
       new THREE.EdgesGeometry(slab.geometry),
-      new THREE.LineBasicMaterial({
-        color: DELTA_EDGE,
-        transparent: true,
-        opacity: translucent ? 0.28 : 0.55,
-      })
+      new THREE.LineBasicMaterial({ color: DELTA_EDGE })
     );
     outline.position.copy(slab.position);
     outline.userData.kind = "delta";
@@ -2369,11 +2369,8 @@ function rebuildCity() {
                      baseY, roofY: baseY + height,
                      footprint: Math.min(width, depth) });
     buildingByPath.set(file.path, buildings[buildings.length - 1]);
-    cityTop = Math.max(cityTop, baseY + Math.max(height, split ? split.was.h : 0));
-    if (split) {
-      addDeltaSlabs(split.gain, nowColor, false, cx, cz, baseY, file);
-      addDeltaSlabs(split.loss, split.coreColor, true, cx, cz, baseY, file);
-    }
+    cityTop = Math.max(cityTop, baseY + height);
+    if (split) addDeltaSlabs(split.gain, nowColor, cx, cz, baseY, file);
   }
   styleForChanges();
   refreshScopeOptions();
@@ -2386,7 +2383,7 @@ function rebuildCity() {
   renderChangeSource();
   window.__CODEMAP_3D_READY__ = {
     buildings: buildings.length,
-    deltaSlabs: deltaMeshes.length,   // gained/lost slabs currently split out
+    deltaSlabs: deltaMeshes.length,   // gained-volume slabs currently split out
     areaMetric,
     heightMetric,
     colorMetric,
