@@ -262,8 +262,20 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function incomingAdjacency", html)
             # Under the city, not over it: the pipe leaves the BASE and dips below it.
             self.assertIn("function baseAnchor", html)
-            self.assertIn("function pipeCurve", html)
-            self.assertIn("const PIPE_DIP = 26;", html)
+            # Orthogonal, like anything actually buried: down, along X, along Z, up,
+            # with a ball joint at each bend — not a spline draped under the plate.
+            self.assertIn("function addLeg", html)
+            self.assertIn("THREE.CylinderGeometry", html)
+            self.assertNotIn("CatmullRomCurve3", html)
+            self.assertNotIn("new THREE.CurvePath()", html)
+            # One depth for the whole network, below the ground slab...
+            self.assertIn("const PIPE_DEPTH = -11;", html)
+            # ...on staggered layers, so parallel runs stay separable.
+            self.assertIn("const PIPE_LAYERS = 6;", html)
+            # Orbit under the plate and the ground + terraces turn to glass, so the
+            # undersides of the buildings and the risers into them are actually visible.
+            self.assertIn("function syncUndersideView", html)
+            self.assertIn("camera.position.y < UNDERSIDE_Y", html)
             self.assertIn("entry.baseY", html)
             # Grey normally, red while a diff is on screen.
             self.assertIn("const PIPE_GREY = 0x64748b;", html)
@@ -272,8 +284,7 @@ class RenderCodecityTest(unittest.TestCase):
             # Thickness from the edge's weight, on a scale read off the whole view.
             self.assertIn("function pipeRadius", html)
             self.assertIn("function pipeWeightScale", html)
-            # Tubes, not THREE.Line: WebGL clamps line width to one pixel.
-            self.assertIn("THREE.TubeGeometry", html)
+            # Solids, not THREE.Line: WebGL clamps line width to one pixel.
             self.assertIn("THREE.ConeGeometry", html)
             self.assertIn("THREE.SphereGeometry", html)
             # Everything they run under is opaque, so they are drawn through it.

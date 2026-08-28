@@ -243,11 +243,24 @@ What makes the bundle readable:
 - Pipes **do not all meet under the building's centre**. Each one leaves (or arrives) at the
   point of the footprint facing its peer, so the bundle fans out in the directions the
   couplings actually run — which is itself information, the city being laid out by package.
-- They are **tubes drawn through the plate**. Tubes because WebGL clamps `linewidth` to one
+- They run **orthogonally**, because buried services do: down, along one axis, along the
+  other, up — with a ball joint at each bend, which is what an elbow fitting looks like.
+  Geometry is cylinders, not a swept tube over a curve path: a straight run *is* a cylinder,
+  and the tube version spent 430 ms per pipe arc-length-mapping a path that never curves.
+- The whole network sits at **one depth**, below the ground slab, on six staggered layers the
+  way a street stacks its services — so two runs going the same way between the same districts
+  do not come out as one pipe on screen — and every riser really does come up through the
+  plate into the base of its building.
+- They are **solid, drawn through the plate**. Solid because WebGL clamps `linewidth` to one
   physical pixel, which over a city plate reads as a scratch. Drawn through because everything
   a pipe runs under — the ground slab, every district terrace — is opaque, so a faithfully
-  buried pipe is one nobody ever sees; at 0.9 opacity they read as the x-ray they are, and the
-  dip below the buildings' feet is what still says *under* rather than *over*.
+  buried pipe is one nobody ever sees; at 0.9 opacity they read as the x-ray they are.
+
+**The city from underneath.** Orbit below the horizon and the plate is between your eye and the
+only things down there worth looking at. So once the camera drops under the plate's top face,
+**the ground and every district terrace turn to glass** (12% opacity) and the buildings stay
+solid — their undersides, and the risers coming up into them, are exactly what you came down
+there to see. Above the plate nothing changes.
 
 The two coupling lines in the hover tooltip say how many pipes are actually on screen
 (`outgoing coupling (fan out): 17 (17 pipes)`). It reads `12 of 40 drawn` when peers are

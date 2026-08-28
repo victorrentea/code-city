@@ -1763,6 +1763,9 @@ let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
 let changeMarks = [];    // dashed black marks where a grown building used to end
+const UNDERSIDE_Y = -1;          // the plate's top face: below it, the eye is under the city
+const UNDERSIDE_OPACITY = 0.12;
+let undersideGlass = null;       // null = "not applied yet", so a rebuild re-applies it
 let buildingByPath = new Map();   // row path -> its building entry (coupling wires resolve targets by path)
 let districts = [];
 let cityLabels = [];
@@ -2365,6 +2368,7 @@ function rebuildCity() {
                            maxMetric, heightScale, width, depth, height, baseY, cx, cz });
   }
   styleForChanges();
+  undersideGlass = null;   // fresh district materials: let the next frame re-glass them
   refreshScopeOptions();
   setupLabels(areaMetric, heightMetric, colorMetric);
   if (filterCountEl) filterCountEl.textContent = filterRe ? buildings.length + " shown" : "";
@@ -2589,7 +2593,12 @@ const PIPE_GREY = 0x64748b;     // the city's own slate — a utility, not an al
 const PIPE_RED = 0xdc2626;      // ...but while a diff is on screen, coupling IS the alarm
 const PIPE_MIN_R = 0.55;        // × cityUnit — a single reference
 const PIPE_MAX_R = 3.4;         // × cityUnit — the 95th-percentile edge and up
-const PIPE_DIP = 26;            // × cityUnit below the base — clear of the deepest terrace
+// One depth for the whole network, below the ground slab (which spans y -9..-1) rather
+// than a fixed drop under each building: a run between two terraces at different heights
+// would otherwise slope, and a service plan is a plane. It also means every riser really
+// does come up through the plate into the base of its building, which is what you see
+// when you tip the city over and look at it from underneath.
+const PIPE_DEPTH = -11;
 
 // Depth-tested OFF on purpose. Everything the pipes run under — the ground slab, every
 // district terrace — is opaque, so a faithfully buried pipe is a pipe nobody ever sees.
@@ -2686,46 +2695,62 @@ function baseAnchor(entry, towards) {
   return new THREE.Vector3(c.x + dx * reach, entry.baseY, c.z + dz * reach);
 }
 
-// Down, across, up — with rounded elbows, the way a buried service run is drawn. The
-// centripetal parameterisation is what keeps the curve from overshooting back up through
-// the plate at the two ends, which a uniform Catmull-Rom does on a right-angle turn.
-function pipeCurve(a, b) {
-  const y = Math.min(a.y, b.y) - PIPE_DIP * cityUnit;
-  return new THREE.CatmullRomCurve3(
-    [a, new THREE.Vector3(a.x, y, a.z), new THREE.Vector3(b.x, y, b.z), b],
-    false, "centripetal"
-  );
+// A pipe does not swoop. It goes DOWN, along one axis, along the other, then UP — the
+// orthogonal run of anything actually buried under a street — with a ball at each bend,
+// which is what an elbow fitting looks like anyway. The smooth spline this replaced read
+// as a cable someone had draped under the plate.
+//
+// Built from cylinders rather than a swept tube over a CurvePath: a straight run IS a
+// cylinder, and TubeGeometry spent its whole budget arc-length-mapping a path that never
+// curves — 430 ms per pipe, measured, against well under a millisecond for this.
+const PIPE_LAYER = 2.5;   // × cityUnit — pipes in one bundle sit on staggered depths...
+const PIPE_LAYERS = 6;    // ...cycling through this many, so parallel runs stay separable
+const _pipeUp = new THREE.Vector3(0, 1, 0);
+
+function addLeg(group, a, b, radius, material) {
+  const dir = b.clone().sub(a);
+  const len = dir.length();
+  if (len < 1e-6) return;                    // two buildings sharing an axis: no such leg
+  // Open-ended: the ball joints cap it, so a cap would only ever be inside a sphere.
+  const leg = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, len, 10, 1, true), material);
+  leg.position.copy(a).addScaledVector(dir, 0.5);
+  leg.quaternion.setFromUnitVectors(_pipeUp, dir.normalize());
+  group.add(leg);
 }
 
 // One run: a collar at the base it LEAVES, the pipe, and a cone rising into the base it
 // FEEDS. Colour cannot say which end is which (both ends of a grey pipe touch a base);
 // the collar–pipe–head grammar can, and it survives half the run being off screen.
-const _pipeUp = new THREE.Vector3(0, 1, 0);
-function addPipe(group, from, to, weight, material) {
-  const curve = pipeCurve(from, to);
+function addPipe(group, from, to, weight, material, layer) {
   const radius = pipeRadius(weight);
+  const headLen = Math.max(7 * cityUnit, radius * 4);
+  // Staggered depths, the way a real street stacks its services: two pipes running the
+  // same way between the same districts would otherwise be one pipe on screen.
+  const y = PIPE_DEPTH - (layer % PIPE_LAYERS) * PIPE_LAYER * cityUnit;
+  const corners = [
+    from,
+    new THREE.Vector3(from.x, y, from.z),
+    new THREE.Vector3(to.x, y, from.z),
+    new THREE.Vector3(to.x, y, to.z),
+    // The riser stops short so the cone is the pointy end, not a bulge on a stick.
+    new THREE.Vector3(to.x, Math.min(to.y - headLen, y + headLen), to.z),
+  ].filter((p, i, all) => i === 0 || p.distanceTo(all[i - 1]) > 1e-6);
+
+  for (let i = 1; i < corners.length; i++) {
+    addLeg(group, corners[i - 1], corners[i], radius, material);
+  }
+  for (let i = 1; i < corners.length - 1; i++) {
+    const joint = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.15, 10, 8), material);
+    joint.position.copy(corners[i]);
+    group.add(joint);
+  }
   const collar = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.7, 12, 8), material);
   collar.position.copy(from);
   group.add(collar);
-  // Stop the tube short of the tip so the cone is the pointy end, not a bulge on a stick.
-  const headLen = Math.max(7 * cityUnit, radius * 4);
-  const total = Math.max(1e-6, curve.getLength());
-  const shaftEnd = Math.max(0.05, 1 - headLen / total);
-  const shaft = new THREE.Mesh(
-    new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3(
-        curve.getSpacedPoints(48).slice(0, Math.max(2, Math.round(48 * shaftEnd) + 1)),
-        false, "centripetal"
-      ),
-      40, radius, 10, false
-    ),
-    material
-  );
-  group.add(shaft);
+  // The last leg is the riser, so the head always points straight up into the base.
   const head = new THREE.Mesh(new THREE.ConeGeometry(radius * 2.3, headLen, 12), material);
-  const dir = curve.getTangent(1).normalize();
-  head.quaternion.setFromUnitVectors(_pipeUp, dir);
-  head.position.copy(curve.getPoint(1)).addScaledVector(dir, -headLen / 2);
+  head.position.set(to.x, to.y - headLen / 2, to.z);
   group.add(head);
 }
 
@@ -2760,8 +2785,8 @@ function showPipesFor(entry) {
       const here = baseAnchor(entry, peer.mesh.position);
       const there = baseAnchor(peer, entry.mesh.position);
       // "out" feeds the peer; "in" arrives here.
-      if (kind === "out") addPipe(group, here, there, weight, material);
-      else addPipe(group, there, here, weight, material);
+      if (kind === "out") addPipe(group, here, there, weight, material, drawn);
+      else addPipe(group, there, here, weight, material, drawn);
       n++; drawn++;
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
@@ -3846,8 +3871,33 @@ window.codecity = {
   get buildingByPath() { return buildingByPath; },
 };
 
+// ── The city from underneath ────────────────────────────────────────────────
+// Orbit below the horizon and the plate is between the eye and the only things down
+// there worth looking at: the undersides of the buildings and the pipes rising into
+// them. So once the camera drops under the plate's top face, the ground and every
+// district terrace turn to glass — the buildings stay solid, because their bottoms are
+// exactly what you came down here to see. Above the plate nothing changes.
+function setGlass(material, on) {
+  material.transparent = on;
+  material.opacity = on ? UNDERSIDE_OPACITY : 1;
+  material.depthWrite = !on;
+  material.needsUpdate = true;
+}
+
+function syncUndersideView() {
+  const on = camera.position.y < UNDERSIDE_Y;
+  if (on === undersideGlass) return;
+  undersideGlass = on;
+  setGlass(groundMaterial, on);
+  for (const block of districts) {
+    const materials = Array.isArray(block.material) ? block.material : [block.material];
+    for (const material of materials) setGlass(material, on);
+  }
+}
+
 function animate() {
   controls.update();
+  syncUndersideView();
   updateFloorLabelFacing();       // keep flat package names turned toward the viewer (never upside down)
   renderer.render(scene, camera);
   updateLabelVisibility();        // resolve which class labels are non-overlapping from this angle
