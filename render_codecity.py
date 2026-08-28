@@ -509,6 +509,7 @@ with TSV.open() as f:
             "fan_in": fan_in,
             "fan_out": fan_out,
             "committers": _number(row, "committers", int),
+            "cochange_out": _number(row, "cochange_out"),
             # Instability I = Ce / (Ce + Ca) = fan_out / (fan_out + fan_in), in [0,1]
             # (Robert C. Martin's package metric): 0 = maximally stable (only
             # depended upon), 1 = maximally unstable (only depends on others).
@@ -550,6 +551,7 @@ if PKG_TSV.exists():
                 "fan_out": fan_out,
                 "committers": _number(row, "committers", int),
                 "instability": (fan_out / (fan_in + fan_out)) if (fan_in + fan_out) else 0.0,
+                "cochange_out": _number(row, "cochange_out"),
                 "changed": pkg in _changed_districts,
             })
 
@@ -586,6 +588,7 @@ if MOD_TSV.exists():
                 "fan_out": fan_out,
                 "committers": _number(row, "committers", int),
                 "instability": (fan_out / (fan_in + fan_out)) if (fan_in + fan_out) else 0.0,
+                "cochange_out": _number(row, "cochange_out"),
                 "changed": (mod or ".") in _changed_dirs,   # keyed like the row's path
             })
 
@@ -647,6 +650,67 @@ def _coupling_adjacency():
 
 
 COUPLING = _coupling_adjacency()
+
+
+# ── Change coupling, per view ────────────────────────────────────────────────
+# build_heatmap.py's cochange-edges.tsv, folded into { view: { unit: { peer: [shared,
+# severity] } } }. Same shape as COUPLING so the hover can look a building up the same
+# way, but a different relation entirely: COUPLING is what the code says, this is what
+# the history did. Only cross-package pairs are in the file — inside one package,
+# changing together is the package doing its job.
+def _cochange_adjacency():
+    edges_tsv = TSV.with_name("cochange-edges.tsv")
+    views = {"classes": {}, "packages": {}, "modules": {}}
+    if not edges_tsv.exists():
+        return views
+    live = {"classes": {r["path"] for r in rows},
+            "packages": {r["path"] for r in pkg_rows},
+            "modules": {r["path"] for r in mod_rows}}
+    with edges_tsv.open() as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            view = row.get("level")
+            if view not in views:
+                continue
+            unit = (row.get("unit") or "")
+            peer = (row.get("peer") or "")
+            if view == "classes":
+                unit, peer = unit.lstrip("./"), peer.lstrip("./")
+            if unit not in live[view] or peer not in live[view]:
+                continue
+            try:
+                shared = int(row.get("shared") or 0)
+                severity = float(row.get("severity") or 0)
+            except ValueError:
+                continue
+            views[view].setdefault(unit, {})[peer] = [shared, round(severity, 4)]
+    return {view: {k: dict(sorted(v.items())) for k, v in sorted(adj.items())}
+            for view, adj in views.items()}
+
+
+COCHANGE = _cochange_adjacency()
+
+
+# An adjacency keyed by path is mostly the SAME path written over and over: on Spring,
+# `spring-core/src/main/java/org/springframework/...` appears in the coupling map about
+# ten times per file, and the two maps together were 5.8 MB of an 8.7 MB page — which is
+# 5.8 MB to download and, worse, to JSON.parse before the first frame. Emit each key once
+# and index into it; the page inflates it back to exactly the same shape on load.
+def _pack_adjacency(views):
+    packed = {}
+    for view, adj in views.items():
+        keys, index = [], {}
+
+        def key_id(name):
+            if name not in index:
+                index[name] = len(keys)
+                keys.append(name)
+            return index[name]
+
+        rows = {}
+        for unit, peers in adj.items():
+            rows[key_id(unit)] = {key_id(peer): value for peer, value in peers.items()}
+        packed[view] = {"keys": keys, "adj": rows}
+    return packed
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1218,6 +1282,8 @@ html = """<!doctype html>
   Cmd/Ctrl-drag to rotate<br>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
+  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads<br></span>
+  <b>&#8679; over a building</b>: what changes with it (needs the co-change colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
 </aside>
@@ -1272,6 +1338,7 @@ html = """<!doctype html>
       <option value="instability">instability Ce/(Ce+Ca)</option>
       <option value="fan_in">incoming coupling</option>
       <option value="fan_out">outgoing coupling</option>
+      <option value="cochange_out">cross-package co-change</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -1304,13 +1371,6 @@ html = """<!doctype html>
       <option value="floor" selected>on the floor (edges)</option>
       <option value="off">off</option>
     </select>
-    <span class="spanRest"></span>
-
-    <span class="knob" id="couplingKnob">Coupling</span>
-    <label class="checkbox" id="couplingLabel"
-           title="Hover a building to see the dependencies it sits on, run as pipes under the city. A thicker pipe means more references between the two.">
-      <input id="couplingPipes" type="checkbox" aria-label="coupling pipes"> pipes, on hover
-    </label>
     <span class="spanRest"></span>
 
     <span class="knob" id="changesKnob">Changes</span>
@@ -1373,9 +1433,29 @@ const COMMIT_CHOICES = __COMMIT_CHOICES__;   // recent commits that touched rend
 // (size, LOC, complexity, commit counts). Only the change set is in here, and only the
 // metrics git can reconstruct — a file the diff ADDED is absent, having no "before".
 const BEFORE = __BEFORE_JSON__;
-// Coupling adjacency per view: { classes|packages|modules: { path: [paths it references] } }.
+// Both adjacency maps arrive with their keys interned — { view: { keys: [path...], adj:
+// { keyIndex: { keyIndex: value } } } — because written out in full they are mostly the
+// same long path repeated, and on a 5000-class repo that was most of the page's weight
+// and most of its time to first frame. Inflated here, once, back to path-keyed objects:
+// every lookup below is by path, and none of them needs to know this happened.
+function inflateAdjacency(packed) {
+  const out = {};
+  for (const view of Object.keys(packed || {})) {
+    const { keys, adj } = packed[view];
+    const map = out[view] = {};
+    for (const i of Object.keys(adj)) {
+      const row = map[keys[i]] = {};
+      for (const j of Object.keys(adj[i])) row[keys[j]] = adj[i][j];
+    }
+  }
+  return out;
+}
+// Coupling adjacency per view: { classes|packages|modules: { path: { peer: references } } }.
 // Only the outgoing direction is stored; incoming is its transpose, built once per view below.
-const COUPLING = __COUPLING_JSON__;
+const COUPLING = inflateAdjacency(__COUPLING_JSON__);
+// Change coupling per view: { unit: { peer: [shared commits, severity 0..1] } }. Cross-
+// package pairs only. Severity is how far apart the two live — see build_heatmap.py.
+const COCHANGE = inflateAdjacency(__COCHANGE_JSON__);
 
 // The active COLOR metric's p95 scale max, mirrored out of rebuildCity so the
 // hover tooltip's colour-scale marker can place this building on the ramp.
@@ -1503,10 +1583,15 @@ const HAS_COUPLING = Object.values(COUPLING || {}).some(adj => Object.keys(adj).
 // No coupling data (a page from an older tool run) => nothing the checkbox could draw,
 // so the row goes, the same way the Changes row goes when there is no diff.
 if (!HAS_COUPLING) {
-  for (const el of [document.getElementById("couplingKnob"),
-                    document.getElementById("couplingLabel")]) {
-    if (el) el.style.display = "none";
-  }
+  const hint = document.getElementById("roadsHint");
+  if (hint) hint.remove();
+}
+// Same for the history's own coupling: a repo with one commit has no co-changes, and a
+// page built before this existed has no file to read them from.
+const HAS_COCHANGE = Object.values(COCHANGE || {}).some(adj => Object.keys(adj).length);
+if (!HAS_COCHANGE) {
+  const opt = document.querySelector('#colorMetric option[value="cochange_out"]');
+  if (opt) opt.remove();
 }
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
@@ -1861,6 +1946,16 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// A shadow map is a second full render of the scene, and by default three.js redraws it
+// every frame. Nothing here casts a moving shadow — the sun is fixed, the buildings do not
+// move, and the camera is not in the shadow map's equation at all — so it is rendered ONCE
+// per city and reused, with every rebuild raising needsUpdate again (see rebuildCity).
+// Measured, this currently changes nothing: the shadow pass draws ZERO objects in both a
+// 90-class and a 5000-class city (10334 draw calls per frame either way on Spring), which
+// says the sun's shadow camera is not covering the plate it is pointed at. That is a bug
+// worth its own look; this setting is what keeps the pass free once it is fixed.
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 mount.appendChild(renderer.domElement);
 renderer.domElement.style.cursor = "default";   // arrow over empty space; hand over a building; move while dragging
 
@@ -2097,7 +2192,7 @@ function buildHierarchy(areaMetric) {
 }
 
 function clearCity() {
-  clearPipes();          // they point at meshes this rebuild is about to dispose
+  clearStreets();        // they point at meshes this rebuild is about to dispose
   for (const label of cityLabels) {
     label.obj.removeFromParent();
     label.el.remove();
@@ -2368,6 +2463,9 @@ function rebuildCity() {
                            maxMetric, heightScale, width, depth, height, baseY, cx, cz });
   }
   styleForChanges();
+  crimePath = null;        // fresh materials: nothing to restore, and nothing painted
+  roadGrid = null;         // the blocks moved: the plate has to be re-gridded around them
+  renderer.shadowMap.needsUpdate = true;   // ...and re-shadowed, once, on the next frame
   undersideGlass = null;   // fresh district materials: let the next frame re-glass them
   refreshScopeOptions();
   setupLabels(areaMetric, heightMetric, colorMetric);
@@ -2575,50 +2673,77 @@ function updateLabelVisibility() {
   }
 }
 
-// ── Coupling pipes ──────────────────────────────────────────────────────────
-// Tick "pipes" and the building under the cursor shows the dependency edges it sits on,
-// run as PLUMBING under the city: each one leaves the building's base, drops below the
-// plate, crosses beneath the districts and climbs back up into its peer. Dependencies
-// really are the city's utilities — nobody put them there for the view, everything
-// stands on them — and a pipe network says that where a wire strung between two roofs
-// said "cable", which is a thing you can re-route. It is also what lets a hub's bundle
-// stay readable: eighty arcs over the skyline is a hairball, eighty pipes under it is a
-// service map.
+// ── Coupling streets ────────────────────────────────────────────────────────
+// Hover a building with "streets" ticked and the dependency edges it sits on are drawn
+// as ROADS across the plate: out of its base, AROUND whatever stands in the way, and in
+// at its peer's. They ran as pipes under the city first, which is the more honest picture
+// of a dependency — buried, load-bearing, not yours to re-route — but reading them cost a
+// glassed plate, and the plate is the city. A road is the reading you can walk.
 //
-// On HOVER only, and off by default: this is a question you ask of one building for a
-// second, not a layer to leave switched on — a city with every edge drawn at once is
-// unreadable whichever side of the plate it is drawn on.
+// On HOVER only: a city with every edge drawn at once is unreadable, whichever side of
+// the plate it is drawn on.
 const PIPE_CAP = 80;            // per direction; a hub with 900 dependants is not readable anyway
-const PIPE_GREY = 0x64748b;     // the city's own slate — a utility, not an alarm
-const PIPE_RED = 0xdc2626;      // ...but while a diff is on screen, coupling IS the alarm
-const PIPE_MIN_R = 0.55;        // × cityUnit — a single reference
-const PIPE_MAX_R = 3.4;         // × cityUnit — the 95th-percentile edge and up
-// One depth for the whole network, below the ground slab (which spans y -9..-1) rather
-// than a fixed drop under each building: a run between two terraces at different heights
-// would otherwise slope, and a service plan is a plane. It also means every riser really
-// does come up through the plate into the base of its building, which is what you see
-// when you tip the city over and look at it from underneath.
-const PIPE_DEPTH = -11;
+// Two blues: the roadway, and the traffic on it. One object, one hue — a second colour
+// would be a second meaning, and the city underneath is already spending red.
+const ROAD_PALE = 0x93c5fd;
+const FLOW_BLUE = 0x1d4ed8;
+const ROAD_MIN_W = 1.8;         // × cityUnit — a single reference
+const ROAD_MAX_W = 7.0;         // × cityUnit — the 95th-percentile edge and up
+const ROAD_LIFT = 0.7;          // × cityUnit above the higher of the two floors
+const ROAD_THICK = 0.4;         // × cityUnit — a kerb, so the road catches the light
+const FLOW_SPACING = 26;        // × cityUnit — world distance between two wedges
+const FLOW_SPEED = 46;          // × cityUnit per second
 
-// Depth-tested OFF on purpose. Everything the pipes run under — the ground slab, every
-// district terrace — is opaque, so a faithfully buried pipe is a pipe nobody ever sees.
-// Drawn through the plate instead, at 0.9, they read as the x-ray they are; the dip
-// below the buildings' feet is what still says "under" rather than "over".
-const pipeMaterials = {
-  grey: new THREE.MeshBasicMaterial({ color: PIPE_GREY, transparent: true, opacity: 0.9, depthTest: false }),
-  red: new THREE.MeshBasicMaterial({ color: PIPE_RED, transparent: true, opacity: 0.9, depthTest: false }),
-};
-let pipeGroup = null;           // the pipes currently drawn (one hovered building's)
-let pipedPath = null;           // whose they are, so a pointermove inside the same roof is free
-// How many pipes the last draw actually put on screen per direction, vs how many peers
+const roadMaterial = new THREE.MeshBasicMaterial({ color: ROAD_PALE, side: THREE.DoubleSide });
+
+// ── The traffic ──────────────────────────────────────────────────────────────
+// A static band says two files are coupled; it does not say WHICH WAY the dependency
+// runs, and that is half of what you hovered to find out. So the roads carry traffic:
+// blue wedges sliding along the lane, always the way the dependency points. Peers that
+// depend on the hovered building (afferent, Ca) flow INTO it; the ones it depends on
+// (efferent, Ce) flow OUT of it and away.
+//
+// ONE texture and ONE material for the whole network. The per-road variation lives in
+// the geometry instead — each band's v is written from its own vertices' distance along
+// the route — so a wedge is the same size and speed on every road, whichever of the four
+// directions it points, and the animation is one offset assignment per frame.
+function flowTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 4; canvas.height = 128;   // only v matters: the pattern spans the lane
+  const ctx = canvas.getContext("2d");
+  // A wedge, not a dash: it fades in over the gap behind and is cut off dead flat at its
+  // leading edge, so even a frozen frame says which way this traffic is going.
+  const grad = ctx.createLinearGradient(0, canvas.height, 0, 0);   // canvas top = v 1 (flipY)
+  grad.addColorStop(0.00, "rgba(255,255,255,0)");
+  grad.addColorStop(0.55, "rgba(255,255,255,0)");
+  grad.addColorStop(1.00, "rgba(255,255,255,0.95)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+const flowTex = flowTexture();
+const flowMaterial = new THREE.MeshBasicMaterial({
+  color: FLOW_BLUE, map: flowTex, transparent: true, opacity: 0.95, depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+let streetGroup = null;         // the roads currently drawn (one hovered building's)
+let streetedPath = null;        // whose they are, so a pointermove inside the same roof is free
+// How many roads the last draw actually put on screen per direction, vs how many peers
 // were there to draw: the hover tooltip says so on the coupling lines, so a capped or
 // filtered-down bundle never passes for the whole truth.
 const wireStatus = { out: null, in: null };
 const _incomingByView = new Map();   // view name -> transposed adjacency, built on first need
-const _pipeScaleByView = new Map();  // view name -> the weight a pipe is drawn full-thickness at
+const _roadScaleByView = new Map();  // view name -> the weight a road is drawn full-width at
 
-const couplingCheck = document.getElementById("couplingPipes");
-function pipesOn() { return !!(couplingCheck && couplingCheck.checked && HAS_COUPLING); }
+// Held, not ticked. This is a question you ask of one building for a second — "what does
+// THIS sit on?" — not a layer to leave switched on: a city with every edge drawn at once is
+// unreadable, and a checkbox you forgot you ticked is a city you cannot read any more.
+// (Alt is free: it is not the drill modifier, and it is not the co-change one.)
+let roadKeyHeld = false;
+function streetsOn() { return roadKeyHeld && HAS_COUPLING; }
 
 function couplingViewName() { return viewSelect ? viewSelect.value : "classes"; }
 
@@ -2644,43 +2769,43 @@ function incomingAdjacency() {
   return map;
 }
 
-// Thickness is read off the whole view, not off the hovered bundle: a pipe has to mean
-// the same thing on every building, or "thick" degrades to "the fattest one here".
-// p95 for the same reason the height ramp uses it — one 300-reference god class would
-// otherwise flatten every honest edge in the repo to a thread.
-function pipeWeightScale() {
+// Width is read off the whole view, not off the hovered bundle: a road has to mean the
+// same thing on every building, or "wide" degrades to "the widest one here". p95 for the
+// same reason the height ramp uses it — one 300-reference god class would otherwise
+// flatten every honest edge in the repo to a footpath.
+function couplingWeightScale() {
   const view = couplingViewName();
-  if (!_pipeScaleByView.has(view)) {
+  if (!_roadScaleByView.has(view)) {
     const weights = [];
     const out = outgoingAdjacency();
     for (const src of Object.keys(out)) weights.push(...Object.values(out[src]));
-    _pipeScaleByView.set(view, percentile(weights, 0.95) || 1);
+    _roadScaleByView.set(view, percentile(weights, 0.95) || 1);
   }
-  return _pipeScaleByView.get(view);
+  return _roadScaleByView.get(view);
 }
 
-function pipeRadius(weight) {
-  const scale = pipeWeightScale();
+function roadWidth(weight) {
+  const scale = couplingWeightScale();
   const t = Math.min(1, Math.log1p(Math.max(1, weight)) / Math.log1p(Math.max(2, scale)));
-  return (PIPE_MIN_R + (PIPE_MAX_R - PIPE_MIN_R) * t) * cityUnit;
+  return (ROAD_MIN_W + (ROAD_MAX_W - ROAD_MIN_W) * t) * cityUnit;
 }
 
-function clearPipes() {
-  if (pipeGroup) {
-    scene.remove(pipeGroup);
-    // Materials are the two shared ones above — only the per-pipe geometry is ours to free.
-    pipeGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
-    pipeGroup = null;
+function clearStreets() {
+  if (streetGroup) {
+    scene.remove(streetGroup);
+    // Materials are the two shared ones above — only the per-road geometry is ours to free.
+    streetGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    streetGroup = null;
   }
-  pipedPath = null;
+  streetedPath = null;
   wireStatus.out = wireStatus.in = null;
 }
 
-// Where a pipe meets the ground under a building. All of them leaving the exact centre
-// knot into an unreadable star the moment a building has more than a handful of peers,
-// so each one leaves (or arrives) at the point of the FOOTPRINT that faces its peer: the
-// base rectangle cut along the horizontal direction to the other building, at 70% of the
-// way out. The bundle then fans around the base in the directions the couplings actually
+// Where a road meets a building. All of them leaving the exact centre knot into an
+// unreadable star the moment a building has more than a handful of peers, so each one
+// leaves (or arrives) at the point of the FOOTPRINT that faces its peer: the base
+// rectangle cut along the horizontal direction to the other building, at 70% of the way
+// out. The bundle then fans around the base in the directions the couplings actually
 // run — which is itself information, since the city is laid out by package.
 function baseAnchor(entry, towards) {
   const c = entry.mesh.position;
@@ -2695,81 +2820,253 @@ function baseAnchor(entry, towards) {
   return new THREE.Vector3(c.x + dx * reach, entry.baseY, c.z + dz * reach);
 }
 
-// A pipe does not swoop. It goes DOWN, along one axis, along the other, then UP — the
-// orthogonal run of anything actually buried under a street — with a ball at each bend,
-// which is what an elbow fitting looks like anyway. The smooth spline this replaced read
-// as a cable someone had draped under the plate.
+// ── Routing: around the blocks, never under them ─────────────────────────────
+// The straight L between two bases is the shortest road and the wrong one — it drives
+// through whatever stands between them, and a road through a building is not a road. So
+// the plate is gridded once per rebuild, every footprint marked as built-up, and each
+// bundle is routed over the free cells with a turn priced above a straight, which is
+// what keeps the result reading as roads rather than as staircases.
 //
-// Built from cylinders rather than a swept tube over a CurvePath: a straight run IS a
-// cylinder, and TubeGeometry spent its whole budget arc-length-mapping a path that never
-// curves — 430 ms per pipe, measured, against well under a millisecond for this.
-const PIPE_LAYER = 2.5;   // × cityUnit — pipes in one bundle sit on staggered depths...
-const PIPE_LAYERS = 6;    // ...cycling through this many, so parallel runs stay separable
-const _pipeUp = new THREE.Vector3(0, 1, 0);
+// ONE search per hover, not one per peer: a sweep from the hovered building reaches
+// every peer on the plate anyway, so eighty roads cost what one costs.
+const ROAD_CELL = 2.6;          // × cityUnit — grid pitch
+const ROAD_TURN_COST = 2.4;     // cells' worth of detour a corner is worth avoiding
+const ROAD_MAX_CELLS = 120000;  // ...coarsen the grid rather than sweep more than this
 
-function addLeg(group, a, b, radius, material) {
-  const dir = b.clone().sub(a);
-  const len = dir.length();
-  if (len < 1e-6) return;                    // two buildings sharing an axis: no such leg
-  // Open-ended: the ball joints cap it, so a cap would only ever be inside a sphere.
-  const leg = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, len, 10, 1, true), material);
-  leg.position.copy(a).addScaledVector(dir, 0.5);
-  leg.quaternion.setFromUnitVectors(_pipeUp, dir.normalize());
-  group.add(leg);
+let roadGrid = null;            // invalidated by every rebuild; see rebuildCity
+
+function ensureRoadGrid() {
+  if (roadGrid !== null || !buildings.length) return roadGrid;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const b of buildings) {
+    minX = Math.min(minX, b.mesh.position.x - b.width / 2);
+    maxX = Math.max(maxX, b.mesh.position.x + b.width / 2);
+    minZ = Math.min(minZ, b.mesh.position.z - b.depth / 2);
+    maxZ = Math.max(maxZ, b.mesh.position.z + b.depth / 2);
+  }
+  let size = ROAD_CELL * cityUnit, cols, rows, x0, z0;
+  for (;;) {
+    const margin = 6 * size;    // room to get around the outermost blocks
+    x0 = minX - margin; z0 = minZ - margin;
+    cols = Math.ceil((maxX - minX + 2 * margin) / size);
+    rows = Math.ceil((maxZ - minZ + 2 * margin) / size);
+    if (cols * rows <= ROAD_MAX_CELLS) break;
+    size *= 1.5;                // a 5000-class plate gets a coarser grid, not a slower hover
+  }
+  const free = new Uint8Array(cols * rows).fill(1);
+  for (const b of buildings) {
+    const p = b.mesh.position;
+    const c0 = Math.max(0, Math.floor((p.x - b.width / 2 - x0) / size));
+    const c1 = Math.min(cols - 1, Math.floor((p.x + b.width / 2 - x0) / size));
+    const r0 = Math.max(0, Math.floor((p.z - b.depth / 2 - z0) / size));
+    const r1 = Math.min(rows - 1, Math.floor((p.z + b.depth / 2 - z0) / size));
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) free[r * cols + c] = 0;
+    }
+  }
+  roadGrid = { cols, rows, size, x0, z0, free };
+  return roadGrid;
 }
 
-// One run: a collar at the base it LEAVES, the pipe, and a cone rising into the base it
-// FEEDS. Colour cannot say which end is which (both ends of a grey pipe touch a base);
-// the collar–pipe–head grammar can, and it survives half the run being off screen.
-function addPipe(group, from, to, weight, material, layer) {
-  const radius = pipeRadius(weight);
-  const headLen = Math.max(7 * cityUnit, radius * 4);
-  // Staggered depths, the way a real street stacks its services: two pipes running the
-  // same way between the same districts would otherwise be one pipe on screen.
-  const y = PIPE_DEPTH - (layer % PIPE_LAYERS) * PIPE_LAYER * cityUnit;
-  const corners = [
-    from,
-    new THREE.Vector3(from.x, y, from.z),
-    new THREE.Vector3(to.x, y, from.z),
-    new THREE.Vector3(to.x, y, to.z),
-    // The riser stops short so the cone is the pointy end, not a bulge on a stick.
-    new THREE.Vector3(to.x, Math.min(to.y - headLen, y + headLen), to.z),
-  ].filter((p, i, all) => i === 0 || p.distanceTo(all[i - 1]) > 1e-6);
-
-  for (let i = 1; i < corners.length; i++) {
-    addLeg(group, corners[i - 1], corners[i], radius, material);
+// The free cells hugging a building's footprint: where its roads start, and where a road
+// coming the other way is allowed to arrive.
+function roadRing(entry, grid) {
+  const p = entry.mesh.position;
+  const c0 = Math.floor((p.x - entry.width / 2 - grid.x0) / grid.size) - 1;
+  const c1 = Math.floor((p.x + entry.width / 2 - grid.x0) / grid.size) + 1;
+  const r0 = Math.floor((p.z - entry.depth / 2 - grid.z0) / grid.size) - 1;
+  const r1 = Math.floor((p.z + entry.depth / 2 - grid.z0) / grid.size) + 1;
+  const cells = [];
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      if (r !== r0 && r !== r1 && c !== c0 && c !== c1) continue;   // the ring, not the block
+      if (c < 0 || r < 0 || c >= grid.cols || r >= grid.rows) continue;
+      const idx = r * grid.cols + c;
+      if (grid.free[idx]) cells.push(idx);
+    }
   }
-  for (let i = 1; i < corners.length - 1; i++) {
-    const joint = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.15, 10, 8), material);
-    joint.position.copy(corners[i]);
-    group.add(joint);
-  }
-  const collar = new THREE.Mesh(new THREE.SphereGeometry(radius * 1.7, 12, 8), material);
-  collar.position.copy(from);
-  group.add(collar);
-  // The last leg is the riser, so the head always points straight up into the base.
-  const head = new THREE.Mesh(new THREE.ConeGeometry(radius * 2.3, headLen, 12), material);
-  head.position.set(to.x, to.y - headLen / 2, to.z);
-  group.add(head);
+  return cells;
 }
 
-// Draw the pipes of one building — or clear them, for `null` / the checkbox being off.
-function showPipesFor(entry) {
-  if (!pipesOn() || !entry) {
-    if (pipedPath !== null) clearPipes();
+const _ROAD_DC = [1, -1, 0, 0];
+const _ROAD_DR = [0, 0, 1, -1];
+
+// Dijkstra over (cell, heading) from every free cell touching the hovered building.
+// Heading is part of the state because that is the only way a turn can cost more than a
+// straight — without it the sweep is a BFS and every road comes out a staircase.
+function roadSweep(entry, grid) {
+  const n = grid.cols * grid.rows, states = n * 4;
+  const dist = new Float32Array(states).fill(Infinity);
+  const prev = new Int32Array(states).fill(-1);
+  // A pairing of (cost, state) in one flat binary heap — no allocation per push.
+  const heapCost = [0], heapState = [0];
+  let size = 0;
+  const push = (cost, state) => {
+    let i = size++;
+    heapCost[i] = cost; heapState[i] = state;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (heapCost[parent] <= heapCost[i]) break;
+      const c = heapCost[i], s = heapState[i];
+      heapCost[i] = heapCost[parent]; heapState[i] = heapState[parent];
+      heapCost[parent] = c; heapState[parent] = s;
+      i = parent;
+    }
+  };
+  const pop = () => {
+    const top = heapState[0], topCost = heapCost[0];
+    size--;
+    if (size > 0) {
+      heapCost[0] = heapCost[size]; heapState[0] = heapState[size];
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < size && heapCost[l] < heapCost[m]) m = l;
+        if (r < size && heapCost[r] < heapCost[m]) m = r;
+        if (m === i) break;
+        const c = heapCost[i], s = heapState[i];
+        heapCost[i] = heapCost[m]; heapState[i] = heapState[m];
+        heapCost[m] = c; heapState[m] = s;
+        i = m;
+      }
+    }
+    return [topCost, top];
+  };
+  for (const cell of roadRing(entry, grid)) {
+    for (let d = 0; d < 4; d++) {
+      const state = cell * 4 + d;
+      if (dist[state] > 0) { dist[state] = 0; push(0, state); }
+    }
+  }
+  while (size) {
+    const [cost, state] = pop();
+    if (cost > dist[state]) continue;
+    const cell = state >> 2, dir = state & 3;
+    const c = cell % grid.cols, r = (cell / grid.cols) | 0;
+    for (let d = 0; d < 4; d++) {
+      const nc = c + _ROAD_DC[d], nr = r + _ROAD_DR[d];
+      if (nc < 0 || nr < 0 || nc >= grid.cols || nr >= grid.rows) continue;
+      const nIdx = nr * grid.cols + nc;
+      if (!grid.free[nIdx]) continue;               // built up: a road does not go through it
+      const next = nIdx * 4 + d;
+      const step = cost + 1 + (d === dir ? 0 : ROAD_TURN_COST);
+      if (step < dist[next]) { dist[next] = step; prev[next] = state; push(step, next); }
+    }
+  }
+  return { dist, prev };
+}
+
+// Walk the sweep back from whichever cell around `peer` it reached most cheaply, and
+// hand back the corner points of that route, source first.
+function roadRoute(sweep, peer, grid) {
+  let best = -1, bestCost = Infinity;
+  for (const cell of roadRing(peer, grid)) {
+    for (let d = 0; d < 4; d++) {
+      const state = cell * 4 + d;
+      if (sweep.dist[state] < bestCost) { bestCost = sweep.dist[state]; best = state; }
+    }
+  }
+  if (best < 0 || !isFinite(bestCost)) return null;   // fenced in: no route on this plate
+  const cells = [];
+  for (let state = best; state >= 0; state = sweep.prev[state]) cells.push(state >> 2);
+  cells.reverse();
+  // Cell centres, with the straight runs collapsed: only the corners survive.
+  const points = [];
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i] % grid.cols, r = (cells[i] / grid.cols) | 0;
+    const point = new THREE.Vector3(grid.x0 + (c + 0.5) * grid.size, 0,
+                                    grid.z0 + (r + 0.5) * grid.size);
+    if (i > 0 && i < cells.length - 1) {
+      const p = points[points.length - 1], q = point;
+      const nc = cells[i + 1] % grid.cols, nr = (cells[i + 1] / grid.cols) | 0;
+      const next = new THREE.Vector3(grid.x0 + (nc + 0.5) * grid.size, 0,
+                                     grid.z0 + (nr + 0.5) * grid.size);
+      const straight = (Math.abs(q.x - p.x) < 1e-6 && Math.abs(next.x - q.x) < 1e-6) ||
+                       (Math.abs(q.z - p.z) < 1e-6 && Math.abs(next.z - q.z) < 1e-6);
+      if (straight) continue;
+    }
+    points.push(point);
+  }
+  return points;
+}
+
+// ── Laying the road ──────────────────────────────────────────────────────────
+// Every road in a bundle goes into ONE merged geometry per surface — the roadway, and the
+// lane riding on it — rather than a mesh per straight run. Eighty roads with a corner every
+// few cells is a couple of thousand meshes, which is a couple of thousand draw calls per
+// frame: the city stops turning and the traffic stops moving, on a page whose whole point is
+// that it turns. Merged, a bundle costs two draw calls whatever its size.
+function roadSink() { return { position: [], uv: [], index: [] }; }
+
+// One flat quad from a to b, `width` across, with the texture's v running from `v0` at the a
+// end to `v1` at the b end — which is what keeps a wedge crossing a corner instead of
+// restarting at every one. Any direction, not just the axes: the two ends of a route are the
+// building anchors, which sit wherever the peer happens to lie.
+function addQuad(sink, a, b, width, y, v0, v1) {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return;
+  const px = (-dz / len) * (width / 2), pz = (dx / len) * (width / 2);
+  const base = sink.position.length / 3;
+  sink.position.push(a.x - px, y, a.z - pz,  a.x + px, y, a.z + pz,
+                     b.x + px, y, b.z + pz,  b.x - px, y, b.z - pz);
+  sink.uv.push(0, v0,  1, v0,  1, v1,  0, v1);
+  sink.index.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
+
+function sinkMesh(sink, material, renderOrder) {
+  if (!sink.index.length) return null;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(sink.position, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(sink.uv, 2));
+  geometry.setIndex(sink.index);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = renderOrder;
+  return mesh;
+}
+
+// One road, corner to corner. At every bend the incoming run is extended half a road width
+// PAST the corner and the outgoing one starts half a width AFTER it, which covers the corner
+// square exactly once: butt them together and every turn has a notch bitten out of it,
+// overlap them and the lane gets a bright square at each one.
+function addRoad(road, lane, points, width, y) {
+  const spacing = FLOW_SPACING * cityUnit;
+  const laneWidth = width * 0.55;
+  let traveled = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const len = Math.hypot(b.x - a.x, b.z - a.z);
+    if (len < 1e-6) continue;
+    const ux = (b.x - a.x) / len, uz = (b.z - a.z) / len;
+    // A run shorter than the road is wide cannot be trimmed AND extended without turning
+    // itself inside out. Let those overlap instead — same colour, same plane, nothing to see.
+    const trim = len > width ? width / 2 : 0;
+    const head = i > 1 ? trim : 0;                       // trimmed: the bend before it filled this
+    const tail = i < points.length - 1 ? trim : 0;       // extended: this bend is ours to fill
+    const p0 = { x: a.x + ux * head, z: a.z + uz * head };
+    const p1 = { x: b.x + ux * tail, z: b.z + uz * tail };
+    const v0 = (traveled + head) / spacing, v1 = (traveled + len + tail) / spacing;
+    addQuad(road, p0, p1, width, y, v0, v1);
+    addQuad(lane, p0, p1, laneWidth, y + 0.05 * cityUnit, v0, v1);
+    traveled += len;
+  }
+}
+
+// Draw the roads of one building — or clear them, for `null` / the checkbox being off.
+function showStreetsFor(entry) {
+  if (!streetsOn() || !entry) {
+    if (streetedPath !== null) clearStreets();
     return;
   }
   const path = entry.file.path;
-  if (path === pipedPath) return;         // same building as last frame — nothing to redo
-  clearPipes();
-  pipedPath = path;
+  if (path === streetedPath) return;      // same building as last frame — nothing to redo
+  clearStreets();
+  streetedPath = path;
 
-  // Grey normally; red while a diff is on screen, where "what else does this touch?" is
-  // the follow-up question to every changed building and deserves to shout.
-  const material = changeMode() === "highlight" ? pipeMaterials.red : pipeMaterials.grey;
-  const group = new THREE.Group();
-  group.renderOrder = -1;   // first of the transparents, so the greyed city veils them
+  const grid = ensureRoadGrid();
+  const sweep = grid ? roadSweep(entry, grid) : null;
+  const road = roadSink(), lane = roadSink();
   let drawn = 0;
   for (const [kind, peers] of [
     ["out", outgoingAdjacency()[path] || {}],
@@ -2784,17 +3081,105 @@ function showPipesFor(entry) {
       if (n >= PIPE_CAP) continue;
       const here = baseAnchor(entry, peer.mesh.position);
       const there = baseAnchor(peer, entry.mesh.position);
-      // "out" feeds the peer; "in" arrives here.
-      if (kind === "out") addPipe(group, here, there, weight, material, drawn);
-      else addPipe(group, there, here, weight, material, drawn);
+      // The sweep runs FROM the hovered building, so the route always comes back
+      // hovered-first; an incoming edge is the same tarmac driven the other way.
+      let points = sweep ? roadRoute(sweep, peer, grid) : null;
+      if (points && points.length >= 2) {
+        points = [here.clone(), ...points, there.clone()];
+      } else {
+        // Fenced in, or no grid: fall back to the straight L rather than drawing nothing.
+        const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
+          ? new THREE.Vector3(there.x, here.y, here.z)
+          : new THREE.Vector3(here.x, here.y, there.z);
+        points = [here.clone(), bend, there.clone()];
+      }
+      if (kind === "in") points.reverse();
+      addRoad(road, lane, points, roadWidth(weight),
+              Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
       n++; drawn++;
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
     wireStatus[kind] = { drawn: n, reachable };
   }
   if (!drawn) return;
+  const group = new THREE.Group();
+  for (const mesh of [sinkMesh(road, roadMaterial, 0), sinkMesh(lane, flowMaterial, 1)]) {
+    if (mesh) group.add(mesh);
+  }
   scene.add(group);
-  pipeGroup = group;
+  streetGroup = group;
+}
+
+// ── Change coupling: the crime scene ────────────────────────────────────────
+// Hover a building with this ticked and the city answers one question: who else, OUTSIDE
+// this package, keeps landing in the same commits as you? Everything not implicated
+// drains to grey; the hovered building goes deep blue — it is the question, not one of
+// the answers; every cross-package partner keeps the city's own light-to-burgundy ramp,
+// its shade being how hard this building drags it along.
+//
+// Deliberately NOT wires. A line from A to B says "these two are related" and then spends
+// the reader on where the line goes; what matters here is the SET — which buildings, in
+// which districts, how scattered — and a set is read off colour, over the whole plate at
+// once, which is the thing a bundle of lines is worst at.
+//
+// Same-package partners are not in the data at all (build_heatmap drops them): two
+// classes of one package changing together is the package doing its job. What is left is
+// the part that should have been a module and never was.
+const CRIME_SUBJECT = 0x1e3a8a;     // the hovered building: deep blue, off the heat ramp
+
+// No checkbox of its own: this IS the colour metric, asked of one building. Choose
+// "cross-package co-change" on COLOR and the city shows you WHICH classes are leaking
+// out of their package; hold Shift over one and it shows you WHO they leak to. A row in
+// the panel for something that only makes sense while one metric is picked would be a
+// row that is dead most of the time.
+function coChangeOn() { return HAS_COCHANGE && colorMetricKey() === "cochange_out"; }
+function cochangeAdjacency() { return (COCHANGE && COCHANGE[couplingViewName()]) || {}; }
+
+let crimePath = null;   // whose partners are painted; a move inside the same roof is free
+
+// Back to the city's own colours. Repainted from userData.baseColor rather than from a
+// snapshot taken on the way in: that IS the canonical colour (rebuildCity clones it off
+// the material it just made), so there is no second copy of the truth to drift.
+function clearCrimeScene() {
+  if (crimePath === null) return;
+  crimePath = null;
+  for (const entry of buildings) {
+    const m = entry.mesh.material;
+    m.color.copy(entry.mesh.userData.baseColor);
+    m.transparent = false;
+    m.opacity = 1;
+    m.depthWrite = true;
+  }
+  styleForChanges();    // ...and re-drain the unchanged ones, if a diff is on screen
+}
+
+function showCoChangeFor(entry) {
+  if (!coChangeOn() || !entry) { clearCrimeScene(); return; }
+  const path = entry.file.path;
+  if (path === crimePath) return;
+  clearCrimeScene();
+  crimePath = path;
+  const peers = cochangeAdjacency()[path] || {};
+  // Strength = how OFTEN they changed together x how FAR apart they live, the two halves
+  // of the smell in one number. Ramped against this building's own worst partner rather
+  // than the repo's: the question is a relative one — of everything this class drags
+  // along, which does it drag hardest? — and a quiet class would otherwise light nothing.
+  let worst = 0;
+  for (const peer of Object.values(peers)) worst = Math.max(worst, peer[0] * peer[1]);
+  for (const b of buildings) {
+    const m = b.mesh.material;
+    if (b === entry) { m.color.setHex(CRIME_SUBJECT); continue; }
+    const peer = peers[b.file.path];
+    if (peer) {
+      m.color.copy(colorFor(peer[0] * peer[1], worst));
+    } else {
+      // Drained to grey, but NOT to translucent. Transparency moves a building out of
+      // the opaque pass into the sorted one, and doing that to five thousand of them at
+      // once is a stall you can feel — measured on Spring, where it was the whole cost
+      // of this overlay. Grey against colour carries it on its own anyway.
+      m.color.copy(grayFor(b.colorValue, b.maxColor));
+    }
+  }
 }
 
 // ── Package-name labels (two switchable styles) ──────────────────────────────
@@ -3010,6 +3395,7 @@ const HOVER_PROPS = [
   { key: "fan_in", label: "incoming coupling (fan in)" },
   { key: "fan_out", label: "outgoing coupling (fan out)" },
   { key: "instability", label: "instability Ce/(Ce+Ca)" },
+  { key: "cochange_out", label: "cross-package co-change" },
 ];
 
 // Trailing marker(s) for whichever of area / height / colour this metric drives:
@@ -3068,7 +3454,7 @@ function wireNote(key) {
   const status = key === "fan_out" ? wireStatus.out : key === "fan_in" ? wireStatus.in : null;
   if (!status || !status.reachable) return "";
   const drawn = status.drawn === status.reachable
-    ? `${status.drawn} pipe${status.drawn === 1 ? "" : "s"}`
+    ? `${status.drawn} road${status.drawn === 1 ? "" : "s"}`
     : `${status.drawn} of ${status.reachable} drawn`;
   return ` <span class="perkloc">(${drawn})</span>`;
 }
@@ -3086,15 +3472,37 @@ let lastPointerEvent = null;   // the most recent hover, replayed when the check
 
 // Ticked or unticked with the mouse parked over a building: no pointer event will come,
 // so re-run the last one rather than making the reader jiggle the mouse to see it work.
-if (couplingCheck) {
-  couplingCheck.addEventListener("change", () => {
-    dismissIntro();
-    if (!couplingCheck.checked) clearPipes();
-    else if (lastPointerEvent) onPointerMove(lastPointerEvent);
-  });
+// Neither key announces itself with a pointer event, so both are tracked here and the last
+// hover is replayed on every edge — an overlay that only appears once you jiggle the mouse
+// is an overlay nobody finds. Track it, and replay the
+// last hover on both edges — the overlay has to come up and go down with the key while
+// the mouse sits still, or "hold Shift to see" is a lie.
+let navKeyHeld = false;
+function onOverlayKey(event) {
+  const down = event.type === "keydown";
+  if (event.key === "Shift") navKeyHeld = down;
+  else if (event.key === "Alt") roadKeyHeld = down;
+  else return;
+  dismissIntro();
+  if (lastPointerEvent) onPointerMove(lastPointerEvent, true);
 }
+window.addEventListener("keydown", onOverlayKey);
+window.addEventListener("keyup", onOverlayKey);
+window.addEventListener("blur", () => {
+  navKeyHeld = roadKeyHeld = false;
+  clearCrimeScene();
+  clearStreets();
+});
 
-function onPointerMove(event) {
+// `replayed` = this is the last real hover being re-run because a modifier went down or up,
+// so its own stale modifier flags must NOT be trusted. A live move is the other way round:
+// it is the authority on what is held, and re-syncing from it heals a keyup we never got
+// (the window lost focus mid-press, a shortcut swallowed it).
+function onPointerMove(event, replayed) {
+  if (!replayed) {
+    navKeyHeld = !!event[NAV_KEY];
+    roadKeyHeld = !!event.altKey;
+  }
   // Promote a press into a drag once the pointer travels beyond a small threshold,
   // so a plain click (which does nothing here) never flashes the 4-way move cursor.
   if (pointerIsDown && pointerDownAt &&
@@ -3107,7 +3515,7 @@ function onPointerMove(event) {
     applyCursor(event);
     return;
   }
-  const navKey = event[NAV_KEY] && !event.metaKey && !event.ctrlKey && !event.altKey;
+  const navKey = navKeyHeld && !event.metaKey && !event.ctrlKey && !roadKeyHeld;
   const hit = pickBuilding(event);
   for (const entry of buildings) {
     entry.mesh.material.emissive.setHex(0x000000);
@@ -3115,9 +3523,14 @@ function onPointerMove(event) {
   applyExternalHighlight();   // keep the codemap-linked building lit even while moving over the city
   postCityHover(hit && hit.object.userData.file ? hit.object.userData.file.path : null);
   // Coupling pipes follow the same hover as the tooltip (no-op unless "pipes" is ticked).
-  showPipesFor(hit && hit.object.userData.file
+  showStreetsFor(hit && hit.object.userData.file
     ? buildingByPath.get(hit.object.userData.file.path)
     : null);
+  // Shift over a BUILDING, while the colour metric is co-change, asks the other
+  // question: not "what does this depend on" but "what changes when this changes".
+  const crimeHover = coChangeOn() && hit && hit.object.userData.file &&
+    navKeyHeld && !event.metaKey && !event.ctrlKey && !roadKeyHeld;
+  showCoChangeFor(crimeHover ? buildingByPath.get(hit.object.userData.file.path) : null);
   let tooltipObj = null;
   let tooltipIsDistrict = false;
   let glowFloor = null;       // platform to light as the would-be drill target
@@ -3127,7 +3540,8 @@ function onPointerMove(event) {
   if (hit) {
     hit.object.material.emissive.setHex(0x5a0f1e);
     tooltipObj = hit.object;
-    if (navKey) { glowFloor = districtByName.get(hit.object.userData.file.district) || null; hoverCursor = "zoom-in"; }
+    // ...and while it is answering that, Shift is not also offering to drill in.
+    if (navKey && !crimeHover) { glowFloor = districtByName.get(hit.object.userData.file.district) || null; hoverCursor = "zoom-in"; }
   } else {
     const districtHit = raycaster.intersectObjects(districts, false)[0];
     if (districtHit) {
@@ -3836,7 +4250,7 @@ window.addEventListener("keyup", applyCursor);
 
 // Alt-Tabbing away releases the key somewhere we never hear about; without this the
 // wires would still be hanging in the city when you come back.
-window.addEventListener("blur", clearPipes);
+window.addEventListener("blur", clearStreets);
 window.addEventListener("blur", () => { pointerIsDown = false; isDragging = false; renderer.domElement.style.cursor = "default"; });
 window.addEventListener("dblclick", onDoubleClick);
 window.addEventListener("click", onSceneClick);
@@ -3895,8 +4309,17 @@ function syncUndersideView() {
   }
 }
 
+// The traffic: one offset for the entire network, advanced in world units so a wedge
+// crosses a long road and a short one at the same speed. Negative because a texture offset
+// slides the pattern the opposite way, and +v is the far end of every run.
+function updateStreetFlow() {
+  if (!streetGroup) return;
+  flowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / FLOW_SPACING)) % 1;
+}
+
 function animate() {
   controls.update();
+  updateStreetFlow();
   syncUndersideView();
   updateFloorLabelFacing();       // keep flat package names turned toward the viewer (never upside down)
   renderer.render(scene, camera);
@@ -3959,6 +4382,7 @@ html = (html
         .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE))
         .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES))
         .replace("__BEFORE_JSON__", json.dumps(BEFORE_FILES))
-        .replace("__COUPLING_JSON__", json.dumps(COUPLING)))
+        .replace("__COUPLING_JSON__", json.dumps(_pack_adjacency(COUPLING)))
+        .replace("__COCHANGE_JSON__", json.dumps(_pack_adjacency(COCHANGE))))
 OUT.write_text(html)
 print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")

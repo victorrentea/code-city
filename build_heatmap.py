@@ -147,6 +147,97 @@ def _counts_toward_diagram(fp):
             return False
     return True
 
+# ── Change coupling: the crime-scene measure ─────────────────────────────────
+# "Files that change together belong together." The inverse of that is a smell you
+# cannot see in the code at all, only in its history — and how BAD it is depends on how
+# far apart the two live: a class that keeps changing with its next-door package is a
+# seam, one that keeps changing with the far side of the tree is a concept that was
+# never given a home.
+#
+# Two things come out of one pass over the history:
+#   cochange_out  a per-building number in [0,1] — of the commits that touched it, what
+#                 share also reached OUTSIDE its package, weighted by how far out. This
+#                 is a colour metric: the city lights up its own misplaced classes with
+#                 nobody hovering anything.
+#   the pairs     who changes with whom (cochange-edges.tsv), for the hover overlay.
+#
+# Commits above COCHANGE_MAX_FILES are dropped whole: a squash merge, a reformat or a
+# rename sweep touches sixty files that have nothing to do with each other, and left in,
+# it couples everything to everything and drowns the real signal.
+COCHANGE_MAX_FILES = int(os.environ.get("HEATMAP_COCHANGE_MAX_FILES", "30"))
+COCHANGE_MIN_SHARED = int(os.environ.get("HEATMAP_COCHANGE_MIN_SHARED", "2"))
+COCHANGE_TOP = int(os.environ.get("HEATMAP_COCHANGE_TOP", "20"))
+
+
+def _scope_distance(a, b, sep):
+    """Tree distance between two packages (or module dirs): steps up to their common
+    ancestor plus steps back down. Same scope 0, parent/child 1, siblings 2."""
+    if a == b:
+        return 0
+    x = a.split(sep) if a else []
+    y = b.split(sep) if b else []
+    i = 0
+    while i < len(x) and i < len(y) and x[i] == y[i]:
+        i += 1
+    return (len(x) - i) + (len(y) - i)
+
+
+def _escape_weight(d):
+    """How bad it is to change with something d steps away: 0 inside your own package,
+    1/3 for a parent or child, 1/2 for a sibling, 3/4 for the far side of the tree.
+    d/(d+2) rather than a normalised d because it saturates — beyond "another corner of
+    the codebase" there is no meaningful further away — and because a fixed curve keeps
+    the number comparable between two repos, which a per-repo max would not."""
+    return d / (d + 2.0) if d > 0 else 0.0
+
+
+# The same measure at each of the city's three lenses. `unit` is what a building IS at
+# that lens; `scope` is the package the "outside" is measured against — for a class they
+# differ (the unit is the file, the scope is its package), for the other two they are the
+# same thing, which is exactly why a package's own internal churn never counts against it.
+_COCHANGE_LEVELS = (
+    ("classes", lambda p: p, lambda p: _district(p), "."),
+    ("packages", lambda p: _district(p), lambda p: _district(p), "."),
+    ("modules", lambda p: _module(p), lambda p: _module(p), "/"),
+)
+cochange_escape = {lv: defaultdict(float) for lv, _u, _s, _sep in _COCHANGE_LEVELS}
+cochange_seen = {lv: defaultdict(int) for lv, _u, _s, _sep in _COCHANGE_LEVELS}
+cochange_pairs = {lv: defaultdict(int) for lv, _u, _s, _sep in _COCHANGE_LEVELS}
+
+
+def _record_cochange(touched):
+    """Fold one commit's file list into the per-unit scores and the pair counts."""
+    for level, unit_of, scope_of, sep in _COCHANGE_LEVELS:
+        scope_by_unit = {}
+        for fp in touched:
+            scope_by_unit[unit_of(fp)] = scope_of(fp)
+        units = list(scope_by_unit)
+        # Each unit is charged the worst escape in this commit, not the sum: a commit
+        # either left the package or it did not, and touching six far-away files in one
+        # commit is one crime, not six.
+        for u in units:
+            worst = 0.0
+            for v in units:
+                if v == u:
+                    continue
+                worst = max(worst, _escape_weight(
+                    _scope_distance(scope_by_unit[u], scope_by_unit[v], sep)))
+            cochange_escape[level][u] += worst
+            cochange_seen[level][u] += 1
+        # Pairs, for the hover: only ACROSS scopes. Two classes of one package changing
+        # together is the package working as intended — there is nothing to show.
+        for i, u in enumerate(units):
+            for v in units[i + 1:]:
+                if scope_by_unit[u] == scope_by_unit[v]:
+                    continue
+                cochange_pairs[level][(u, v) if u < v else (v, u)] += 1
+
+
+def _cochange_out(level, unit):
+    seen = cochange_seen[level].get(unit, 0)
+    return (cochange_escape[level][unit] / seen) if seen else 0.0
+
+
 buf = []
 state = "expect_sent"
 sha = None
@@ -184,6 +275,9 @@ def flush_commit():
             committers_per_package[pkg].add(author)
         if is_bug:
             bug_commits_per_package[pkg].add(sha)
+    touched = [fp for fp in file_lines if fp and _counts_toward_diagram(fp)]
+    if touched and len(touched) <= COCHANGE_MAX_FILES:
+        _record_cochange(touched)
     # ...and to each distinct Maven/Gradle module it touched.
     for mod in {_module(fp) for fp in file_lines if fp and _counts_toward_diagram(fp)}:
         commits_per_module[mod].add(sha)
@@ -297,14 +391,14 @@ for ap in java_files:
     bugs_per_kloc = (bug_commits / kloc) if kloc else 0
     bugs_per_commit = (bug_commits / commits) if commits else 0
     cog_per_kloc = (cog / kloc) if kloc else 0
-    rows.append((rel, sz, lines, commits, bug_commits, commits_per_kloc, bugs_per_kloc, bugs_per_commit, cog, cog_per_kloc, fi, fo, committers))
+    rows.append((rel, sz, lines, commits, bug_commits, commits_per_kloc, bugs_per_kloc, bugs_per_commit, cog, cog_per_kloc, fi, fo, committers, _cochange_out("classes", rel)))
 
 rows.sort(key=lambda r: (r[6], r[4], r[3]), reverse=True)
 
 with open(OUT_FILE, "w") as f:
-    f.write("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+    f.write("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\n")
     for r in rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]:.2f}\t{r[6]:.2f}\t{r[7]:.3f}\t{r[8]}\t{r[9]:.2f}\t{r[10]}\t{r[11]}\t{r[12]}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]:.2f}\t{r[6]:.2f}\t{r[7]:.3f}\t{r[8]}\t{r[9]:.2f}\t{r[10]}\t{r[11]}\t{r[12]}\t{r[13]:.3f}\n")
 
 print(f"wrote {len(rows)} rows to {OUT_FILE}", file=sys.stderr)
 
@@ -349,14 +443,15 @@ for pkg, (files, sz, lines, cog, fi, fo) in pkg_agg.items():
         fi,
         fo,
         committers,
+        _cochange_out('packages', pkg),
     ))
 
 pkg_rows.sort(key=lambda r: (r[6], r[5], r[4]), reverse=True)
 
 with open(OUT_FILE_PKG, "w") as f:
-    f.write("package\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+    f.write("package\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\n")
     for r in pkg_rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\n")
 
 print(f"wrote {len(pkg_rows)} package rows to {OUT_FILE_PKG}", file=sys.stderr)
 
@@ -400,13 +495,56 @@ for mod, (files, sz, lines, cog, fi, fo) in mod_agg.items():
         fi,
         fo,
         committers,
+        _cochange_out('modules', mod),
     ))
 
 mod_rows.sort(key=lambda r: (r[3], r[4]), reverse=True)   # by lines, then commits
 
 with open(OUT_FILE_MOD, "w") as f:
-    f.write("module\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n")
+    f.write("module\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\n")
     for r in mod_rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\n")
 
 print(f"wrote {len(mod_rows)} module rows to {OUT_FILE_MOD}", file=sys.stderr)
+
+# ── Who changes with whom (the hover overlay's data) ─────────────────────────
+# One row per DIRECTED pair, so the page can look a building up and get its partners in
+# one hit; both directions are written (they carry the same shared count) unless the
+# far side's own top-N cut this one. `severity` travels with the row rather than being
+# recomputed in the browser: the distance model above is the single source of truth for
+# how bad a jump is, and a second copy of that curve in JS would be a second answer.
+OUT_FILE_COCH = os.path.join(OUT_DIR, "cochange-edges.tsv")
+_live = {
+    "classes": {r[0] for r in rows},
+    "packages": {r[0] for r in pkg_rows},
+    "modules": {r[0] for r in mod_rows},
+}
+# Module rows are keyed "." at the repo root, where the walk keys them "".
+def _emit_key(level, unit):
+    return (unit or ".") if level == "modules" else unit
+
+_coch_written = 0
+with open(OUT_FILE_COCH, "w") as f:
+    f.write("level\tunit\tpeer\tshared\tseverity\n")
+    for level, _unit_of, _scope_of, sep in _COCHANGE_LEVELS:
+        scope_of_unit = (lambda u: _district(u)) if level == "classes" else (lambda u: u)
+        adjacency = defaultdict(list)
+        for (u, v), shared in cochange_pairs[level].items():
+            if shared < COCHANGE_MIN_SHARED:
+                continue
+            if u not in _live[level] or v not in _live[level]:
+                continue   # a file that has since been deleted or renamed away
+            severity = _escape_weight(_scope_distance(scope_of_unit(u), scope_of_unit(v), sep))
+            if severity <= 0:
+                continue
+            adjacency[u].append((v, shared, severity))
+            adjacency[v].append((u, shared, severity))
+        # Keep the worst COCHANGE_TOP per building: past a couple of dozen the overlay is
+        # a wash of colour anyway, and the whole adjacency is inlined into the HTML.
+        for u in sorted(adjacency):
+            peers = sorted(adjacency[u], key=lambda t: (-(t[1] * t[2]), t[0]))
+            for v, shared, severity in peers[:COCHANGE_TOP]:
+                f.write(f"{level}\t{_emit_key(level, u)}\t{_emit_key(level, v)}\t{shared}\t{severity:.4f}\n")
+                _coch_written += 1
+
+print(f"wrote {_coch_written} co-change edges to {OUT_FILE_COCH}", file=sys.stderr)

@@ -57,7 +57,8 @@ unsetting `HEATMAP_OPEN_IN`.
 | `commits` | non-merge commits that touched the file (full history) |
 | `bug_commits` | of those, commits whose subject is a Conventional-Commit `fix:` |
 | `cognitive_complexity` | Sonar-style cognitive complexity (tree-sitter, summed over methods) |
-| `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, weighted by reference count — what the Coupling-pipes overlay draws |
+| `cochange_out` | of the commits that touched this file, the share that also reached outside its package, weighted by how far out ([Change coupling](#change-coupling--the-crime-scene)) |
+| `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, weighted by reference count — what the Coupling-streets overlay draws |
 
 ## Pipeline
 
@@ -65,7 +66,7 @@ unsetting `HEATMAP_OPEN_IN`.
 | --- | --- | --- |
 | 1 | `compute_complexity.py` | `complexity-per-{class,file}.tsv` |
 | 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (the edges those counts aggregate) |
-| 3 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) |
+| 3 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) |
 | 4 | `render_heatmap.py` | `codemap.html` |
 | 5 | `render_codecity.py` | `codecity.html` |
 
@@ -217,58 +218,59 @@ the three key spaces the datasets use — file path, dotted package, module dir 
 switching is a `Set` lookup per row and the Classes / Packages / Modules lenses all stay
 correct without re-deriving any path logic in the browser.
 
-**Coupling pipes:** tick **Coupling → pipes** (off by default) and the building under the
-cursor shows the dependency edges it sits on, run as **plumbing under the city**: each one
-leaves the building's base, drops below the plate, crosses beneath the districts and climbs
-back up into its peer. Dependencies really are the city's utilities — nobody put them there
-for the view, everything stands on them — and a pipe network says that, where a cable strung
-between two roofs says "re-routable". It is also what keeps a hub readable: eighty arcs over
-the skyline is a hairball, eighty pipes under it is a service map. On **hover only**, so the
-question stays "what does *this* building touch", never a layer left switched on. (It works
-with the mouse parked: ticking the box replays the hover.)
+**Coupling streets:** tick **Coupling → streets** (off by default) and the building under
+the cursor shows the dependency edges it sits on, laid across the plate as **roads**: out of
+its base, around whatever stands in the way, and in at its peer's. They ran as *pipes under
+the city* first, which is the more honest picture of a dependency — buried, load-bearing, not
+yours to re-route — but reading them cost a glassed plate, and the plate is the city. A road
+is the reading you can walk. On **hover only**, so the question stays "what does *this*
+building touch", never a layer left switched on. (It works with the mouse parked: ticking the
+box replays the hover.)
 
 What makes the bundle readable:
 
-- **Thickness is coupling strength.** `coupling-edges.tsv` now carries a `weight` — how many
-  times the source names the target, with comments and string literals already stripped — so
-  an import that is used once and one used thirty times are not the same pipe. The scale is
-  read off the whole lens (95th percentile, log ramp), not off the hovered bundle, so "thick"
-  means the same thing on every building instead of "the fattest one here".
-- **Grey, or red on a diff.** Slate normally: coupling is infrastructure, not an alarm. But in
-  *highlight changed*, "what else does this touch?" is the follow-up question to every changed
-  building, and the pipes go red to answer it.
-- Every pipe has a **collar at the base it leaves** and a **head rising into the base it
-  feeds**. Colour cannot say which end is which — both ends of a grey pipe touch a base — and
-  the collar/head grammar survives half the run being off screen.
-- Pipes **do not all meet under the building's centre**. Each one leaves (or arrives) at the
+- **They go AROUND the blocks.** The straight L between two bases is the shortest road and the
+  wrong one — it drives through whatever happens to stand between them, and a road through a
+  building is not a road. So the plate is **gridded** once per rebuild (pitch `ROAD_CELL`,
+  coarsened automatically so a 5000-class plate never sweeps more than 120k cells), every
+  footprint marked built-up, and each bundle routed over the free cells. A **turn costs
+  `ROAD_TURN_COST` cells' worth of detour**, which is what keeps the result reading as roads
+  and not as staircases — a plain BFS gives shortest paths that zigzag every other cell.
+- **One search per hover, not one per peer.** Dijkstra runs once from the hovered building
+  over `(cell, heading)` states; every peer then just walks the sweep back from whichever cell
+  around its own footprint was reached most cheaply. Eighty roads cost what one costs. Boxed
+  in with no route at all, that one edge falls back to the straight L rather than vanishing.
+- **Traffic tells you which way it runs.** A static band says two files are coupled, not which
+  depends on which — half of what you hovered to find out. So the roads carry traffic: blue
+  wedges sliding along the lane, always the way the dependency points, so whatever depends on
+  the hovered building flows **into** it and whatever it depends on flows **out**. The
+  distance already travelled is written into each run's UVs, so a wedge crosses a corner
+  without restarting. One texture, one material, one offset assignment per frame.
+- **Two blues.** The roadway is pale, the traffic on it is deep blue. Coupling is
+  infrastructure, and the city underneath is already spending red on its own metric.
+- **Width is coupling strength.** `coupling-edges.tsv` carries a `weight` — how many times the
+  source names the target, comments and string literals already stripped — so an import used
+  once and one used thirty times are not the same road. The scale is read off the whole lens
+  (95th percentile, log ramp), not off the hovered bundle, so "wide" means the same thing on
+  every building instead of "the widest one here".
+- Roads **do not all meet at the building's centre**. Each one leaves (or arrives) at the
   point of the footprint facing its peer, so the bundle fans out in the directions the
   couplings actually run — which is itself information, the city being laid out by package.
-- They run **orthogonally**, because buried services do: down, along one axis, along the
-  other, up — with a ball joint at each bend, which is what an elbow fitting looks like.
-  Geometry is cylinders, not a swept tube over a curve path: a straight run *is* a cylinder,
-  and the tube version spent 430 ms per pipe arc-length-mapping a path that never curves.
-- The whole network sits at **one depth**, below the ground slab, on six staggered layers the
-  way a street stacks its services — so two runs going the same way between the same districts
-  do not come out as one pipe on screen — and every riser really does come up through the
-  plate into the base of its building.
-- They are **solid, drawn through the plate**. Solid because WebGL clamps `linewidth` to one
-  physical pixel, which over a city plate reads as a scratch. Drawn through because everything
-  a pipe runs under — the ground slab, every district terrace — is opaque, so a faithfully
-  buried pipe is one nobody ever sees; at 0.9 opacity they read as the x-ray they are.
 
-**The city from underneath.** Orbit below the horizon and the plate is between your eye and the
-only things down there worth looking at. So once the camera drops under the plate's top face,
-**the ground and every district terrace turn to glass** (12% opacity) and the buildings stay
-solid — their undersides, and the risers coming up into them, are exactly what you came down
-there to see. Above the plate nothing changes.
-
-The two coupling lines in the hover tooltip say how many pipes are actually on screen
-(`outgoing coupling (fan out): 17 (17 pipes)`). It reads `12 of 40 drawn` when peers are
+The two coupling lines in the hover tooltip say how many roads are actually on screen
+(`outgoing coupling (fan out): 17 (17 roads)`). It reads `12 of 40 drawn` when peers are
 hidden by the filter or the drill scope, or when the per-direction cap of 80 kicks in — a
 bundle must never pass for the whole number above it.
 
+
+**The city from underneath.** Orbit below the horizon and the plate is between your eye and
+the only things down there worth looking at. So once the camera drops under the plate's top
+face, **the ground and every district terrace turn to glass** (12% opacity) and the buildings
+stay solid — their undersides are exactly what you came down there to see. Above the plate
+nothing changes.
+
 The edges are baked into the page **per lens** — class → class, package → package, module →
-module — with a level's internal edges dropped (so a package never pipes to itself) and their
+module — with a level's internal edges dropped (so a package never roads to itself) and their
 weights summed as they fold up. A build whose `codemap.tsv` has no `coupling-edges.tsv` beside
 it (an older run of the tool) renders normally, with the Coupling row removed; an edge file
 from before the weights simply values every edge at one reference.
@@ -278,6 +280,86 @@ file for sibling class names, so comments and string literals are **blanked out 
 `{@link SpecialtyRestController}` in a Javadoc block is a cross-reference for a human
 reader, not a compile-time dependency, and counting it both inflates `fan_out` and draws a
 wire between two classes that never call each other.
+
+## Change coupling — the crime scene
+
+*Files that change together belong together.* The inverse is a smell you cannot see in the
+code at all, only in its history — and how bad it is depends on how far apart the two live: a
+class that keeps changing with its next-door package is a seam, one that keeps changing with
+the far side of the tree is a concept that was never given a home.
+
+`build_heatmap.py` gets both out of the history walk it already does, and drops any commit
+touching more than `HEATMAP_COCHANGE_MAX_FILES` files (default 30) whole — a squash merge, a
+reformat or a rename sweep couples everything to everything and drowns the real signal.
+
+**The colour metric — `cross-package co-change`.** Per building, in [0,1]: of the commits that
+touched it, what share also reached **outside its own package**, weighted by how far outside.
+Distance is tree steps (same package 0, parent/child 1, siblings 2, …) put through `d/(d+2)`,
+which saturates — past "another corner of the codebase" there is no meaningful further away —
+and is a fixed curve rather than a per-repo maximum, so the number means the same thing in two
+different repos. Each commit charges a building its **worst** escape, not the sum: a commit
+either left the package or it did not. Put it on `COLOR` and the city lights up its own
+misplaced classes with nobody hovering anything — in PetClinic, every DTO goes red, because a
+DTO never changes alone.
+
+**The hover overlay — Shift+hover.** It has no checkbox of its own: it IS that colour metric,
+asked of one building. Pick `cross-package co-change` on `COLOR` — the city then shows you
+*which* classes leak out of their package — and **hold Shift over one** to see *who* they leak
+to. (Shift is the drill-in modifier everywhere else; over a building, while this metric is up,
+it answers this question instead, and shift-clicking a floor still drills.) The city
+answers: who else, **outside this package**, keeps landing in the same commits?
+Everything not implicated drains to grey, the hovered building goes deep blue — it is the
+question, not one of the answers — and every cross-package partner keeps the city's own
+light→burgundy ramp, its shade being *how often they changed together x how far apart they
+live*, ramped against that building's own worst partner rather than the repo's.
+
+Deliberately **not wires**. A line from A to B says "these two are related" and then spends the
+reader on where the line goes; what matters here is the **set** — which buildings, in which
+districts, how scattered — and a set is read off colour, over the whole plate at once, which is
+the thing a bundle of lines is worst at. Same-package partners are not in the data at all: two
+classes of one package changing together is the package doing its job.
+
+`cochange-edges.tsv` carries the pairs (`shared` commits + `severity`), keyed per lens like the
+coupling edges, capped at `HEATMAP_COCHANGE_TOP` (20) partners per building and
+`HEATMAP_COCHANGE_MIN_SHARED` (2) shared commits. Severity travels *in the file* rather than
+being recomputed in the browser: the distance model is the single source of truth for how bad a
+jump is, and a second copy of that curve in JS would be a second answer.
+
+## Performance on a big repo
+
+Measured on Spring Framework (5003 classes, 565 packages, 31509 commits) in headless
+Chromium, against PetClinic (90 classes) as the small case. `profile_city.py` drives it —
+`./profile_city.py path/to/codecity.html "label"`, needing `pip install playwright &&
+playwright install chromium` — and reports page errors, time to first frame, GL draw
+calls per frame, and a CPU profile of each hover overlay.
+
+| | PetClinic | Spring |
+| --- | --- | --- |
+| generate | 6 s | 29 s, 407 MB peak RSS |
+| page | 300 KB | **4.5 MB** (was 8.7 before the adjacency keys were interned) |
+| draw calls / frame | 318 | **10334** |
+| ⌥ roads, CPU | below the sampler | below the sampler |
+| ⇧ co-change, CPU | below the sampler | below the sampler |
+
+What that says:
+
+- **Neither overlay is the cost.** The road routing (a Dijkstra over the gridded plate) and
+  the co-change repaint (which touches all 5003 materials) do not appear in a 200 µs-interval
+  CPU profile at all. They were built to be one search and two draw calls per bundle, and
+  they are.
+- **The ceiling is draw calls**, and it is the city's own shape: one mesh per building, per
+  district floor, and per floor label — and floor labels are written into all four edges of
+  every district, which is 2260 objects on Spring for text that is unreadable at full-city
+  zoom. Gating those by district size on screen, the way class names are already gated by
+  roof size, is the obvious next 20%.
+- **Interning the adjacency keys halved the page.** Written out in full, `COUPLING` and
+  `COCHANGE` were 5.8 MB of an 8.7 MB page — mostly the same long paths over and over.
+- **The co-change overlay used to drain buildings to translucent grey**, which moves five
+  thousand of them out of the opaque pass into the sorted one; that alone was 683 ms of
+  `drawElements` per hover sweep on Spring. It drains to opaque grey now.
+- **The shadow pass draws nothing** — the same 10334 calls per frame with shadows on, off,
+  or cached — so a big city has no real shadows and does not pay for them either. The sun's
+  shadow camera is not covering the plate; worth its own fix.
 
 **First-run intro:** on initial load the page draws a one-time overlay that annotates a
 single "hero" building to make the three selectors concrete — the hatched **roof** = the

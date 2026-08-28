@@ -14,6 +14,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 SAMPLE_TSV = SCRIPT_DIR / "testdata/codemap.tsv"
 
 
+def adjacency(html, name):
+    """Both adjacency maps ship with their keys interned (see _pack_adjacency): most of a
+    big page was the same long path written out over and over. Give the tests back the
+    path-keyed map the page itself inflates on load."""
+    packed = json.loads(
+        re.search(r"const %s = inflateAdjacency\((\{.*?\})\);\n" % name, html, re.S).group(1)
+    )
+    out = {}
+    for view, data in packed.items():
+        keys = data["keys"]
+        out[view] = {keys[int(i)]: {keys[int(j)]: v for j, v in peers.items()}
+                     for i, peers in data["adj"].items()}
+    return out
+
+
 class RenderCodecityTest(unittest.TestCase):
     def test_renders_standalone_threejs_codecity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -237,9 +252,9 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function panelBoxes", html)
             self.assertIn("const placed = panelBoxes();", html)
 
-    def test_coupling_pipes(self):
-        """The coupling overlay: a checkbox (off by default) that runs the dependency
-        EDGES as pipes UNDER the city on hover, thickness from the edge's weight."""
+    def test_coupling_streets(self):
+        """The coupling overlay: a checkbox (off by default) that lays the dependency
+        EDGES across the plate as roads on hover, routed AROUND the blocks in the way."""
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
@@ -249,52 +264,56 @@ class RenderCodecityTest(unittest.TestCase):
             )
             html = (Path(tmp) / "codecity.html").read_text()
 
-            # A checkbox, off by default — and the held ⌥ key it replaces is gone.
-            self.assertIn('<input id="couplingPipes" type="checkbox"', html)
-            self.assertNotIn('id="couplingPipes" type="checkbox" checked', html)
-            self.assertNotIn("function onWireKey", html)
-            self.assertNotIn('addEventListener("keyup", onWireKey)', html)
-            self.assertNotIn('id="wireHint"', html)
-            self.assertIn("function pipesOn", html)
-            self.assertIn("if (!pipesOn() || !entry)", html)
-            self.assertIn("const COUPLING =", html)
-            self.assertIn("function showPipesFor", html)
+            # HELD, not ticked: a question you ask of one building for a second, not a
+            # layer you leave on — and not a checkbox you forgot you ticked.
+            self.assertNotIn("couplingStreets", html)
+            self.assertIn("let roadKeyHeld = false;", html)
+            self.assertIn("function streetsOn", html)
+            self.assertIn("function onOverlayKey", html)
+            self.assertIn('window.addEventListener("keyup", onOverlayKey)', html)
+            self.assertIn('id="roadsHint"', html)   # ...so the help box has to say so
+            self.assertIn("if (!streetsOn() || !entry)", html)
+            self.assertIn("const COUPLING = inflateAdjacency(", html)
+            # ...with its keys interned: on a 5000-class repo the two adjacency
+            # maps written out in full were most of the page.
+            self.assertIn("function inflateAdjacency", html)
+            self.assertIn("function showStreetsFor", html)
             self.assertIn("function incomingAdjacency", html)
-            # Under the city, not over it: the pipe leaves the BASE and dips below it.
+            # The pipes UNDER the city are gone: a buried run cost a glassed plate to
+            # read, and the plate is the city.
+            self.assertNotIn("couplingPipes", html)
+            self.assertNotIn("PIPE_DEPTH", html)
+            self.assertNotIn("function addPipe", html)
+            self.assertNotIn("THREE.CylinderGeometry", html)
+            # A road leaves the FOOTPRINT facing its peer, not the building's centre.
             self.assertIn("function baseAnchor", html)
-            # Orthogonal, like anything actually buried: down, along X, along Z, up,
-            # with a ball joint at each bend — not a spline draped under the plate.
-            self.assertIn("function addLeg", html)
-            self.assertIn("THREE.CylinderGeometry", html)
-            self.assertNotIn("CatmullRomCurve3", html)
-            self.assertNotIn("new THREE.CurvePath()", html)
-            # One depth for the whole network, below the ground slab...
-            self.assertIn("const PIPE_DEPTH = -11;", html)
-            # ...on staggered layers, so parallel runs stay separable.
-            self.assertIn("const PIPE_LAYERS = 6;", html)
-            # Orbit under the plate and the ground + terraces turn to glass, so the
-            # undersides of the buildings and the risers into them are actually visible.
-            self.assertIn("function syncUndersideView", html)
-            self.assertIn("camera.position.y < UNDERSIDE_Y", html)
-            self.assertIn("entry.baseY", html)
-            # Grey normally, red while a diff is on screen.
-            self.assertIn("const PIPE_GREY = 0x64748b;", html)
-            self.assertIn("const PIPE_RED = 0xdc2626;", html)
-            self.assertIn('changeMode() === "highlight" ? pipeMaterials.red : pipeMaterials.grey', html)
-            # Thickness from the edge's weight, on a scale read off the whole view.
-            self.assertIn("function pipeRadius", html)
-            self.assertIn("function pipeWeightScale", html)
-            # Solids, not THREE.Line: WebGL clamps line width to one pixel.
-            self.assertIn("THREE.ConeGeometry", html)
-            self.assertIn("THREE.SphereGeometry", html)
-            # Everything they run under is opaque, so they are drawn through it.
-            self.assertIn("depthTest: false }),", html.split("const pipeMaterials")[1][:400])
+            # ...and gets there AROUND the blocks: the plate is gridded, footprints are
+            # marked built-up, and one Dijkstra per hover serves the whole bundle.
+            self.assertIn("function ensureRoadGrid", html)
+            self.assertIn("function roadSweep", html)
+            self.assertIn("function roadRoute", html)
+            self.assertIn("if (!grid.free[nIdx]) continue;", html)
+            self.assertIn("const ROAD_TURN_COST = 2.4;", html)   # corners cost, so roads run straight
+            self.assertIn("roadGrid = null;", html)              # ...and are re-gridded on rebuild
+            # Two blues: the roadway, and the traffic that says which way the edge runs.
+            self.assertIn("const ROAD_PALE = 0x93c5fd;", html)
+            self.assertIn("const FLOW_BLUE = 0x1d4ed8;", html)
+            self.assertNotIn("PIPE_RED", html)
+            self.assertIn("function updateStreetFlow", html)
+            self.assertIn("flowTex.offset.y", html)
+            # Width from the edge's weight, on a scale read off the whole view.
+            self.assertIn("function roadWidth", html)
+            self.assertIn("function couplingWeightScale", html)
             # A capped or filtered-down bundle owns up to it in the tooltip.
             self.assertIn("function wireNote", html)
+            # Eighty roads are TWO draw calls: one merged geometry per surface. A mesh
+            # per straight run is a couple of thousand of them, and the city stops
+            # turning on the page whose whole point is that it turns.
+            self.assertIn("function roadSink", html)
+            self.assertIn("function sinkMesh", html)
+            self.assertIn("sinkMesh(road, roadMaterial, 0), sinkMesh(lane, flowMaterial, 1)", html)
 
-            coupling = json.loads(
-                re.search(r"const COUPLING = (\{.*?\});\n", html, re.S).group(1)
-            )
+            coupling = adjacency(html, "COUPLING")
             classes = coupling["classes"]
             self.assertTrue(classes, "the fixture's edges should reach the page")
             rest = "petclinic-backend/src/main/java/victor/training/petclinic/rest"
@@ -313,6 +332,70 @@ class RenderCodecityTest(unittest.TestCase):
             for src, targets in packages.items():
                 self.assertNotIn(src, targets, "a package must not pipe to itself")
 
+    def test_cochange_crime_scene(self):
+        """Change coupling: a colour metric for how far outside its own package a
+        building's commits reach, and a hover overlay naming who it reaches to."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+
+            # A colour metric of its own: no wires, no hover needed — the city shows
+            # its own misplaced classes with nobody touching anything.
+            self.assertIn('<option value="cochange_out">cross-package co-change</option>', html)
+            self.assertIn('{ key: "cochange_out", label: "cross-package co-change" }', html)
+            # No checkbox of its own: it IS that colour metric, asked of one building,
+            # so it arms itself when the metric is picked and answers on Shift+hover.
+            self.assertNotIn("cochangePartners", html)
+            self.assertIn('colorMetricKey() === "cochange_out"', html)
+            self.assertIn("const crimeHover = coChangeOn() && hit", html)
+            self.assertIn("function onOverlayKey", html)
+            self.assertIn("navKeyHeld && !event.metaKey", html)
+            # ...and while it is answering, Shift is not also previewing a drill-in.
+            self.assertIn("if (navKey && !crimeHover)", html)
+            self.assertIn("function showCoChangeFor", html)
+            self.assertIn("function clearCrimeScene", html)
+            # Painted, not wired: the answer is a SET of buildings, read off colour.
+            self.assertIn("const CRIME_SUBJECT = 0x1e3a8a;", html)
+            self.assertIn("m.color.copy(grayFor(b.colorValue, b.maxColor));", html)
+            # Strength = how often they changed together x how far apart they live.
+            self.assertIn("peer[0] * peer[1]", html)
+            # Restoring is repainting from the canonical colour, not from a snapshot.
+            self.assertIn("m.color.copy(entry.mesh.userData.baseColor);", html)
+
+            cochange = adjacency(html, "COCHANGE")
+            self.assertTrue(cochange["classes"], "the fixture's co-changes should reach the page")
+            # Every pair carries [shared commits, severity] and CROSSES a package
+            # boundary — same-package partners are not a smell and are never written.
+            for unit, peers in cochange["classes"].items():
+                for peer, (shared, severity) in peers.items():
+                    self.assertGreaterEqual(shared, 2)
+                    self.assertGreater(severity, 0)
+                    self.assertNotEqual(unit.rsplit("/", 1)[0], peer.rsplit("/", 1)[0])
+            # The same relation is folded to each lens the city can be read at.
+            self.assertTrue(cochange["packages"])
+
+    def test_cochange_absent_without_the_edge_file(self):
+        """No cochange-edges.tsv (an older run of the tool) renders normally: the row
+        hides itself and the colour option removes itself, rather than half-working."""
+        with tempfile.TemporaryDirectory() as tmp:
+            solo = Path(tmp) / "codemap.tsv"
+            solo.write_text(SAMPLE_TSV.read_text())
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+            self.assertIn("const COCHANGE = inflateAdjacency(", html)
+            self.assertIn('const HAS_COCHANGE = Object.values(COCHANGE || {})', html)
+            self.assertIn('if (!HAS_COCHANGE) {', html)
+
     def test_coupling_pipes_absent_without_the_edge_file(self):
         """A codemap.tsv from an older tool run has no coupling-edges.tsv beside it:
         the page still renders, with the whole Coupling row removed rather than broken."""
@@ -326,14 +409,12 @@ class RenderCodecityTest(unittest.TestCase):
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
-            coupling = json.loads(
-                re.search(r"const COUPLING = (\{.*?\});\n", html, re.S).group(1)
-            )
+            coupling = adjacency(html, "COUPLING")
             self.assertEqual({"classes": {}, "packages": {}, "modules": {}}, coupling)
             self.assertIn("const HAS_COUPLING =", html)
-            # No edges => no row at all, so nothing advertises a checkbox that does nothing.
+            # No edges => the help box does not advertise a key that does nothing.
             self.assertIn("if (!HAS_COUPLING) {", html)
-            self.assertIn('document.getElementById("couplingKnob")', html)
+            self.assertIn('document.getElementById("roadsHint")', html)
 
     def test_change_set_auto_detects_pr_branch(self):
         """With NO config, a feature branch is recognised as a PR and its whole
