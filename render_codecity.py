@@ -2134,12 +2134,16 @@ function medianFootprint(root) {
 // Only GROWTH is marked. A file that got smaller carries no mark: shrinking is the
 // outcome nobody has to be warned about.
 const MARK_COLOR = 0x000000;
-const MARK_PX = 3.5;        // screen-space thickness — the whole point of Line2
+const MARK_PX = 1.75;       // screen-space thickness — the whole point of Line2
 const MARK_LIFT = 0.5;      // clear of the surface it sits on, or z-fighting eats it
 
 // One closed rectangle in the XZ plane at height `y`, as a Line2 the renderer can draw
 // thick and dashed. `dash` is in world units (the line distances are), so it is sized
 // from the rectangle itself and a small mark keeps roughly as many dashes as a big one.
+function markDash(size) {
+  return Math.max(0.6, size / 12);
+}
+
 function markRectangle(cx, cz, y, w, d, dash) {
   const hw = w / 2, hd = d / 2;
   const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
@@ -2179,7 +2183,7 @@ function addChangeMarks(file, geo) {
     if (geo.height - wasHeight > MARK_LIFT * 2) {
       markRectangle(geo.cx, geo.cz, geo.baseY + wasHeight,
                     geo.width + MARK_LIFT, geo.depth + MARK_LIFT,
-                    Math.max(1.2, Math.min(geo.width, geo.depth) / 6));
+                    markDash(Math.min(geo.width, geo.depth)));
     }
   }
 
@@ -2188,7 +2192,7 @@ function addChangeMarks(file, geo) {
     const [wasW, wasD] = footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
     if (geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2) {
       markRectangle(geo.cx, geo.cz, geo.baseY + geo.height + MARK_LIFT, wasW, wasD,
-                    Math.max(1.2, Math.min(wasW, wasD) / 6));
+                    markDash(Math.min(wasW, wasD)));
     }
   }
 }
