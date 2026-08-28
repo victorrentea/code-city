@@ -646,11 +646,16 @@ class RenderCodecityTest(unittest.TestCase):
             # Whole-repo metrics cannot be reconstructed from a blob and are left out on purpose.
             self.assertNotIn("fan_in", grew)
             self.assertNotIn("instability", grew)
-            # The city draws them: a dashed wireframe per changed building, in highlight mode only.
-            self.assertIn("function addBeforeGhost", html)
-            self.assertIn('if (changeMode() !== "highlight") return;', html)
-            self.assertIn("LineDashedMaterial", html)
-            self.assertIn("computeLineDistances()", html)
+            # The city draws them: in highlight mode a changed building is split into the
+            # box it already was (old colour) and the space this diff won (new colour).
+            self.assertIn("function changeSplit", html)
+            self.assertIn("function boxDifference", html)
+            self.assertIn("function addDeltaSlabs", html)
+            self.assertIn('if (changeMode() !== "highlight") return null;', html)
+            self.assertIn("const gain = boxDifference(was, now);", html)
+            self.assertIn("const loss = boxDifference(now, was);", html)
+            # ...and a gained slab answers to hover/click like the core it grew out of.
+            self.assertIn("concat(deltaMeshes)", html)
             # ...measured with the building's own ruler, not a second copy of the maths.
             self.assertIn("function heightFor(", html)
             self.assertIn("function footprintFor(", html)

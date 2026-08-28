@@ -1732,7 +1732,8 @@ function districtRing(node) {
 let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
-let ghosts = [];   // dashed "before" wireframes, one per changed building in highlight mode
+let deltaMeshes = [];    // the "gained"/"lost" slabs a changed building is split into
+let deltaOutlines = [];  // their edges — kept out of the pick list, a line is not a target
 let buildingByPath = new Map();   // row path -> its building entry (coupling wires resolve targets by path)
 let districts = [];
 let cityLabels = [];
@@ -1912,7 +1913,10 @@ function updatePointer(event) {
 function pickBuilding(event) {
   updatePointer(event);
   raycaster.setFromCamera(pointer, camera);
-  return raycaster.intersectObjects(buildings.map(b => b.mesh), false)[0] || null;
+  // A gained slab is part of its building as far as the reader is concerned, so it
+  // answers to hover, click-to-open and shift-click-to-drill exactly like the core.
+  return raycaster.intersectObjects(
+    buildings.map(b => b.mesh).concat(deltaMeshes), false)[0] || null;
 }
 
 function openInEditor(rel) {
@@ -2083,12 +2087,13 @@ function clearCity() {
     entry.mesh.material.dispose();
   }
   buildings = [];
-  for (const ghost of ghosts) {
-    scene.remove(ghost);
-    ghost.geometry.dispose();
-    ghost.material.dispose();
+  for (const slab of [...deltaMeshes, ...deltaOutlines]) {
+    scene.remove(slab);
+    slab.geometry.dispose();
+    slab.material.dispose();
   }
-  ghosts = [];
+  deltaMeshes = [];
+  deltaOutlines = [];
   buildingByPath = new Map();
   districts = [];
   districtByName = new Map();
@@ -2111,69 +2116,123 @@ function medianFootprint(root) {
   return sides.length ? sides[Math.floor(sides.length / 2)] : 0;
 }
 
-// Sketch what a changed building USED TO BE: a dashed wireframe of the block the same
-// treemap would have raised from the pre-diff metrics, standing on the same slab, in
-// the colour that revision's heat earned. A ghost inside the block means the file grew;
-// a ghost wrapped around it means the file shrank — the direction of the change, not
-// just the fact of it, which is all the highlight colour can say on its own.
+// ── A changed building, split into what it WAS and what this diff ADDED ──────
+// Highlighting says WHICH files a diff touched and stops there: a class that doubled
+// and one that lost a method are the same shade of not-grey. So in "highlight changed"
+// a changed building is not one block but two solids stacked into the same silhouette:
 //
-// depthTest is off on purpose: a ghost smaller than its building is buried inside solid
-// geometry and would never be seen. That costs it correct occlusion behind other towers,
-// which is the cheaper of the two errors here.
+//   the core   — the box it already was, in the colour that revision's heat earned
+//   the gain   — the space this diff WON on x / y / z, in the colour the file wears now
+//   the loss   — the space it gave up, a translucent husk in the old colour
 //
-// Drawn only in "highlight changed" — the mode whose whole job is reading a diff.
-const GHOST_OPACITY = 0.95;
+// core ∪ gain is exactly the building the city would have drawn anyway, so nothing is
+// exaggerated: the outline stays honest, and the new material is simply visible as new.
+const LOSS_OPACITY = 0.3;
+const MIN_SLICE = 0.25;   // a sliver thinner than this is invisible and only z-fights
+// The two solids are coloured by the SAME metric one revision apart, so when that metric
+// barely moved they come out almost the same shade and the split would read as one block.
+// A crisp seam around the new volume is what makes it a distinct object without faking
+// any value — the buildings carry no outlines otherwise, so the line itself means "new".
+const DELTA_EDGE = 0x1f2937;
 
-function addBeforeGhost(leaf, mesh, geo) {
-  if (changeMode() !== "highlight") return;
-  const before = beforeRowFor(leaf.data.file);
-  if (!before) return;                       // unchanged, added by the diff, or an aggregate view
+// The part of `outer` that `inner` does not cover, for two boxes that share a centre in x/z and a floor in y, as a list
+// of {w,h,d,x,y,z} slabs (y measured from the shared floor). Everything above the inner
+// roof is outer-only across the full outer footprint; below it, the outer footprint's
+// overhang splits into an x-band (full outer depth) and a z-band (narrowed to the inner
+// width) so the four corners are counted exactly once.
+function boxDifference(inner, outer) {
+  const pieces = [];
+  const shared = Math.min(inner.h, outer.h);
+  if (outer.h - inner.h > MIN_SLICE) {
+    const t = outer.h - inner.h;
+    pieces.push({ w: outer.w, h: t, d: outer.d, x: 0, y: inner.h + t / 2, z: 0 });
+  }
+  if (outer.w - inner.w > MIN_SLICE * 2) {
+    const t = (outer.w - inner.w) / 2;
+    for (const side of [-1, 1]) {
+      pieces.push({ w: t, h: shared, d: outer.d, x: side * (inner.w / 2 + t / 2), y: shared / 2, z: 0 });
+    }
+  }
+  if (outer.d - inner.d > MIN_SLICE * 2) {
+    const t = (outer.d - inner.d) / 2;
+    const w = Math.min(inner.w, outer.w);
+    for (const side of [-1, 1]) {
+      pieces.push({ w, h: shared, d: t, x: 0, y: shared / 2, z: side * (inner.d / 2 + t / 2) });
+    }
+  }
+  return pieces;
+}
 
-  // Any of the three channels may be missing a "before" (fan-in/out, instability);
-  // that channel then simply keeps the building's current value, so a ghost still
-  // shows whatever git COULD reconstruct instead of vanishing entirely.
+// The before/after split for one building, or null when there is nothing to split:
+// not in highlight mode, not a changed file, no recoverable "before", or a diff that
+// moved no geometry at all (then the building renders normally, in its current colour).
+function changeSplit(file, geo) {
+  if (changeMode() !== "highlight") return null;
+  const before = beforeRowFor(file);
+  if (!before) return null;
+  // A channel git cannot reconstruct (fan-in/out, instability) keeps the building's
+  // current value rather than guessing, so the split still shows whatever IS knowable.
   const wasArea = beforeValue(before, geo.areaMetric);
-  const wasHeightMetric = beforeValue(before, geo.heightMetric);
-  const wasColorMetric = beforeValue(before, geo.colorMetric);
-  if (wasArea === null && wasHeightMetric === null && wasColorMetric === null) return;
+  const wasHeight = beforeValue(before, geo.heightMetric);
+  const wasColor = beforeValue(before, geo.colorMetric);
+  if (wasArea === null && wasHeight === null && wasColor === null) return null;
 
-  const [width, depth] = wasArea === null
+  const [wasW, wasD] = wasArea === null
     ? [geo.width, geo.depth]
     : footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
-  const height = wasHeightMetric === null
-    ? geo.height
-    : heightFor(wasHeightMetric, geo.maxMetric, geo.heightScale);
+  const was = {
+    w: wasW,
+    h: wasHeight === null ? geo.height : heightFor(wasHeight, geo.maxMetric, geo.heightScale),
+    d: wasD,
+  };
+  const now = { w: geo.width, h: geo.height, d: geo.depth };
+  const gain = boxDifference(was, now);
+  const loss = boxDifference(now, was);
+  if (!gain.length && !loss.length) return null;
 
-  // Nothing moved on any axis the eye can read — a wireframe welded to the block's own
-  // edges is noise, not information.
-  const same = Math.abs(width - geo.width) < 0.5 &&
-               Math.abs(depth - geo.depth) < 0.5 &&
-               Math.abs(height - geo.height) < 0.5;
-  if (same) return;
+  return {
+    was,
+    core: { w: Math.min(was.w, now.w), h: Math.min(was.h, now.h), d: Math.min(was.d, now.d) },
+    coreColor: colorFor(wasColor === null ? geo.colorValue : wasColor, geo.maxColor),
+    gain,
+    loss,
+  };
+}
 
-  const box = new THREE.BoxGeometry(width, height, depth);
-  const edges = new THREE.EdgesGeometry(box);
-  box.dispose();
-  // Dashes scale with the block: a fixed dash length reads as a solid line on a small
-  // building and as three lonely ticks on a tower.
-  const dash = Math.max(1.6, Math.min(width, depth, height) / 5);
-  const ghost = new THREE.LineSegments(edges, new THREE.LineDashedMaterial({
-    color: wasColorMetric === null
-      ? mesh.userData.baseColor.clone()
-      : colorFor(wasColorMetric, geo.maxColor),
-    dashSize: dash,
-    gapSize: dash * 0.75,
-    transparent: true,
-    opacity: GHOST_OPACITY,
-    depthTest: false,
-  }));
-  ghost.computeLineDistances();
-  ghost.position.set(mesh.position.x, geo.baseY + height / 2, mesh.position.z);
-  ghost.renderOrder = 2;
-  ghost.userData.kind = "ghost";
-  scene.add(ghost);
-  ghosts.push(ghost);
-  cityTop = Math.max(cityTop, geo.baseY + height);   // a shrunken file's ghost still has to fit on screen
+function addDeltaSlabs(pieces, color, translucent, cx, cz, baseY, file) {
+  for (const piece of pieces) {
+    const material = new THREE.MeshStandardMaterial({
+      color,
+      roughness: 0.58,
+      metalness: 0.06,
+    });
+    if (translucent) {
+      material.transparent = true;
+      material.opacity = LOSS_OPACITY;
+      material.depthWrite = false;
+    }
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(piece.w, piece.h, piece.d), material);
+    slab.position.set(cx + piece.x, baseY + piece.y, cz + piece.z);
+    slab.castShadow = !translucent;   // a husk of deleted code should not darken the city
+    slab.receiveShadow = !translucent;
+    slab.userData.file = file;        // hover / click / coupling resolve it like any building
+    slab.userData.kind = "delta";
+    scene.add(slab);
+    deltaMeshes.push(slab);
+
+    const outline = new THREE.LineSegments(
+      new THREE.EdgesGeometry(slab.geometry),
+      new THREE.LineBasicMaterial({
+        color: DELTA_EDGE,
+        transparent: true,
+        opacity: translucent ? 0.28 : 0.55,
+      })
+    );
+    outline.position.copy(slab.position);
+    outline.userData.kind = "delta";
+    scene.add(outline);
+    deltaOutlines.push(outline);
+  }
 }
 
 function rebuildCity() {
@@ -2280,31 +2339,41 @@ function rebuildCity() {
     const metricValue = Number(file[heightMetric]) || 0;
     const colorValue = Number(file[colorMetric]) || 0;
     const height = heightFor(metricValue, maxMetric, heightScale);
-    const geometry = new THREE.BoxGeometry(width, height, depth);
+    const nowColor = colorFor(colorValue, maxColor);
+    const baseY = leaf.parent.depth * districtStep;
+    const cx = leaf.x0 + (leaf.x1 - leaf.x0) / 2 - cityW / 2;
+    const cz = leaf.y0 + (leaf.y1 - leaf.y0) / 2 - cityD / 2;
+    // In highlight mode the solid block shrinks to the part that was already there;
+    // the space this diff won is raised beside it in the file's new colour.
+    const split = changeSplit(file, { cellW, cellD, areaScale, areaMetric, heightMetric,
+                                      colorMetric, maxMetric, maxColor, heightScale,
+                                      width, depth, height, colorValue });
+    const core = split ? split.core : { w: width, h: height, d: depth };
+    const geometry = new THREE.BoxGeometry(core.w, core.h, core.d);
     const material = new THREE.MeshStandardMaterial({
-      color: colorFor(colorValue, maxColor),
+      color: split ? split.coreColor : nowColor,
       roughness: 0.58,
       metalness: 0.06,
     });
     const mesh = new THREE.Mesh(geometry, material);
-    const baseY = leaf.parent.depth * districtStep;
-    mesh.position.set(
-      leaf.x0 + (leaf.x1 - leaf.x0) / 2 - cityW / 2,
-      baseY + height / 2,
-      leaf.y0 + (leaf.y1 - leaf.y0) / 2 - cityD / 2
-    );
+    mesh.position.set(cx, baseY + core.h / 2, cz);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.file = file;
     mesh.userData.baseColor = material.color.clone();
     scene.add(mesh);
+    // The entry keeps the FULL silhouette (labels, volume ranking, coupling anchors all
+    // want the building as the city draws it), plus the two heights every one of them
+    // used to recompute from the mesh — which no longer holds them once it is a core.
     buildings.push({ mesh, file, height, width, depth, colorValue, maxColor,
+                     baseY, roofY: baseY + height,
                      footprint: Math.min(width, depth) });
     buildingByPath.set(file.path, buildings[buildings.length - 1]);
-    cityTop = Math.max(cityTop, baseY + height);
-    addBeforeGhost(leaf, mesh, { cellW, cellD, areaScale, areaMetric, heightMetric,
-                                 colorMetric, maxMetric, maxColor, heightScale, baseY,
-                                 width, depth, height });
+    cityTop = Math.max(cityTop, baseY + Math.max(height, split ? split.was.h : 0));
+    if (split) {
+      addDeltaSlabs(split.gain, nowColor, false, cx, cz, baseY, file);
+      addDeltaSlabs(split.loss, split.coreColor, true, cx, cz, baseY, file);
+    }
   }
   styleForChanges();
   refreshScopeOptions();
@@ -2317,7 +2386,7 @@ function rebuildCity() {
   renderChangeSource();
   window.__CODEMAP_3D_READY__ = {
     buildings: buildings.length,
-    ghosts: ghosts.length,        // dashed "before" wireframes currently sketched
+    deltaSlabs: deltaMeshes.length,   // gained/lost slabs currently split out
     areaMetric,
     heightMetric,
     colorMetric,
@@ -2366,7 +2435,7 @@ const labelStemMaterial = new THREE.LineBasicMaterial({
 // of the touched blocks as the screen holds, however slim their roofs.
 function makeLabel(entry, priority, ignoreRoofGate) {
   const { x, z } = entry.mesh.position;
-  const roofY = entry.mesh.position.y + entry.height / 2;
+  const roofY = entry.roofY;
   const div = document.createElement("div");
   div.className = "city-label";
   div.textContent = entry.file.name;
@@ -2586,7 +2655,7 @@ function clearWires() {
 // actually run — which is itself information, since the city is laid out by package.
 function roofAnchor(entry, towards) {
   const c = entry.mesh.position;
-  const roofY = c.y + entry.height / 2;
+  const roofY = entry.roofY;
   let dx = towards.x - c.x, dz = towards.z - c.z;
   const len = Math.hypot(dx, dz);
   if (len < 1e-6) return new THREE.Vector3(c.x, roofY, c.z);
@@ -3320,7 +3389,7 @@ function buildIntro() {
   let hero = null;
   let bestHeight = -Infinity;
   for (const b of buildings) {
-    const top = project(b.mesh.position.x, b.mesh.position.y + b.height / 2, b.mesh.position.z);
+    const top = project(b.mesh.position.x, b.roofY, b.mesh.position.z);
     const clear = top.z < 1 && top.x > W * 0.34 && top.x < W * 0.78 && top.y > H * 0.24 && top.y < H * 0.7;
     if (clear && b.height > bestHeight) { bestHeight = b.height; hero = b; }
   }
@@ -3329,8 +3398,8 @@ function buildIntro() {
   const params = hero.mesh.geometry.parameters;
   const px = hero.mesh.position.x;
   const pz = hero.mesh.position.z;
-  const yBottom = hero.mesh.position.y - hero.height / 2;
-  const yTop = hero.mesh.position.y + hero.height / 2;
+  const yBottom = hero.baseY;
+  const yTop = hero.roofY;
   const hw = params.width / 2;
   const hd = params.depth / 2;
   const cornersXZ = [[px - hw, pz - hd], [px + hw, pz - hd], [px + hw, pz + hd], [px - hw, pz + hd]];
