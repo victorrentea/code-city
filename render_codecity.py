@@ -2135,7 +2135,14 @@ function medianFootprint(root) {
 // outcome nobody has to be warned about.
 const MARK_COLOR = 0x000000;
 const MARK_PX = 1.75;       // screen-space thickness — the whole point of Line2
-const MARK_LIFT = 0.5;      // clear of the surface it sits on, or z-fighting eats it
+// A mark is a rule drawn ON the block, not a frame hung around it: half a world unit of
+// clearance was a visible white gap the moment anyone zoomed in. Keep only the hair that
+// stops the line and the surface fighting over the same depth, and lean on polygonOffset
+// (Line2 rasterises triangles, so it applies) for the rest.
+const MARK_HUG = 0.05;
+// Separate number, deliberately: how much the building must have grown before a mark is
+// worth drawing at all. Tied to the clearance, it would have followed it down to nothing.
+const MARK_MIN_DELTA = 1;
 
 // One closed rectangle in the XZ plane at height `y`, as a Line2 the renderer can draw
 // thick and dashed. `dash` is in world units (the line distances are), so it is sized
@@ -2160,6 +2167,9 @@ function markRectangle(cx, cz, y, w, d, dash, axis) {
     dashed: true,
     dashSize: dash,
     gapSize: dash * 0.8,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
   });
   material.resolution.set(window.innerWidth, window.innerHeight);
   const line = new LineSegments2(geometry, material);
@@ -2185,9 +2195,9 @@ function addChangeMarks(file, geo) {
   if (wasHeightMetric !== null) {
     const wasHeight = heightFor(wasHeightMetric, geo.maxMetric, geo.heightScale);
     // Only a band the eye can separate from the roofline is worth drawing.
-    if (geo.height - wasHeight > MARK_LIFT * 2) {
+    if (geo.height - wasHeight > MARK_MIN_DELTA) {
       markRectangle(geo.cx, geo.cz, geo.baseY + wasHeight,
-                    geo.width + MARK_LIFT, geo.depth + MARK_LIFT,
+                    geo.width + MARK_HUG, geo.depth + MARK_HUG,
                     markDash(Math.min(geo.width, geo.depth)), "height");
     }
   }
@@ -2195,8 +2205,8 @@ function addChangeMarks(file, geo) {
   const wasArea = beforeValue(before, geo.areaMetric);
   if (wasArea !== null) {
     const [wasW, wasD] = footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
-    if (geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2) {
-      markRectangle(geo.cx, geo.cz, geo.baseY + geo.height + MARK_LIFT, wasW, wasD,
+    if (geo.width - wasW > MARK_MIN_DELTA || geo.depth - wasD > MARK_MIN_DELTA) {
+      markRectangle(geo.cx, geo.cz, geo.baseY + geo.height + MARK_HUG, wasW, wasD,
                     markDash(Math.min(wasW, wasD)), "area");
     }
   }

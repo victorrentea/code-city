@@ -656,8 +656,11 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("dashed: true", html)
             self.assertIn("const MARK_COLOR = 0x000000;", html)
             # Only growth is marked — a file that got smaller carries no mark at all.
-            self.assertIn("geo.height - wasHeight > MARK_LIFT * 2", html)
-            self.assertIn("geo.width - wasW > MARK_LIFT * 2 || geo.depth - wasD > MARK_LIFT * 2", html)
+            self.assertIn("geo.height - wasHeight > MARK_MIN_DELTA", html)
+            self.assertIn("geo.width - wasW > MARK_MIN_DELTA || geo.depth - wasD > MARK_MIN_DELTA", html)
+            # The rule lies ON the block: only a hair of clearance, plus polygon offset.
+            self.assertIn("const MARK_HUG = 0.05;", html)
+            self.assertIn("polygonOffsetFactor: -4", html)
             # Screen-space thickness has to survive a window resize.
             self.assertIn("mark.material.resolution.set(window.innerWidth", html)
             # The intro explains the marks the way it explains area/height/colour: a
