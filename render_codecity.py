@@ -1282,7 +1282,7 @@ html = """<!doctype html>
   Cmd/Ctrl-drag to rotate<br>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
-  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads<br></span>
+  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br></span>
   <b>&#8679; over a building</b>: what changes with it (needs the co-change colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
@@ -2214,13 +2214,15 @@ function clearCity() {
   buildings = [];
   for (const mark of changeMarks) {
     scene.remove(mark);
-    mark.geometry.dispose();
-    mark.material.dispose();
+    // Height marks are groups of painted quads sharing one material; the area mark is
+    // still a Line2 with a material of its own. Only geometry is always ours to free.
+    mark.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    if (mark.material && mark.material.isLineMaterial) mark.material.dispose();
   }
   changeMarks = [];
   for (const arrow of growthArrows) {
     scene.remove(arrow);
-    arrow.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    arrow.geometry.dispose();     // the material is the one shared arrowMaterial
   }
   growthArrows = [];
   buildingByPath = new Map();
@@ -2312,48 +2314,128 @@ function markRectangle(cx, cz, y, w, d, dash, axis) {
 
 // `geo` carries the building as drawn plus everything needed to re-measure it from the
 // pre-diff metrics — with the very same footprintFor/heightFor the block itself used.
-// The dashed rectangle says where the building USED to end. It does not say, at a glance,
-// which way the change went or by how much — you have to find the roofline, find the mark,
-// and decide which is higher. So the mark also gets an arrow: rising off the dashed line,
-// tip at today's ceiling, drawn flat against the wall.
+// ── Painted on the wall, not hung around the block ──────────────────────────
+// Both of these used to stand off the building: the "used to end here" line as a
+// screen-width outline floating a hair outside the block, the arrow as a box and a cone
+// sticking out of it. Neither belongs to the building that way — they read as an overlay
+// drawn on the glass in front of the city, and they break the moment you orbit past them.
 //
-// Which wall is decided EVERY FRAME (see updateGrowthArrowFacing), because "the visible
-// one" is a property of where you happen to be standing. An arrow nailed to one wall at
-// build time is an arrow that spends most of an orbit buried inside its own building.
-const growthMaterial = new THREE.MeshBasicMaterial({ color: MARK_COLOR });
+// So both are WALLPAPER: flat quads lying in the wall's own plane, textured, sized in
+// world units and therefore shrinking with the building as you pull the camera back. One
+// texture and one material for each kind — the per-mark variation is written into the
+// geometry's UVs, the same trick the roads use for their traffic.
+const WALL_LIFT = 0.06;         // × cityUnit off the wall: enough to beat z-fighting, invisible
+const MARK_DASH_WORLD = 6;      // × cityUnit — one dash + one gap
+const MARK_BAND = 0.5;          // × cityUnit — how thick the painted line is
 
+function stripeTexture(draw, w, h) {
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  draw(canvas.getContext("2d"), w, h);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+// White on transparent, tinted black by the material: one dash, one gap.
+const dashTex = stripeTexture((ctx, w, h) => {
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, Math.round(w * 0.55), h);
+}, 32, 4);
+
+// An arrow filling its quad: a shaft up the middle and a head across the top.
+const arrowTex = stripeTexture((ctx, w, h) => {
+  ctx.fillStyle = "#fff";
+  const shaft = w * 0.34, head = Math.min(h * 0.42, w * 0.5);
+  ctx.fillRect((w - shaft) / 2, head * 0.85, shaft, h - head * 0.85);
+  ctx.beginPath();
+  ctx.moveTo(w / 2, 0);
+  ctx.lineTo(w, head);
+  ctx.lineTo(0, head);
+  ctx.closePath();
+  ctx.fill();
+}, 64, 128);
+
+function wallMaterial(map) {
+  return new THREE.MeshBasicMaterial({
+    color: MARK_COLOR, map, transparent: true, side: THREE.DoubleSide,
+    depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+  });
+}
+const dashMaterial = wallMaterial(dashTex);
+const arrowMaterial = wallMaterial(arrowTex);
+
+// The four outward normals of a block, as [nx, nz, rotationY] — a PlaneGeometry faces +z,
+// so that is the rotation that lays it flat on each wall, facing out.
+const WALLS = [[0, 1, 0], [1, 0, Math.PI / 2], [0, -1, Math.PI], [-1, 0, -Math.PI / 2]];
+
+function wallQuad(geo, wall, y, height, width, material, repeats) {
+  const [nx, nz, ry] = wall;
+  const hw = geo.width / 2, hd = geo.depth / 2;
+  const plane = new THREE.PlaneGeometry(width, height);
+  if (repeats) {
+    const uv = plane.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * repeats);
+    uv.needsUpdate = true;
+  }
+  const mesh = new THREE.Mesh(plane, material);
+  const lift = WALL_LIFT * cityUnit;
+  mesh.position.set(geo.cx + nx * (hw + lift), y, geo.cz + nz * (hd + lift));
+  mesh.rotation.y = ry;
+  return mesh;
+}
+
+// "It used to end here", painted around all four walls at that height.
+function addHeightMark(geo, y) {
+  const group = new THREE.Group();
+  const band = MARK_BAND * cityUnit;
+  for (const wall of WALLS) {
+    const span = wall[0] ? geo.depth : geo.width;
+    group.add(wallQuad(geo, wall, y, band, span, dashMaterial,
+                       Math.max(1, Math.round(span / (MARK_DASH_WORLD * cityUnit)))));
+  }
+  // What the first-run intro reads to single a mark out and trace it in SVG.
+  group.userData.kind = "mark";
+  group.userData.axis = "height";
+  group.userData.y = y;
+  const hw = geo.width / 2, hd = geo.depth / 2;
+  group.userData.corners = [[geo.cx - hw, geo.cz - hd], [geo.cx + hw, geo.cz - hd],
+                            [geo.cx + hw, geo.cz + hd], [geo.cx - hw, geo.cz + hd]];
+  scene.add(group);
+  changeMarks.push(group);
+}
+
+// The rise from that line to today's ceiling, as an arrow painted on ONE wall — the one
+// facing the camera, chosen every frame (see updateGrowthArrowFacing). A mark nailed to a
+// face at build time spends most of an orbit inside its own building.
 function addGrowthArrow(geo, y0, y1) {
   const rise = y1 - y0;
   if (rise <= MARK_MIN_DELTA) return;
-  const shaft = Math.max(0.5 * cityUnit, Math.min(geo.width, geo.depth) * 0.05);
-  const head = Math.min(rise * 0.45, Math.max(2.5 * cityUnit, shaft * 3.5));
-  const group = new THREE.Group();
-  const stem = new THREE.Mesh(
-    new THREE.BoxGeometry(shaft, rise - head, shaft), growthMaterial);
-  stem.position.y = (rise - head) / 2;
-  group.add(stem);
-  // Four sides, turned 45°, so the head reads as a flat triangle against the wall from
-  // any angle you can actually see that wall from.
-  const tip = new THREE.Mesh(new THREE.ConeGeometry(shaft * 2.2, head, 4), growthMaterial);
-  tip.position.y = rise - head / 2;
-  tip.rotation.y = Math.PI / 4;
-  group.add(tip);
-  group.userData = { cx: geo.cx, cz: geo.cz, hw: geo.width / 2, hd: geo.depth / 2, y0 };
-  scene.add(group);
-  growthArrows.push(group);
+  const width = Math.min(Math.min(geo.width, geo.depth) * 0.45, rise * 0.5);
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, rise), arrowMaterial);
+  mesh.userData = { cx: geo.cx, cz: geo.cz, hw: geo.width / 2, hd: geo.depth / 2,
+                    y: y0 + rise / 2 };
+  scene.add(mesh);
+  growthArrows.push(mesh);
 }
 
-// Slide every arrow around to the wall whose outward normal points most at the camera.
-// Cheap by construction: the arrows exist only for the change set, and each one is a
-// position write — no geometry is rebuilt, nothing is re-materialised.
+// Slide every arrow onto the wall whose outward normal points most at the camera, and turn
+// it to lie in that wall. Cheap by construction: the arrows exist only for the change set,
+// and each one is a position and a rotation — no geometry is rebuilt.
 function updateGrowthArrowFacing() {
   for (const arrow of growthArrows) {
-    const { cx, cz, hw, hd, y0 } = arrow.userData;
+    const { cx, cz, hw, hd, y } = arrow.userData;
     const dx = camera.position.x - cx, dz = camera.position.z - cz;
-    const alongX = Math.abs(dx) >= Math.abs(dz);
-    const nx = alongX ? Math.sign(dx) || 1 : 0;
-    const nz = alongX ? 0 : Math.sign(dz) || 1;
-    arrow.position.set(cx + nx * (hw + MARK_HUG * 3), y0, cz + nz * (hd + MARK_HUG * 3));
+    const lift = WALL_LIFT * cityUnit;
+    if (Math.abs(dx) >= Math.abs(dz)) {
+      const nx = Math.sign(dx) || 1;
+      arrow.position.set(cx + nx * (hw + lift), y, cz);
+      arrow.rotation.y = nx * Math.PI / 2;
+    } else {
+      const nz = Math.sign(dz) || 1;
+      arrow.position.set(cx, y, cz + nz * (hd + lift));
+      arrow.rotation.y = nz > 0 ? 0 : Math.PI;
+    }
   }
 }
 
@@ -2367,9 +2449,7 @@ function addChangeMarks(file, geo) {
     const wasHeight = heightFor(wasHeightMetric, geo.maxMetric, geo.heightScale);
     // Only a band the eye can separate from the roofline is worth drawing.
     if (geo.height - wasHeight > MARK_MIN_DELTA) {
-      markRectangle(geo.cx, geo.cz, geo.baseY + wasHeight,
-                    geo.width + MARK_HUG, geo.depth + MARK_HUG,
-                    markDash(Math.min(geo.width, geo.depth)), "height");
+      addHeightMark(geo, geo.baseY + wasHeight);
       addGrowthArrow(geo, geo.baseY + wasHeight, geo.baseY + geo.height);
     }
   }
@@ -2750,6 +2830,7 @@ const FLOW_BLUE = 0x1d4ed8;
 const ROAD_MIN_W = 1.8;         // × cityUnit — a single reference
 const ROAD_MAX_W = 7.0;         // × cityUnit — the 95th-percentile edge and up
 const ROAD_LIFT = 0.7;          // × cityUnit above the higher of the two floors
+const ROAD_GAP = 0.8;           // × cityUnit — the median strip between the two directions
 const ROAD_THICK = 0.4;         // × cityUnit — a kerb, so the road catches the light
 const FLOW_SPACING = 26;        // × cityUnit — world distance between two wedges
 const FLOW_SPEED = 46;          // × cityUnit per second
@@ -2804,7 +2885,12 @@ const _roadScaleByView = new Map();  // view name -> the weight a road is drawn 
 // unreadable, and a checkbox you forgot you ticked is a city you cannot read any more.
 // (Alt is free: it is not the drill modifier, and it is not the co-change one.)
 let roadKeyHeld = false;
-function streetsOn() { return roadKeyHeld && HAS_COUPLING; }
+// ...or pinned: ⌥-click a building and its roads stay up, flowing, until you pin another
+// or click the same one again. Holding is right for a glance; the moment you start talking
+// about what you found — or reach for the trackpad to orbit around it — a held key is a
+// third hand you do not have.
+let pinnedStreetPath = null;
+function streetsOn() { return (roadKeyHeld || pinnedStreetPath !== null) && HAS_COUPLING; }
 
 function couplingViewName() { return viewSelect ? viewSelect.value : "classes"; }
 
@@ -3140,6 +3226,30 @@ function orthogonalize(points) {
   return out;
 }
 
+// Shift a whole route sideways, so the road OUT and the road BACK never lie on the same
+// tarmac. Both are computed in the same hovered-to-peer orientation before either is
+// reversed, which is what lets a sign put them on opposite sides for good; offsetting after
+// the reverse would put them back on top of each other.
+//
+// A corner offsets to the intersection of its two offset lines. For a right angle that is
+// just the corner plus BOTH perpendiculars: the two are orthogonal unit vectors, so adding
+// them satisfies each offset line's equation on its own.
+function offsetPath(points, d) {
+  if (Math.abs(d) < 1e-6 || points.length < 2) return points;
+  const perp = [];
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - points[i - 1].x, dz = points[i].z - points[i - 1].z;
+    const len = Math.hypot(dx, dz) || 1;
+    perp.push([-dz / len, dx / len]);
+  }
+  return points.map((p, i) => {
+    const a = perp[i - 1], b = perp[i];      // the segments this vertex belongs to
+    const nx = (a ? a[0] : 0) + (b ? b[0] : 0);
+    const nz = (a ? a[1] : 0) + (b ? b[1] : 0);
+    return new THREE.Vector3(p.x + nx * d, p.y, p.z + nz * d);
+  });
+}
+
 // ── Laying the road ──────────────────────────────────────────────────────────
 // Every road in a bundle goes into ONE merged geometry per surface — the roadway, and the
 // lane riding on it — rather than a mesh per straight run. Eighty roads with a corner every
@@ -3283,8 +3393,13 @@ function showStreetsFor(entry) {
       points = [here.clone(), bend, there.clone()];
     }
     points = orthogonalize(points);
-    if (b.kind === "in") points.reverse();   // orthogonal either way round
-    addRoad(road, lane, points, roadWidth(b.weight),
+    // Half its own width plus half a gap, to the left or the right of the centreline
+    // depending on which way the dependency runs: an out road and an in road can then
+    // share a corridor without ever sharing a segment, however wide either of them is.
+    const width = roadWidth(b.weight);
+    points = offsetPath(points, (b.kind === "in" ? -1 : 1) * (width / 2 + ROAD_GAP * cityUnit / 2));
+    if (b.kind === "in") points.reverse();   // orthogonal, and offset, either way round
+    addRoad(road, lane, points, width,
             Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
   }
 
@@ -3710,8 +3825,9 @@ function onPointerMove(event, replayed) {
   applyExternalHighlight();   // keep the codemap-linked building lit even while moving over the city
   postCityHover(hit && hit.object.userData.file ? hit.object.userData.file.path : null);
   // Coupling pipes follow the same hover as the tooltip (no-op unless "pipes" is ticked).
-  showStreetsFor(hit && hit.object.userData.file
-    ? buildingByPath.get(hit.object.userData.file.path)
+  // A pinned bundle ignores the hover entirely — that is what pinning it means.
+  showStreetsFor(pinnedStreetPath ? buildingByPath.get(pinnedStreetPath)
+    : hit && hit.object.userData.file ? buildingByPath.get(hit.object.userData.file.path)
     : null);
   // Shift over a BUILDING, while the colour metric is co-change, asks the other
   // question: not "what does this depend on" but "what changes when this changes".
@@ -3913,12 +4029,22 @@ function applyScopePick() {
 
 function onSceneClick(event) {
   if (introEl || event.target !== renderer.domElement) return;   // ignore UI / overlay clicks
-  if (!event[NAV_KEY] || event.metaKey || event.ctrlKey || event.altKey) return;   // navigation is Shift-gated
   if (performance.now() - lastScopeAt < 350) return;             // swallow the 2nd click of a double-click
   if (pointerDownAt) {
     const moved = Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y);
     if (moved > 6) return;                                        // it was a drag (pan/orbit), not a click
   }
+  // ⌥-click toggles the pin on the building's road bundle.
+  if (event.altKey && !event.metaKey && !event.ctrlKey && !event[NAV_KEY]) {
+    const hit = pickBuilding(event);
+    if (!hit) return;
+    const path = hit.object.userData.file.path;
+    pinnedStreetPath = pinnedStreetPath === path ? null : path;
+    clearStreets();                                   // ...so the next call rebuilds from scratch
+    showStreetsFor(pinnedStreetPath ? buildingByPath.get(pinnedStreetPath) : null);
+    return;
+  }
+  if (!event[NAV_KEY] || event.metaKey || event.ctrlKey || event.altKey) return;   // navigation is Shift-gated
   const target = targetAtPointer(event);
   if (!target) return;
   if (target.kind === "out") scopeUp();
@@ -3944,7 +4070,11 @@ function onResize() {
   labelRenderer.setSize(window.innerWidth, window.innerHeight);
   // A Line2 is fattened in screen space, so it has to be told the canvas it lands on;
   // stale resolution makes every change mark the wrong thickness after a resize.
-  for (const mark of changeMarks) mark.material.resolution.set(window.innerWidth, window.innerHeight);
+  for (const mark of changeMarks) {
+  if (mark.material && mark.material.resolution) {   // Line2 only: the painted ones scale with the city
+    mark.material.resolution.set(window.innerWidth, window.innerHeight);
+  }
+}
 }
 
 // ── First-run intro ────────────────────────────────────────────────────────
