@@ -259,6 +259,13 @@ What makes the bundle readable:
   footprint marked built-up, and each bundle routed over the free cells. A **turn costs
   `ROAD_TURN_COST` cells' worth of detour**, which is what keeps the result reading as roads
   and not as staircases — a plain BFS gives shortest paths that zigzag every other cell.
+- **The network is elevated, on a deck per direction.** A road laid on the plate goes UNDER
+  every district terrace it crosses — terraces rise with nesting depth, so on any city
+  deeper than one package a road spends most of its length invisible. The whole network sits
+  above the HIGHEST floor in the city instead, at one elevation rather than dipping to each
+  road's own two endpoints; and the two directions get a deck each, so where an outbound and
+  an inbound road cross, one flies over the other instead of the two meeting in a junction
+  that belongs to neither.
 - **Every turn is 90 degrees.** The routed middle is a walk over a grid, so it already was;
   the two ENDS are the buildings' own anchors, which sit wherever the peer happens to lie,
   and those legs used to run off at an angle. The missing corner is inserted instead — a

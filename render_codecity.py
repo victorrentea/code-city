@@ -2805,6 +2805,13 @@ const ROAD_MIN_W = 1.8;         // × cityUnit — a single reference
 const ROAD_MAX_W = 7.0;         // × cityUnit — the 95th-percentile edge and up
 const ROAD_LIFT = 0.7;          // × cityUnit above the higher of the two floors
 const ROAD_GAP = 0.8;           // × cityUnit — the median strip between the two directions
+// Two decks, one per direction. A road laid on the plate goes UNDER every district terrace
+// it crosses — the terraces rise with nesting depth, so on any city deeper than one package
+// a road spends most of its length invisible. So the whole network is elevated above the
+// HIGHEST floor in the city, and the two directions get a deck each: where an outbound and
+// an inbound road cross, one flies over the other instead of the two meeting in a junction
+// that belongs to neither.
+const ROAD_DECK = 1.6;          // × cityUnit between the two decks
 const ROAD_THICK = 0.4;         // × cityUnit — a kerb, so the road catches the light
 const FLOW_SPACING = 26;        // × cityUnit — world distance between two wedges
 const FLOW_SPEED = 46;          // × cityUnit per second
@@ -2998,7 +3005,10 @@ function ensureRoadGrid() {
       for (let c = c0; c <= c1; c++) free[r * cols + c] = 0;
     }
   }
-  roadGrid = { cols, rows, size, x0, z0, free, minX, maxX, minZ, maxZ };
+  // The highest floor anything stands on: every road clears it, so no terrace can cover one.
+  let floorTop = 0;
+  for (const b of buildings) floorTop = Math.max(floorTop, b.baseY);
+  roadGrid = { cols, rows, size, x0, z0, free, minX, maxX, minZ, maxZ, floorTop };
   return roadGrid;
 }
 
@@ -3406,17 +3416,21 @@ function showStreetsFor(entry) {
   }
 
   const road = roadSink(), lane = roadSink();
-  const lift = ROAD_LIFT * cityUnit;
+  // One elevation for the whole network, per direction — not per road: a road that dips to
+  // its own two endpoints' floors is a road that ducks under whatever it crosses.
+  const floorTop = grid ? grid.floorTop : entry.baseY;
+  const deck = { out: floorTop + ROAD_LIFT * cityUnit,
+                 in: floorTop + (ROAD_LIFT + ROAD_DECK) * cityUnit };
 
   // One lateral sign per direction, so a trunk carrying traffic out and one carrying it in
   // can share a corridor without ever sharing a segment.
-  const draw = (points, weight, kind, floorY) => {
+  const draw = (points, weight, kind) => {
     if (points.length < 2) return;
     const width = roadWidth(weight);
     let path = orthogonalize(points);
     path = offsetPath(path, (kind === "in" ? -1 : 1) * (width / 2 + ROAD_GAP * cityUnit / 2));
     if (kind === "in") path.reverse();
-    addRoad(road, lane, path, width, floorY + lift);
+    addRoad(road, lane, path, width, deck[kind]);
   };
 
   for (const kind of ["out", "in"]) {
@@ -3433,7 +3447,7 @@ function showStreetsFor(entry) {
         const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
           ? new THREE.Vector3(there.x, here.y, here.z)
           : new THREE.Vector3(here.x, here.y, there.z);
-        draw([here, bend, there], b.weight, kind, Math.max(here.y, there.y));
+        draw([here, bend, there], b.weight, kind);
         continue;
       }
       ends.push({ state, weight: b.weight, item: b });
@@ -3446,13 +3460,13 @@ function showStreetsFor(entry) {
       // trunk left them, which is already the first cell of the chain.
       const root = sweep.prev[chain.states[0]] < 0;
       if (root && points.length) points.unshift(baseAnchor(entry, points[0]));
-      draw(points, chain.weight, kind, entry.baseY);
+      draw(points, chain.weight, kind);
     }
     // ...and each peer's own last stretch, from where its branch ended to its wall.
     for (const { state, weight, item } of ends) {
       const from = cellCentre(state >> 2, grid);
       const to = item.peer ? baseAnchor(item.peer, from) : item.exit.clone();
-      draw([from, to], weight, kind, Math.max(entry.baseY, to.y));
+      draw([from, to], weight, kind);
     }
   }
 
