@@ -315,7 +315,12 @@ class RenderCodecityTest(unittest.TestCase):
             # marked built-up, and one Dijkstra per hover serves the whole bundle.
             self.assertIn("function ensureRoadGrid", html)
             self.assertIn("function roadSweep", html)
-            self.assertIn("function roadRoute", html)
+            self.assertIn("function roadBestState", html)
+            # ...and the routes that come out of it are BUNDLED: peers lying the same way
+            # share a trunk that thins each time one of them branches off, instead of
+            # arriving at the building as a dozen parallel bands.
+            self.assertIn("function bundleRoutes", html)
+            self.assertIn("carried.get(kids[0]) === carried.get(current)", html)
             self.assertIn("if (!grid.free[nIdx]) continue;", html)
             self.assertIn("const ROAD_TURN_COST = 2.4;", html)   # corners cost, so roads run straight
             self.assertIn("roadGrid = null;", html)              # ...and are re-gridded on rebuild

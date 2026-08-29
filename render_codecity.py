@@ -3150,9 +3150,10 @@ function offPlateExit(entry, grid, index, count) {
   return new THREE.Vector3(p.x + spread, entry.baseY, grid.maxZ + out);
 }
 
-// Walk the sweep back from whichever of `cells` it reached most cheaply, and hand back the
-// corner points of that route, source first.
-function roadRouteTo(sweep, cells, grid) {
+// Whichever of `cells` the sweep reached most cheaply, as a state — the heading is part of
+// it, and that matters: two routes through the same STATE share every step from there back
+// to the root, which is what makes them bundleable.
+function roadBestState(sweep, cells) {
   let best = -1, bestCost = Infinity;
   for (const cell of cells) {
     for (let d = 0; d < 4; d++) {
@@ -3160,27 +3161,78 @@ function roadRouteTo(sweep, cells, grid) {
       if (sweep.dist[state] < bestCost) { bestCost = sweep.dist[state]; best = state; }
     }
   }
-  if (best < 0 || !isFinite(bestCost)) return null;   // fenced in: no route on this plate
-  const route = [];
-  for (let state = best; state >= 0; state = sweep.prev[state]) route.push(state >> 2);
-  route.reverse();
-  // Cell centres, with the straight runs collapsed: only the corners survive.
+  return isFinite(bestCost) ? best : -1;
+}
+
+function cellCentre(cell, grid) {
+  const c = cell % grid.cols, r = (cell / grid.cols) | 0;
+  return new THREE.Vector3(grid.x0 + (c + 0.5) * grid.size, 0, grid.z0 + (r + 0.5) * grid.size);
+}
+
+// Cell centres with the straight runs collapsed: only the corners survive.
+function statesToPoints(states, grid) {
   const points = [];
-  for (let i = 0; i < route.length; i++) {
-    const c = route[i] % grid.cols, r = (route[i] / grid.cols) | 0;
-    const point = new THREE.Vector3(grid.x0 + (c + 0.5) * grid.size, 0,
-                                    grid.z0 + (r + 0.5) * grid.size);
-    if (i > 0 && i < route.length - 1) {
-      const p = points[points.length - 1];
-      const nc = route[i + 1] % grid.cols, nr = (route[i + 1] / grid.cols) | 0;
-      const nx = grid.x0 + (nc + 0.5) * grid.size, nz = grid.z0 + (nr + 0.5) * grid.size;
-      const straight = (Math.abs(point.x - p.x) < 1e-6 && Math.abs(nx - point.x) < 1e-6) ||
-                       (Math.abs(point.z - p.z) < 1e-6 && Math.abs(nz - point.z) < 1e-6);
+  for (let i = 0; i < states.length; i++) {
+    const point = cellCentre(states[i] >> 2, grid);
+    if (i > 0 && i < states.length - 1) {
+      const previous = points[points.length - 1];
+      const next = cellCentre(states[i + 1] >> 2, grid);
+      const straight = (Math.abs(point.x - previous.x) < 1e-6 && Math.abs(next.x - point.x) < 1e-6) ||
+                       (Math.abs(point.z - previous.z) < 1e-6 && Math.abs(next.z - point.z) < 1e-6);
       if (straight) continue;
     }
     points.push(point);
   }
   return points;
+}
+
+// ── Bundling ────────────────────────────────────────────────────────────────
+// Every route in a bundle is a walk back up the SAME sweep tree, so two peers lying the same
+// way share their whole path from the moment they meet. Drawn one road at a time, that
+// shared stretch comes out as a dozen parallel bands arriving at the building side by side,
+// which is a dozen things to count and one fact to learn. Bundled, it is ONE trunk that
+// thins every time something branches off it — the shape of the coupling rather than a
+// tally of it.
+//
+// The tree is over (cell, heading) states, not cells: a cell can be reached facing two
+// different ways with two different parents, but a state has exactly one parent, so two
+// routes sharing a state provably share every step from there to the root.
+function bundleRoutes(sweep, ends) {
+  const carried = new Map();     // state -> total weight of the peers behind it
+  for (const { state, weight } of ends) {
+    for (let s = state; s >= 0; s = sweep.prev[s]) {
+      carried.set(s, (carried.get(s) || 0) + weight);
+    }
+  }
+  const children = new Map();
+  const roots = [];
+  for (const state of carried.keys()) {
+    const parent = sweep.prev[state];
+    if (parent < 0 || !carried.has(parent)) roots.push(state);
+    else if (children.has(parent)) children.get(parent).push(state);
+    else children.set(parent, [state]);
+  }
+  // A chain runs while there is exactly one way on AND nothing has left the road: the
+  // moment either changes, the trunk gets thinner and a new chain starts.
+  const chains = [];
+  const pending = roots.slice();
+  while (pending.length) {
+    const start = pending.pop();
+    const states = [start];
+    let current = start;
+    for (;;) {
+      const kids = children.get(current);
+      if (kids && kids.length === 1 && carried.get(kids[0]) === carried.get(current)) {
+        current = kids[0];
+        states.push(current);
+        continue;
+      }
+      break;
+    }
+    chains.push({ states, weight: carried.get(start) });
+    for (const kid of children.get(current) || []) pending.push(kid);
+  }
+  return chains;
 }
 
 // Roads turn at 90 degrees and never run on a diagonal. The routed middle already does —
@@ -3354,38 +3406,54 @@ function showStreetsFor(entry) {
   }
 
   const road = roadSink(), lane = roadSink();
-  for (const b of bundle) {
-    const target = b.peer ? b.peer.mesh.position : b.exit;
-    if (!target) continue;
-    // The sweep runs FROM the hovered building, so a route always comes back hovered-first;
-    // an incoming edge is the same tarmac driven the other way.
-    let points = sweep && b.cells && b.cells.length ? roadRouteTo(sweep, b.cells, grid) : null;
-    if (points && points.length >= 2) {
-      // Anchor each end at the face the route ACTUALLY arrives at, not at the one that
-      // happens to look at the other building. Those two disagree the moment a route goes
-      // around anything, and then the road reaches the near side of its peer and doubles
-      // back around it to touch the far one.
-      const here = baseAnchor(entry, points[0]);
-      const there = b.peer ? baseAnchor(b.peer, points[points.length - 1]) : b.exit.clone();
-      points = [here.clone(), ...points, there.clone()];
-    } else {
-      const here = baseAnchor(entry, target);
-      const there = b.peer ? baseAnchor(b.peer, entry.mesh.position) : b.exit.clone();
-      // Fenced in, or no grid: fall back to the straight L rather than drawing nothing.
-      const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
-        ? new THREE.Vector3(there.x, here.y, here.z)
-        : new THREE.Vector3(here.x, here.y, there.z);
-      points = [here.clone(), bend, there.clone()];
+  const lift = ROAD_LIFT * cityUnit;
+
+  // One lateral sign per direction, so a trunk carrying traffic out and one carrying it in
+  // can share a corridor without ever sharing a segment.
+  const draw = (points, weight, kind, floorY) => {
+    if (points.length < 2) return;
+    const width = roadWidth(weight);
+    let path = orthogonalize(points);
+    path = offsetPath(path, (kind === "in" ? -1 : 1) * (width / 2 + ROAD_GAP * cityUnit / 2));
+    if (kind === "in") path.reverse();
+    addRoad(road, lane, path, width, floorY + lift);
+  };
+
+  for (const kind of ["out", "in"]) {
+    const side = bundle.filter(b => b.kind === kind);
+    if (!side.length) continue;
+    // Each peer's own end of the tree, and the anchor its stub runs to.
+    const ends = [];
+    for (const b of side) {
+      const state = sweep && b.cells && b.cells.length ? roadBestState(sweep, b.cells) : -1;
+      if (state < 0) {
+        // Fenced in, or no grid: this one edge falls back to a straight L of its own.
+        const there = b.peer ? baseAnchor(b.peer, entry.mesh.position) : b.exit.clone();
+        const here = baseAnchor(entry, b.peer ? b.peer.mesh.position : b.exit);
+        const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
+          ? new THREE.Vector3(there.x, here.y, here.z)
+          : new THREE.Vector3(here.x, here.y, there.z);
+        draw([here, bend, there], b.weight, kind, Math.max(here.y, there.y));
+        continue;
+      }
+      ends.push({ state, weight: b.weight, item: b });
     }
-    const floorY = Math.max(points[0].y, points[points.length - 1].y);
-    points = orthogonalize(points);
-    // Half its own width plus half a gap, to the left or the right of the centreline
-    // depending on which way the dependency runs: an out road and an in road can then
-    // share a corridor without ever sharing a segment, however wide either of them is.
-    const width = roadWidth(b.weight);
-    points = offsetPath(points, (b.kind === "in" ? -1 : 1) * (width / 2 + ROAD_GAP * cityUnit / 2));
-    if (b.kind === "in") points.reverse();   // orthogonal, and offset, either way round
-    addRoad(road, lane, points, width, floorY + ROAD_LIFT * cityUnit);
+    if (!ends.length) continue;
+
+    for (const chain of bundleRoutes(sweep, ends)) {
+      const points = statesToPoints(chain.states, grid);
+      // The trunk starts at the building it all leaves from; the branches start where the
+      // trunk left them, which is already the first cell of the chain.
+      const root = sweep.prev[chain.states[0]] < 0;
+      if (root && points.length) points.unshift(baseAnchor(entry, points[0]));
+      draw(points, chain.weight, kind, entry.baseY);
+    }
+    // ...and each peer's own last stretch, from where its branch ended to its wall.
+    for (const { state, weight, item } of ends) {
+      const from = cellCentre(state >> 2, grid);
+      const to = item.peer ? baseAnchor(item.peer, from) : item.exit.clone();
+      draw([from, to], weight, kind, Math.max(entry.baseY, to.y));
+    }
   }
 
   const group = new THREE.Group();

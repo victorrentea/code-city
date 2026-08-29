@@ -271,6 +271,15 @@ What makes the bundle readable:
   hovered-to-peer orientation before either is reversed, which is what lets one sign put
   them on opposite sides for good; offsetting after the reverse would put them back on top
   of each other.
+- **Roads going the same way are BUNDLED.** Every route in a bundle is a walk back up the
+  same sweep tree, so two peers lying the same way share their whole path from the moment
+  they meet. Drawn one road at a time, that shared stretch arrives at the building as a
+  dozen parallel bands — a dozen things to count, and one fact to learn. Bundled, it is one
+  **trunk that thins every time something branches off it**: the shape of the coupling
+  rather than a tally of it, and the trunk's width is the ramp applied to the total weight
+  it carries. The tree is over `(cell, heading)` states rather than cells, because a cell
+  can be reached facing two ways with two different parents while a state has exactly one —
+  so two routes sharing a state provably share every step from there to the root.
 - **Each end attaches where the route actually arrives**, not at the face that happens to
   look at the other building. Those two disagree the moment a route goes around anything,
   and then the road reaches the near side of its peer and doubles back around it to touch
