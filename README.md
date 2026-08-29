@@ -170,7 +170,12 @@ black arrow rising off its dashed line to today's ceiling, drawn flat against th
 Which wall is decided **every frame**, from where the camera is standing: an arrow nailed
 to one face at build time spends most of an orbit buried inside its own building. A
 building that shrank gets no arrow, for the same reason it gets no dashed line — there is
-no rise to draw.
+no rise to draw. **One stroke weight for the whole city**: the shaft and the head are the
+same size on every building, drawn as geometry rather than as an arrow painted into a
+texture and stretched to fit, which gave a fat arrow on a wide block and a hairline on a
+narrow one and left the reader comparing stroke weights that mean nothing. Only the LENGTH
+varies — that is the one thing the arrow is measuring. It shrinks only where it physically
+will not fit: a head longer than its own rise, or wider than the wall it is painted on.
 
 **Only growth is marked.** A file that got *smaller* carries no mark — shrinking is the outcome
 nobody has to be warned about — and neither does one the diff **added** (all of it is new) nor

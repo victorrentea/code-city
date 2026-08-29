@@ -2343,27 +2343,17 @@ const dashTex = stripeTexture((ctx, w, h) => {
   ctx.fillRect(0, 0, Math.round(w * 0.55), h);
 }, 32, 4);
 
-// An arrow filling its quad: a shaft up the middle and a head across the top.
-const arrowTex = stripeTexture((ctx, w, h) => {
-  ctx.fillStyle = "#fff";
-  const shaft = w * 0.34, head = Math.min(h * 0.42, w * 0.5);
-  ctx.fillRect((w - shaft) / 2, head * 0.85, shaft, h - head * 0.85);
-  ctx.beginPath();
-  ctx.moveTo(w / 2, 0);
-  ctx.lineTo(w, head);
-  ctx.lineTo(0, head);
-  ctx.closePath();
-  ctx.fill();
-}, 64, 128);
-
 function wallMaterial(map) {
   return new THREE.MeshBasicMaterial({
-    color: MARK_COLOR, map, transparent: true, side: THREE.DoubleSide,
+    // transparent even with no texture: these write no depth (so they never z-fight the
+    // wall they are painted on), and an opaque object that writes no depth is drawn in the
+    // opaque pass and then painted over by the very wall it is supposed to sit on.
+    color: MARK_COLOR, map: map || null, transparent: true, side: THREE.DoubleSide,
     depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
 }
 const dashMaterial = wallMaterial(dashTex);
-const arrowMaterial = wallMaterial(arrowTex);
+const arrowMaterial = wallMaterial(null);
 
 // The four outward normals of a block, as [nx, nz, rotationY] — a PlaneGeometry faces +z,
 // so that is the rotation that lays it flat on each wall, facing out.
@@ -2405,14 +2395,40 @@ function addHeightMark(geo, y) {
   changeMarks.push(group);
 }
 
+// One stroke weight for the whole city. Drawn as GEOMETRY rather than as an arrow painted
+// into a texture and stretched to fit: a texture on a quad sized from its building gives a
+// fat arrow on a wide block and a hairline on a narrow one, and then the reader is comparing
+// stroke weights that mean nothing. Only the LENGTH is allowed to vary — that is the one
+// thing the arrow is actually measuring.
+const ARROW_STROKE = 1.5;       // × cityUnit — the shaft
+const ARROW_HEAD_W = 4.4;       // × cityUnit — the head's base
+const ARROW_HEAD_LEN = 5.0;     // × cityUnit — the head's height
+
 // The rise from that line to today's ceiling, as an arrow painted on ONE wall — the one
 // facing the camera, chosen every frame (see updateGrowthArrowFacing). A mark nailed to a
 // face at build time spends most of an orbit inside its own building.
 function addGrowthArrow(geo, y0, y1) {
   const rise = y1 - y0;
   if (rise <= MARK_MIN_DELTA) return;
-  const width = Math.min(Math.min(geo.width, geo.depth) * 0.45, rise * 0.5);
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, rise), arrowMaterial);
+  // Two clamps, both of them "it physically does not fit" rather than "this block is big":
+  // a head longer than the rise it sits on, and a head wider than the wall it is painted on.
+  const wall = Math.min(geo.width, geo.depth);
+  const scale = Math.min(1, rise * 0.6 / (ARROW_HEAD_LEN * cityUnit),
+                            wall * 0.7 / (ARROW_HEAD_W * cityUnit));
+  const headLen = ARROW_HEAD_LEN * cityUnit * scale;
+  const headW = ARROW_HEAD_W * cityUnit * scale;
+  const stroke = ARROW_STROKE * cityUnit * scale;
+
+  // Local XY, centred on the wall's midpoint so the facing code only has to place a point.
+  const top = rise / 2, bottom = -rise / 2, neck = top - headLen;
+  const s = stroke / 2, h = headW / 2;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    -s, bottom, 0,   s, bottom, 0,   s, neck, 0,      // shaft
+    -s, bottom, 0,   s, neck, 0,    -s, neck, 0,
+    -h, neck, 0,     h, neck, 0,     0, top, 0,       // head
+  ], 3));
+  const mesh = new THREE.Mesh(geometry, arrowMaterial);
   mesh.userData = { cx: geo.cx, cz: geo.cz, hw: geo.width / 2, hd: geo.depth / 2,
                     y: y0 + rise / 2 };
   scene.add(mesh);
