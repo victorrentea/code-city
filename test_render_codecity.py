@@ -776,23 +776,24 @@ class RenderCodecityTest(unittest.TestCase):
             # Whole-repo metrics cannot be reconstructed from a blob and are left out on purpose.
             self.assertNotIn("fan_in", grew)
             self.assertNotIn("instability", grew)
-            # The city marks them: in highlight mode a grown building carries a dashed
-            # black band at its old height and a dashed black rectangle on the roof at
-            # its old footprint — drawn thick, which a plain THREE.Line cannot be.
+            # The city marks them: in highlight mode a grown building carries a row of
+            # black arrowheads at its old height, facing UP the wall, and another row on
+            # the roof at its old footprint, facing OUT — the mark points the way the
+            # building moved, in both places, instead of only saying where it stopped.
             self.assertIn("function addChangeMarks", html)
-            self.assertIn("function markRectangle", html)
+            self.assertIn("function addHeightMark", html)
+            self.assertIn("function addAreaMark", html)
             self.assertIn('if (changeMode() !== "highlight") return;', html)
-            self.assertIn("LineSegments2", html)
-            self.assertIn("dashed: true", html)
             self.assertIn("const MARK_COLOR = 0x000000;", html)
+            # Painted ON the walls and the roof, in world units — not a screen-width
+            # outline hung around the block, which reads as glass in front of the city.
+            self.assertNotIn("LineSegments2", html)
+            self.assertNotIn("function markRectangle", html)
+            self.assertIn("plane.rotateX(-Math.PI / 2);", html)     # the roof marks lie flat
+            self.assertIn("polygonOffsetFactor: -4", html)
             # Only growth is marked — a file that got smaller carries no mark at all.
             self.assertIn("geo.height - wasHeight > MARK_MIN_DELTA", html)
             self.assertIn("geo.width - wasW > MARK_MIN_DELTA || geo.depth - wasD > MARK_MIN_DELTA", html)
-            # The rule lies ON the block: only a hair of clearance, plus polygon offset.
-            self.assertIn("const MARK_HUG = 0.05;", html)
-            self.assertIn("polygonOffsetFactor: -4", html)
-            # Screen-space thickness has to survive a window resize.
-            self.assertIn("mark.material.resolution.set(window.innerWidth", html)
             # The intro explains the marks the way it explains area/height/colour: a
             # fourth card, wired to a REAL mark, naming the axis that mark measures.
             self.assertIn("function clearestChangeMark", html)

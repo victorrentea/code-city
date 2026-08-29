@@ -156,18 +156,20 @@ nothing is exaggerated: the marks simply say where it ended before. They are dra
 `Line2`, because WebGL ignores `linewidth` and one pixel is not a mark on a building. The
 hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
 
-**The mark is painted ON the building, and it points.** The "used to end here" line is a
-row of small **arrowheads facing up**, painted flat in the wall's own plane: sitting on the
-old roofline, standing in the gap the file has grown into since. One mark then carries both
-halves of the fact — where it ended, and which way it went — where a row of flat dashes
-carries only the first and needs a second mark on the wall to say the rest.
+**The marks are painted ON the building, and they point.** The "used to end here" line is a
+row of **arrowheads facing UP**, painted flat in the wall's own plane: sitting on the old
+roofline, standing in the gap the file has grown into since. The old footprint on the roof
+is the same row of arrowheads facing **OUT**, standing in the ring of plate the file has
+spread into. Up on the walls, out on the roof — each mark points the way that building
+actually moved. One mark then carries both halves of the fact, where it ended and which way
+it went; a row of flat dashes carries only the first, and needed a whole second mark beside
+it (a box and a cone sticking out of the wall) to say the rest.
 
-They are textured quads lying in the wall's plane, sized in world units, so they shrink
-with the building as you pull the camera back. The line used to be a screen-width outline
+They are textured quads lying in the surface's own plane, sized in world units, so they
+shrink with the building as you pull the camera back. They used to be screen-width outlines
 floating a hair outside the block, which reads as an overlay drawn on the glass in front of
-the city rather than as something belonging to that building; and the arrow it needed
-alongside was a whole second mark — a box and a cone sticking out of the wall — for one bit
-of information the dashes could carry themselves.
+the city rather than as something belonging to that building — and which needed a resize
+handler to keep its thickness, where paint needs nothing.
 
 The before-metrics are recovered from git at the very ref the change set is a diff of (the
 same one that decided which buildings light up — no second notion of "the diff"): size, LOC

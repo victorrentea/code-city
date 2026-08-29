@@ -1505,9 +1505,6 @@ import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer
 // A plain THREE.Line is one pixel wide on every platform that matters (WebGL ignores
 // linewidth), and one pixel is not a mark on a building. Line2 draws its segments as
 // screen-space quads, so a change marker can be as thick — and as dashed — as it needs.
-import { LineMaterial } from "three/addons/lines/LineMaterial.js";
-import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
-import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
 
 const mount = document.getElementById("scene");
@@ -2213,10 +2210,9 @@ function clearCity() {
   buildings = [];
   for (const mark of changeMarks) {
     scene.remove(mark);
-    // Height marks are groups of painted quads sharing one material; the area mark is
-    // still a Line2 with a material of its own. Only geometry is always ours to free.
+    // Every mark is a group of painted quads sharing one material now: only the geometry
+    // is ours to free.
     mark.traverse(o => { if (o.geometry) o.geometry.dispose(); });
-    if (mark.material && mark.material.isLineMaterial) mark.material.dispose();
   }
   changeMarks = [];
   buildingByPath = new Map();
@@ -2256,7 +2252,6 @@ function medianFootprint(root) {
 // Only GROWTH is marked. A file that got smaller carries no mark: shrinking is the
 // outcome nobody has to be warned about.
 const MARK_COLOR = 0x000000;
-const MARK_PX = 1.75;       // screen-space thickness — the whole point of Line2
 // A mark is a rule drawn ON the block, not a frame hung around it: half a world unit of
 // clearance was a visible white gap the moment anyone zoomed in. Keep only the hair that
 // stops the line and the surface fighting over the same depth, and lean on polygonOffset
@@ -2265,46 +2260,6 @@ const MARK_HUG = 0.05;
 // Separate number, deliberately: how much the building must have grown before a mark is
 // worth drawing at all. Tied to the clearance, it would have followed it down to nothing.
 const MARK_MIN_DELTA = 1;
-
-// One closed rectangle in the XZ plane at height `y`, as a Line2 the renderer can draw
-// thick and dashed. `dash` is in world units (the line distances are), so it is sized
-// from the rectangle itself and a small mark keeps roughly as many dashes as a big one.
-function markDash(size) {
-  return Math.max(0.6, size / 12);
-}
-
-function markRectangle(cx, cz, y, w, d, dash, axis) {
-  const hw = w / 2, hd = d / 2;
-  const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
-  const points = [];
-  for (let i = 0; i < 4; i++) {
-    const a = corners[i], b = corners[(i + 1) % 4];
-    points.push(cx + a[0], y, cz + a[1], cx + b[0], y, cz + b[1]);
-  }
-  const geometry = new LineSegmentsGeometry();
-  geometry.setPositions(points);
-  const material = new LineMaterial({
-    color: MARK_COLOR,
-    linewidth: MARK_PX,
-    dashed: true,
-    dashSize: dash,
-    gapSize: dash * 0.8,
-    polygonOffset: true,
-    polygonOffsetFactor: -4,
-    polygonOffsetUnits: -4,
-  });
-  material.resolution.set(window.innerWidth, window.innerHeight);
-  const line = new LineSegments2(geometry, material);
-  line.computeLineDistances();
-  line.userData.kind = "mark";
-  // Kept so the first-run intro can single one out and trace it in SVG: a dashed
-  // rectangle in the sky explains nothing until something says what it measures.
-  line.userData.axis = axis;
-  line.userData.y = y;
-  line.userData.corners = corners.map(([dx, dz]) => [cx + dx, cz + dz]);
-  scene.add(line);
-  changeMarks.push(line);
-}
 
 // `geo` carries the building as drawn plus everything needed to re-measure it from the
 // pre-diff metrics — with the very same footprintFor/heightFor the block itself used.
@@ -2319,8 +2274,8 @@ function markRectangle(cx, cz, y, w, d, dash, axis) {
 // texture and one material for each kind — the per-mark variation is written into the
 // geometry's UVs, the same trick the roads use for their traffic.
 const WALL_LIFT = 0.06;         // × cityUnit off the wall: enough to beat z-fighting, invisible
-const MARK_DASH_WORLD = 5;      // × cityUnit — one arrowhead + one gap
-const MARK_BAND = 2.6;          // × cityUnit — how tall an arrowhead stands
+const MARK_DASH_WORLD = 10;     // × cityUnit — one arrowhead + one gap
+const MARK_BAND = 5.2;          // × cityUnit — how far an arrowhead reaches
 
 function stripeTexture(draw, w, h) {
   const canvas = document.createElement("canvas");
@@ -2378,6 +2333,44 @@ function wallQuad(geo, wall, y, height, width, material, repeats) {
   return mesh;
 }
 
+// The four sides of a rectangle lying FLAT, as [rotationY, outward x, outward z]. A plane
+// laid flat by rotateX(-90) has its texture's "up" pointing at -z, so these are the turns
+// that aim it out of the rectangle instead.
+const SIDES = [[0, 0, -1], [Math.PI, 0, 1], [Math.PI / 2, -1, 0], [-Math.PI / 2, 1, 0]];
+
+// "The roof used to stop here", laid on the roof — same arrowheads, aimed OUTWARD, standing
+// in the ring of new footprint the file has spread into. Up on the walls, out on the roof:
+// the mark points the way the building actually moved in both places.
+function addAreaMark(geo, y, wasW, wasD) {
+  const group = new THREE.Group();
+  const band = MARK_BAND * cityUnit;
+  const lift = WALL_LIFT * cityUnit;
+  for (const [ry, ox, oz] of SIDES) {
+    const along = ox ? wasD : wasW;              // the side's own length
+    const reach = ox ? wasW / 2 : wasD / 2;      // ...and how far out its edge sits
+    const plane = new THREE.PlaneGeometry(along, band);
+    plane.rotateX(-Math.PI / 2);
+    plane.rotateY(ry);
+    const uv = plane.attributes.uv;
+    const repeats = Math.max(1, Math.round(along / (MARK_DASH_WORLD * cityUnit)));
+    for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * repeats);
+    uv.needsUpdate = true;
+    const mesh = new THREE.Mesh(plane, dashMaterial);
+    mesh.position.set(geo.cx + ox * (reach + band / 2), y + lift,
+                      geo.cz + oz * (reach + band / 2));
+    group.add(mesh);
+  }
+  group.userData.kind = "mark";
+  group.userData.axis = "area";
+  group.userData.y = y;
+  group.userData.corners = [[geo.cx - wasW / 2, geo.cz - wasD / 2],
+                            [geo.cx + wasW / 2, geo.cz - wasD / 2],
+                            [geo.cx + wasW / 2, geo.cz + wasD / 2],
+                            [geo.cx - wasW / 2, geo.cz + wasD / 2]];
+  scene.add(group);
+  changeMarks.push(group);
+}
+
 // "It used to end here", painted around all four walls at that height.
 function addHeightMark(geo, y) {
   const group = new THREE.Group();
@@ -2418,8 +2411,7 @@ function addChangeMarks(file, geo) {
   if (wasArea !== null) {
     const [wasW, wasD] = footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
     if (geo.width - wasW > MARK_MIN_DELTA || geo.depth - wasD > MARK_MIN_DELTA) {
-      markRectangle(geo.cx, geo.cz, geo.baseY + geo.height + MARK_HUG, wasW, wasD,
-                    markDash(Math.min(wasW, wasD)), "area");
+      addAreaMark(geo, geo.baseY + geo.height, wasW, wasD);
     }
   }
 }
@@ -4030,11 +4022,7 @@ function onResize() {
   labelRenderer.setSize(window.innerWidth, window.innerHeight);
   // A Line2 is fattened in screen space, so it has to be told the canvas it lands on;
   // stale resolution makes every change mark the wrong thickness after a resize.
-  for (const mark of changeMarks) {
-  if (mark.material && mark.material.resolution) {   // Line2 only: the painted ones scale with the city
-    mark.material.resolution.set(window.innerWidth, window.innerHeight);
-  }
-}
+  // (Marks need nothing on resize: they are painted in world units, not in screen pixels.)
 }
 
 // ── First-run intro ────────────────────────────────────────────────────────
