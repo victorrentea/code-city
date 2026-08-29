@@ -259,6 +259,16 @@ What makes the bundle readable:
   footprint marked built-up, and each bundle routed over the free cells. A **turn costs
   `ROAD_TURN_COST` cells' worth of detour**, which is what keeps the result reading as roads
   and not as staircases — a plain BFS gives shortest paths that zigzag every other cell.
+- **A colour per direction, and the bundle names its own.** Blue leaves the building
+  (efferent, `Ce` — I depend on them), red arrives at it (afferent, `Ca` — they depend on
+  me), and **purple runs both ways**: a mutual pair is neither question's answer and the
+  worst of both, so it gets one road in a colour of its own rather than two the reader has
+  to notice are the same two classes. While a bundle is up, the only names on screen are
+  the building you asked about and the ones it is tied to — every one of them, whatever the
+  roof-size gate would normally say, and **nothing else**: the question is "which classes",
+  so a road arriving at an unnamed block answers half of it, and a name belonging to some
+  third class that happens to be tall is worse than no name at all. Each name wears the
+  colour of its own road, so the direction survives the road passing behind a tower.
 - **The network is elevated, on a deck per direction.** A road laid on the plate goes UNDER
   every district terrace it crosses — terraces rise with nesting depth, so on any city
   deeper than one package a road spends most of its length invisible. The whole network sits

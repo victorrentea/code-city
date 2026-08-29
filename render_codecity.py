@@ -1087,6 +1087,27 @@ html = """<!doctype html>
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.28);
   }
+  /* The names a coupling bundle puts up: blue, so they read as one set answering one
+     question, and never de-overlapped away — every class on a road has to be named. */
+  .coupling-label {
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(29, 78, 216, 0.94);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 650;
+    white-space: nowrap;
+    pointer-events: none;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.35);
+  }
+  /* The same three colours the roads use: blue leaving, red arriving, purple both ways. */
+  .coupling-label.out  { background: rgba(29, 78, 216, 0.94); }
+  .coupling-label.in   { background: rgba(185, 28, 28, 0.94); }
+  .coupling-label.both { background: rgba(126, 34, 206, 0.94); }
+  .coupling-label.subject {   /* the one you asked about: on no road, so on no side */
+    background: rgba(12, 32, 96, 0.96);
+    box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.9), 0 6px 18px rgba(15, 23, 42, 0.4);
+  }
   /* Floating package tag — deliberately a different look from the dark class pills:
      a deep-blue rounded capsule so a package name never reads as a class name. */
   .district-label {
@@ -2744,7 +2765,7 @@ function panelBoxes() {
 }
 
 function updateLabelVisibility() {
-  if (introEl) {                                  // keep the intro screen clean
+  if (introEl || streetGroup) {   // the intro, or a coupling bundle that names its own
     for (const L of cityLabels) showLabel(L, false);
     return;
   }
@@ -2799,8 +2820,15 @@ const ROAD_FLOW_MAX = 24;
 const ROAD_DRAW_MAX = 100;
 // Two blues: the roadway, and the traffic on it. One object, one hue — a second colour
 // would be a second meaning, and the city underneath is already spending red.
-const ROAD_PALE = 0x93c5fd;
-const FLOW_BLUE = 0x1d4ed8;
+// A colour per direction, because that is the question you hover with: is this building
+// leaning on the rest of the city, or is the city leaning on it? Blue leaves it (efferent,
+// Ce — I depend on them), red arrives at it (afferent, Ca — they depend on me), and the
+// roadway is the pale twin of the traffic running on it.
+// ...and purple where it runs both ways: the pair that depends on each other is neither
+// question's answer and the worst of both, so it gets a colour of its own rather than two
+// roads the reader has to notice are the same pair.
+const ROAD_PALE = { out: 0x93c5fd, in: 0xfca5a5, both: 0xd8b4fe };
+const FLOW_BLUE = { out: 0x1d4ed8, in: 0xb91c1c, both: 0x7e22ce };
 const ROAD_MIN_W = 1.8;         // × cityUnit — a single reference
 const ROAD_MAX_W = 7.0;         // × cityUnit — the 95th-percentile edge and up
 const ROAD_LIFT = 0.7;          // × cityUnit above the higher of the two floors
@@ -2816,7 +2844,12 @@ const ROAD_THICK = 0.4;         // × cityUnit — a kerb, so the road catches t
 const FLOW_SPACING = 26;        // × cityUnit — world distance between two wedges
 const FLOW_SPEED = 46;          // × cityUnit per second
 
-const roadMaterial = new THREE.MeshBasicMaterial({ color: ROAD_PALE, side: THREE.DoubleSide });
+const ROAD_KINDS = ["out", "in", "both"];
+const roadMaterial = {};
+for (const kind of ROAD_KINDS) {
+  roadMaterial[kind] = new THREE.MeshBasicMaterial({
+    color: ROAD_PALE[kind], side: THREE.DoubleSide });
+}
 
 // ── The traffic ──────────────────────────────────────────────────────────────
 // A static band says two files are coupled; it does not say WHICH WAY the dependency
@@ -2846,14 +2879,20 @@ function flowTexture() {
   return tex;
 }
 const flowTex = flowTexture();
-const flowMaterial = new THREE.MeshBasicMaterial({
-  color: FLOW_BLUE, map: flowTex, transparent: true, opacity: 0.95, depthWrite: false,
-  side: THREE.DoubleSide,
-});
+// Both share the one texture, so one offset per frame animates the whole network.
+function trafficMaterial(color) {
+  return new THREE.MeshBasicMaterial({
+    color, map: flowTex, transparent: true, opacity: 0.95, depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+}
+const flowMaterial = {};
+for (const kind of ROAD_KINDS) flowMaterial[kind] = trafficMaterial(FLOW_BLUE[kind]);
 
 let streetGroup = null;         // the roads currently drawn (one hovered building's)
 let streetedPath = null;        // whose they are, so a pointermove inside the same roof is free
 let streetFlowFrozen = false;   // a bundle past ROAD_FLOW_MAX: drawn, but the traffic holds still
+const streetLabels = [];        // the names of the hovered building and everything it touches
 // How many roads the last draw actually put on screen per direction, vs how many peers
 // were there to draw: the hover tooltip says so on the coupling lines, so a capped or
 // filtered-down bundle never passes for the whole truth.
@@ -2925,6 +2964,11 @@ function clearStreets() {
     streetGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     streetGroup = null;
   }
+  for (const label of streetLabels) {
+    if (label.element && label.element.parentNode) label.element.parentNode.removeChild(label.element);
+    scene.remove(label);
+  }
+  streetLabels.length = 0;
   streetedPath = null;
   streetFlowFrozen = false;
   wireStatus.out = wireStatus.in = null;
@@ -3367,22 +3411,33 @@ function showStreetsFor(entry) {
   // Who is in this bundle is settled BEFORE any routing: the sweep needs to know which
   // cells it is trying to reach so it can stop once it has them all, and the tooltip needs
   // the counts whether or not a single road turns out to be drawable.
+  const outgoing = outgoingAdjacency()[path] || {};
+  const incoming = incomingAdjacency().get(path) || {};
   const bundle = [];
-  for (const [kind, peers] of [
-    ["out", outgoingAdjacency()[path] || {}],
-    ["in", incomingAdjacency().get(path) || {}],
-  ]) {
+  const mutual = new Set();
+  for (const [kind, peers] of [["out", outgoing], ["in", incoming]]) {
     let n = 0;
     for (const [peerPath, weight] of Object.entries(peers)) {
       if (peerPath === path) continue;
       if (n >= ROAD_CAP) { n++; continue; }
+      n++;
+      // A pair that depends on both ways gets ONE road, in its own colour, rather than two
+      // the reader has to notice are the same two classes. The tooltip still counts it on
+      // both of its lines — it really is an edge each way.
+      const other = kind === "out" ? incoming[peerPath] : outgoing[peerPath];
+      if (other !== undefined) {
+        if (mutual.has(peerPath)) continue;
+        mutual.add(peerPath);
+        bundle.push({ kind: "both", weight: weight + other,
+                      peer: buildingByPath.get(peerPath) || null });
+        continue;
+      }
       // A peer with no building is not absent from the truth, only from the picture:
       // filtered out, or outside the package you drilled into. Its road is drawn anyway,
       // running to the edge of what IS rendered and stopping there with nothing at the far
       // end — which is exactly the fact. Dropping it silently makes the bundle under-report
       // what the building is tied to, and that is the one thing it must never do.
       bundle.push({ kind, weight, peer: buildingByPath.get(peerPath) || null });
-      n++;
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
     wireStatus[kind] = { drawn: Math.min(n, ROAD_CAP), reachable: n };
@@ -3415,12 +3470,17 @@ function showStreetsFor(entry) {
     sweep = roadSweep(entry, grid, wanted);
   }
 
-  const road = roadSink(), lane = roadSink();
+  const sinks = {};
+  for (const kind of ROAD_KINDS) sinks[kind] = { road: roadSink(), lane: roadSink() };
   // One elevation for the whole network, per direction — not per road: a road that dips to
   // its own two endpoints' floors is a road that ducks under whatever it crosses.
   const floorTop = grid ? grid.floorTop : entry.baseY;
   const deck = { out: floorTop + ROAD_LIFT * cityUnit,
-                 in: floorTop + (ROAD_LIFT + ROAD_DECK) * cityUnit };
+                 in: floorTop + (ROAD_LIFT + ROAD_DECK) * cityUnit,
+                 both: floorTop + (ROAD_LIFT + 2 * ROAD_DECK) * cityUnit };
+  // Out and back sit either side of their shared centreline; a both-ways road has no
+  // counterpart to keep clear of, so it takes the middle.
+  const SIDE = { out: 1, in: -1, both: 0 };
 
   // One lateral sign per direction, so a trunk carrying traffic out and one carrying it in
   // can share a corridor without ever sharing a segment.
@@ -3428,12 +3488,12 @@ function showStreetsFor(entry) {
     if (points.length < 2) return;
     const width = roadWidth(weight);
     let path = orthogonalize(points);
-    path = offsetPath(path, (kind === "in" ? -1 : 1) * (width / 2 + ROAD_GAP * cityUnit / 2));
+    path = offsetPath(path, SIDE[kind] * (width / 2 + ROAD_GAP * cityUnit / 2));
     if (kind === "in") path.reverse();
-    addRoad(road, lane, path, width, deck[kind]);
+    addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind]);
   };
 
-  for (const kind of ["out", "in"]) {
+  for (const kind of ROAD_KINDS) {
     const side = bundle.filter(b => b.kind === kind);
     if (!side.length) continue;
     // Each peer's own end of the tree, and the anchor its stub runs to.
@@ -3471,12 +3531,41 @@ function showStreetsFor(entry) {
   }
 
   const group = new THREE.Group();
-  for (const mesh of [sinkMesh(road, roadMaterial, 0), sinkMesh(lane, flowMaterial, 1)]) {
-    if (mesh) group.add(mesh);
+  for (const kind of ROAD_KINDS) {
+    for (const mesh of [sinkMesh(sinks[kind].road, roadMaterial[kind], 0),
+                        sinkMesh(sinks[kind].lane, flowMaterial[kind], 1)]) {
+      if (mesh) group.add(mesh);
+    }
   }
   if (!group.children.length) return;
   scene.add(group);
   streetGroup = group;
+  nameTheBundle(entry, bundle);
+}
+
+// ── Naming the bundle ───────────────────────────────────────────────────────
+// While a bundle is up, the only names on screen are the building you asked about and the
+// ones it is tied to. Every one of them, whatever the roof-size gate would normally say,
+// and nothing else: the question is "which classes", so a road arriving at an unnamed block
+// is a road that answers half of it — and a name belonging to some third class that happens
+// to be tall is worse than no name at all.
+function nameTheBundle(entry, bundle) {
+  const named = new Set();
+  for (const item of [{ peer: entry, kind: "subject" }, ...bundle]) {
+    const peer = item.peer;
+    if (!peer || named.has(peer.file.path)) continue;
+    named.add(peer.file.path);
+    const div = document.createElement("div");
+    // Each name wears the colour of the road it is on, so "which of these depends on
+    // which" is answered by the labels alone once the roads are behind a tower.
+    div.className = "coupling-label " + item.kind;
+    div.textContent = peer.file.name;
+    const label = new CSS2DObject(div);
+    label.position.set(peer.mesh.position.x, peer.roofY + LABEL_STEM, peer.mesh.position.z);
+    label.center.set(0.5, 1);
+    scene.add(label);
+    streetLabels.push(label);
+  }
 }
 
 // ── Change coupling: the crime scene ────────────────────────────────────────

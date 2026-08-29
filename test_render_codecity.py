@@ -325,8 +325,13 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("const ROAD_TURN_COST = 2.4;", html)   # corners cost, so roads run straight
             self.assertIn("roadGrid = null;", html)              # ...and are re-gridded on rebuild
             # Two blues: the roadway, and the traffic that says which way the edge runs.
-            self.assertIn("const ROAD_PALE = 0x93c5fd;", html)
-            self.assertIn("const FLOW_BLUE = 0x1d4ed8;", html)
+            # A colour per direction — blue leaving, red arriving, purple both ways.
+            self.assertIn("const ROAD_PALE = { out: 0x93c5fd, in: 0xfca5a5, both: 0xd8b4fe };", html)
+            self.assertIn("const FLOW_BLUE = { out: 0x1d4ed8, in: 0xb91c1c, both: 0x7e22ce };", html)
+            # ...and while a bundle is up it names its own, and only its own.
+            self.assertIn("function nameTheBundle", html)
+            self.assertIn(".coupling-label {", html)
+            self.assertIn("if (introEl || streetGroup) {", html)
             self.assertNotIn("PIPE_RED", html)
             self.assertIn("function updateStreetFlow", html)
             self.assertIn("flowTex.offset.y", html)
@@ -340,7 +345,7 @@ class RenderCodecityTest(unittest.TestCase):
             # turning on the page whose whole point is that it turns.
             self.assertIn("function roadSink", html)
             self.assertIn("function sinkMesh", html)
-            self.assertIn("sinkMesh(road, roadMaterial, 0), sinkMesh(lane, flowMaterial, 1)", html)
+            self.assertIn("sinkMesh(sinks[kind].road, roadMaterial[kind], 0)", html)
 
             coupling = adjacency(html, "COUPLING")
             classes = coupling["classes"]
