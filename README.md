@@ -156,6 +156,13 @@ nothing is exaggerated: the marks simply say where it ended before. They are dra
 `Line2`, because WebGL ignores `linewidth` and one pixel is not a mark on a building. The
 hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
 
+**Both marks are painted ON the building.** The "used to end here" line and the arrow are
+flat quads lying in the wall's own plane, textured and sized in world units, so they shrink
+with the building as you pull the camera back. They used to stand off it — the line as a
+screen-width outline floating a hair outside the block, the arrow as a box and a cone
+sticking out of it — which reads as an overlay drawn on the glass in front of the city
+rather than as something belonging to that building.
+
 **And an arrow up the wall.** The dashed line says where the building used to end; it does
 not say, at a glance, which way the change went or by how much — you have to find the
 roofline, find the mark, and work out which is higher. So a building that GREW also gets a
@@ -233,8 +240,13 @@ its base, around whatever stands in the way, and in at its peer's. They ran as *
 the city* first, which is the more honest picture of a dependency — buried, load-bearing, not
 yours to re-route — but reading them cost a glassed plate, and the plate is the city. A road
 is the reading you can walk. On **hover only**, so the question stays "what does *this*
-building touch", never a layer left switched on. (It works with the mouse parked: ticking the
-box replays the hover.)
+building touch", never a layer left switched on. (It works with the mouse parked: pressing
+or releasing the key replays the hover.)
+
+**⌥-click to pin** a bundle and it stays up, flowing, until you pin another building or
+click the same one again. Holding a key is right for a glance, but the moment you start
+talking about what you found — or reach for the trackpad to orbit around it — a held key is
+a third hand you do not have.
 
 What makes the bundle readable:
 
@@ -250,6 +262,13 @@ What makes the bundle readable:
   and those legs used to run off at an angle. The missing corner is inserted instead — a
   city block has no diagonal streets, and one drawn as a shortcut across the plate reads as
   a mistake in the drawing rather than as a road.
+- **Out and back never share tarmac.** A road leaving the hovered building and one arriving
+  at it are offset to opposite sides of their common centreline, each by half its own width
+  plus half a median strip — so the two directions can share a corridor without ever
+  overlapping on a segment, whatever their widths. Both are computed in the same
+  hovered-to-peer orientation before either is reversed, which is what lets one sign put
+  them on opposite sides for good; offsetting after the reverse would put them back on top
+  of each other.
 - **One search per hover, not one per peer.** Dijkstra runs once from the hovered building
   over `(cell, heading)` states; every peer then just walks the sweep back from whichever cell
   around its own footprint was reached most cheaply. Eighty roads cost what one costs. Boxed
