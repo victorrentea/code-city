@@ -165,6 +165,13 @@ actually moved. One mark then carries both halves of the fact, where it ended an
 it went; a row of flat dashes carries only the first, and needed a whole second mark beside
 it (a box and a cone sticking out of the wall) to say the rest.
 
+An arrowhead **never outgrows the gap it stands in**: it is clamped to the rise (on a wall)
+or to the ring of new footprint (on the roof), with its spacing shrinking alongside so the
+head keeps its shape instead of squashing, and a side that did not move gets no heads at
+all. A fixed size overflows the block the moment the growth is small — heads hanging over
+the roof edge in mid-air, pointing at a neighbour. One size per mark, taken from the
+tightest side that grew: two sizes on one roof read as two different measurements.
+
 They are textured quads lying in the surface's own plane, sized in world units, so they
 shrink with the building as you pull the camera back. They used to be screen-width outlines
 floating a hair outside the block, which reads as an overlay drawn on the glass in front of

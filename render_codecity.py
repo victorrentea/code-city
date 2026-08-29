@@ -2274,8 +2274,16 @@ const MARK_MIN_DELTA = 1;
 // texture and one material for each kind — the per-mark variation is written into the
 // geometry's UVs, the same trick the roads use for their traffic.
 const WALL_LIFT = 0.06;         // × cityUnit off the wall: enough to beat z-fighting, invisible
-const MARK_DASH_WORLD = 10;     // × cityUnit — one arrowhead + one gap
-const MARK_BAND = 5.2;          // × cityUnit — how far an arrowhead reaches
+const MARK_DASH_WORLD = 7;      // × cityUnit — one arrowhead + one gap
+const MARK_BAND = 3.6;          // × cityUnit — how far an arrowhead reaches, at most
+
+// An arrowhead stands in the gap the building has GROWN into, so it can never be taller
+// than that gap: a fixed size overflows the block the moment the growth is small, and the
+// heads end up hanging over the roof edge in mid-air, pointing at a neighbour. Shrink it
+// to fit, and shrink the spacing with it so the head keeps its shape instead of squashing.
+function markScale(available) {
+  return Math.min(1, Math.max(0, available) / (MARK_BAND * cityUnit));
+}
 
 function stripeTexture(draw, w, h) {
   const canvas = document.createElement("canvas");
@@ -2317,6 +2325,10 @@ const dashMaterial = wallMaterial(dashTex);
 // so that is the rotation that lays it flat on each wall, facing out.
 const WALLS = [[0, 1, 0], [1, 0, Math.PI / 2], [0, -1, Math.PI], [-1, 0, -Math.PI / 2]];
 
+function markRepeats(span, scale) {
+  return Math.max(1, Math.round(span / (MARK_DASH_WORLD * cityUnit * scale)));
+}
+
 function wallQuad(geo, wall, y, height, width, material, repeats) {
   const [nx, nz, ry] = wall;
   const hw = geo.width / 2, hd = geo.depth / 2;
@@ -2343,16 +2355,23 @@ const SIDES = [[0, 0, -1], [Math.PI, 0, 1], [Math.PI / 2, -1, 0], [-Math.PI / 2,
 // the mark points the way the building actually moved in both places.
 function addAreaMark(geo, y, wasW, wasD) {
   const group = new THREE.Group();
-  const band = MARK_BAND * cityUnit;
   const lift = WALL_LIFT * cityUnit;
+  // One size for the whole ring, taken from the tightest side that grew: heads of two
+  // different sizes on one roof read as two different measurements.
+  const grewX = (geo.width - wasW) / 2, grewZ = (geo.depth - wasD) / 2;
+  const scale = markScale(Math.min(grewX > 0 ? grewX : Infinity,
+                                   grewZ > 0 ? grewZ : Infinity));
+  if (scale <= 0) return;
+  const band = MARK_BAND * cityUnit * scale;
   for (const [ry, ox, oz] of SIDES) {
+    if ((ox ? grewX : grewZ) <= 0) continue;     // that side did not move: nothing to point at
     const along = ox ? wasD : wasW;              // the side's own length
     const reach = ox ? wasW / 2 : wasD / 2;      // ...and how far out its edge sits
     const plane = new THREE.PlaneGeometry(along, band);
     plane.rotateX(-Math.PI / 2);
     plane.rotateY(ry);
     const uv = plane.attributes.uv;
-    const repeats = Math.max(1, Math.round(along / (MARK_DASH_WORLD * cityUnit)));
+    const repeats = markRepeats(along, scale);
     for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * repeats);
     uv.needsUpdate = true;
     const mesh = new THREE.Mesh(plane, dashMaterial);
@@ -2360,6 +2379,7 @@ function addAreaMark(geo, y, wasW, wasD) {
                       geo.cz + oz * (reach + band / 2));
     group.add(mesh);
   }
+  if (!group.children.length) return;
   group.userData.kind = "mark";
   group.userData.axis = "area";
   group.userData.y = y;
@@ -2372,15 +2392,17 @@ function addAreaMark(geo, y, wasW, wasD) {
 }
 
 // "It used to end here", painted around all four walls at that height.
-function addHeightMark(geo, y) {
+function addHeightMark(geo, y, rise) {
+  const scale = markScale(rise);
+  if (scale <= 0) return;
   const group = new THREE.Group();
-  const band = MARK_BAND * cityUnit;
+  const band = MARK_BAND * cityUnit * scale;
   for (const wall of WALLS) {
     const span = wall[0] ? geo.depth : geo.width;
     // Sitting ON the old roofline and pointing up, rather than straddling it: the height
     // is what the mark means, so it is the bottom edge that has to land on it.
     group.add(wallQuad(geo, wall, y + band / 2, band, span, dashMaterial,
-                       Math.max(1, Math.round(span / (MARK_DASH_WORLD * cityUnit)))));
+                       markRepeats(span, scale)));
   }
   // What the first-run intro reads to single a mark out and trace it in SVG.
   group.userData.kind = "mark";
@@ -2403,7 +2425,7 @@ function addChangeMarks(file, geo) {
     const wasHeight = heightFor(wasHeightMetric, geo.maxMetric, geo.heightScale);
     // Only a band the eye can separate from the roofline is worth drawing.
     if (geo.height - wasHeight > MARK_MIN_DELTA) {
-      addHeightMark(geo, geo.baseY + wasHeight);
+      addHeightMark(geo, geo.baseY + wasHeight, geo.height - wasHeight);
     }
   }
 
