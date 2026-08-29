@@ -271,6 +271,14 @@ What makes the bundle readable:
   hovered-to-peer orientation before either is reversed, which is what lets one sign put
   them on opposite sides for good; offsetting after the reverse would put them back on top
   of each other.
+- **Each end attaches where the route actually arrives**, not at the face that happens to
+  look at the other building. Those two disagree the moment a route goes around anything,
+  and then the road reaches the near side of its peer and doubles back around it to touch
+  the far one. The grid pitch is fine enough to find the gaps the treemap leaves *between
+  buildings*, not just between districts — at a coarse pitch those close up, and a road
+  that could have slipped between two blocks goes the long way around the whole district.
+  (The cell cap coarsens it again on a plate where that would cost too much, so it is the
+  pitch a small city gets rather than the pitch every city pays for.)
 - **One search per hover, not one per peer.** Dijkstra runs once from the hovered building
   over `(cell, heading)` states; every peer then just walks the sweep back from whichever cell
   around its own footprint was reached most cheaply. Eighty roads cost what one costs. Boxed

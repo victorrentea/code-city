@@ -2951,7 +2951,12 @@ function baseAnchor(entry, towards) {
 //
 // ONE search per hover, not one per peer: a sweep from the hovered building reaches
 // every peer on the plate anyway, so eighty roads cost what one costs.
-const ROAD_CELL = 3.2;          // × cityUnit — grid pitch
+// Fine enough to find the gaps the treemap leaves BETWEEN buildings, not just the ones
+// between districts: at a coarse pitch those gaps close up, and a road that could have
+// slipped between two blocks goes the long way around the whole district instead. The cap
+// below coarsens it again on a plate where that would cost too much, so this is the pitch
+// a small city gets, not the pitch every city pays for.
+const ROAD_CELL = 2.0;          // × cityUnit — grid pitch
 const ROAD_TURN_COST = 2.4;     // cells' worth of detour a corner is worth avoiding
 // The sweep is a per-hover cost on the main thread, so the grid is sized by what a hover
 // can afford, not by what would be pretty. 24k cells is ~155x155 over the plate: still
@@ -3352,20 +3357,27 @@ function showStreetsFor(entry) {
   for (const b of bundle) {
     const target = b.peer ? b.peer.mesh.position : b.exit;
     if (!target) continue;
-    const here = baseAnchor(entry, target);
-    const there = b.peer ? baseAnchor(b.peer, entry.mesh.position) : b.exit.clone();
     // The sweep runs FROM the hovered building, so a route always comes back hovered-first;
     // an incoming edge is the same tarmac driven the other way.
     let points = sweep && b.cells && b.cells.length ? roadRouteTo(sweep, b.cells, grid) : null;
     if (points && points.length >= 2) {
+      // Anchor each end at the face the route ACTUALLY arrives at, not at the one that
+      // happens to look at the other building. Those two disagree the moment a route goes
+      // around anything, and then the road reaches the near side of its peer and doubles
+      // back around it to touch the far one.
+      const here = baseAnchor(entry, points[0]);
+      const there = b.peer ? baseAnchor(b.peer, points[points.length - 1]) : b.exit.clone();
       points = [here.clone(), ...points, there.clone()];
     } else {
+      const here = baseAnchor(entry, target);
+      const there = b.peer ? baseAnchor(b.peer, entry.mesh.position) : b.exit.clone();
       // Fenced in, or no grid: fall back to the straight L rather than drawing nothing.
       const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
         ? new THREE.Vector3(there.x, here.y, here.z)
         : new THREE.Vector3(here.x, here.y, there.z);
       points = [here.clone(), bend, there.clone()];
     }
+    const floorY = Math.max(points[0].y, points[points.length - 1].y);
     points = orthogonalize(points);
     // Half its own width plus half a gap, to the left or the right of the centreline
     // depending on which way the dependency runs: an out road and an in road can then
@@ -3373,8 +3385,7 @@ function showStreetsFor(entry) {
     const width = roadWidth(b.weight);
     points = offsetPath(points, (b.kind === "in" ? -1 : 1) * (width / 2 + ROAD_GAP * cityUnit / 2));
     if (b.kind === "in") points.reverse();   // orthogonal, and offset, either way round
-    addRoad(road, lane, points, width,
-            Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
+    addRoad(road, lane, points, width, floorY + ROAD_LIFT * cityUnit);
   }
 
   const group = new THREE.Group();
