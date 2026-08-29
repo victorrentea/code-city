@@ -156,30 +156,18 @@ nothing is exaggerated: the marks simply say where it ended before. They are dra
 `Line2`, because WebGL ignores `linewidth` and one pixel is not a mark on a building. The
 hover spells the same delta out in numbers: `size: 9.8 KB was 7.5 KB`.
 
-**Both marks are painted ON the building.** The "used to end here" line and the arrow are
-flat quads lying in the wall's own plane, textured and sized in world units, so they shrink
-with the building as you pull the camera back. They used to stand off it — the line as a
-screen-width outline floating a hair outside the block, the arrow as a box and a cone
-sticking out of it — which reads as an overlay drawn on the glass in front of the city
-rather than as something belonging to that building.
+**The mark is painted ON the building, and it points.** The "used to end here" line is a
+row of small **arrowheads facing up**, painted flat in the wall's own plane: sitting on the
+old roofline, standing in the gap the file has grown into since. One mark then carries both
+halves of the fact — where it ended, and which way it went — where a row of flat dashes
+carries only the first and needs a second mark on the wall to say the rest.
 
-**And an arrow up the wall.** The dashed line says where the building used to end; it does
-not say, at a glance, which way the change went or by how much — you have to find the
-roofline, find the mark, and work out which is higher. So a building that GREW also gets a
-black arrow rising off its dashed line to today's ceiling, drawn flat against the wall.
-Which wall is decided **every frame**, from where the camera is standing: an arrow nailed
-to one face at build time spends most of an orbit buried inside its own building. A
-building that shrank gets no arrow, for the same reason it gets no dashed line — there is
-no rise to draw. **One stroke weight for the whole city**: the shaft and the head are the
-same size on every building, drawn as geometry rather than as an arrow painted into a
-texture and stretched to fit, which gave a fat arrow on a wide block and a hairline on a
-narrow one and left the reader comparing stroke weights that mean nothing. Only the LENGTH
-varies — that is the one thing the arrow is measuring. It shrinks only where it physically
-will not fit: a head longer than its own rise, or wider than the wall it is painted on.
-
-**Only growth is marked.** A file that got *smaller* carries no mark — shrinking is the outcome
-nobody has to be warned about — and neither does one the diff **added** (all of it is new) nor
-one whose metrics did not move the geometry enough to separate a mark from the edge it sits on.
+They are textured quads lying in the wall's plane, sized in world units, so they shrink
+with the building as you pull the camera back. The line used to be a screen-width outline
+floating a hair outside the block, which reads as an overlay drawn on the glass in front of
+the city rather than as something belonging to that building; and the arrow it needed
+alongside was a whole second mark — a box and a cone sticking out of the wall — for one bit
+of information the dashes could carry themselves.
 
 The before-metrics are recovered from git at the very ref the change set is a diff of (the
 same one that decided which buildings light up — no second notion of "the diff"): size, LOC

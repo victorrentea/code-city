@@ -1848,7 +1848,6 @@ let maxHeight = 190;
 let minHeight = 5;
 let buildings = [];
 let changeMarks = [];    // dashed black marks where a grown building used to end
-let growthArrows = [];   // ...and the arrow from that mark up to today's roof
 const UNDERSIDE_Y = -1;          // the plate's top face: below it, the eye is under the city
 const UNDERSIDE_OPACITY = 0.12;
 let undersideGlass = null;       // null = "not applied yet", so a rebuild re-applies it
@@ -2220,11 +2219,6 @@ function clearCity() {
     if (mark.material && mark.material.isLineMaterial) mark.material.dispose();
   }
   changeMarks = [];
-  for (const arrow of growthArrows) {
-    scene.remove(arrow);
-    arrow.geometry.dispose();     // the material is the one shared arrowMaterial
-  }
-  growthArrows = [];
   buildingByPath = new Map();
   districts = [];
   districtByName = new Map();
@@ -2325,8 +2319,8 @@ function markRectangle(cx, cz, y, w, d, dash, axis) {
 // texture and one material for each kind — the per-mark variation is written into the
 // geometry's UVs, the same trick the roads use for their traffic.
 const WALL_LIFT = 0.06;         // × cityUnit off the wall: enough to beat z-fighting, invisible
-const MARK_DASH_WORLD = 6;      // × cityUnit — one dash + one gap
-const MARK_BAND = 0.5;          // × cityUnit — how thick the painted line is
+const MARK_DASH_WORLD = 5;      // × cityUnit — one arrowhead + one gap
+const MARK_BAND = 2.6;          // × cityUnit — how tall an arrowhead stands
 
 function stripeTexture(draw, w, h) {
   const canvas = document.createElement("canvas");
@@ -2337,11 +2331,21 @@ function stripeTexture(draw, w, h) {
   return tex;
 }
 
-// White on transparent, tinted black by the material: one dash, one gap.
+// White on transparent, tinted black by the material: one arrowhead, one gap. The old
+// mark was a row of flat dashes, which says "it used to end here" and nothing else; the
+// same row of heads pointing UP says which way it went since, all along the line, without
+// a second mark on the wall to say it. (Canvas top is v = 1, which is world up on a wall
+// quad — the plane's own +y survives the rotation that lays it on each face.)
 const dashTex = stripeTexture((ctx, w, h) => {
   ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, Math.round(w * 0.55), h);
-}, 32, 4);
+  const head = Math.round(w * 0.62);
+  ctx.beginPath();
+  ctx.moveTo(head / 2, 0);
+  ctx.lineTo(head, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fill();
+}, 40, 32);
 
 function wallMaterial(map) {
   return new THREE.MeshBasicMaterial({
@@ -2353,7 +2357,6 @@ function wallMaterial(map) {
   });
 }
 const dashMaterial = wallMaterial(dashTex);
-const arrowMaterial = wallMaterial(null);
 
 // The four outward normals of a block, as [nx, nz, rotationY] — a PlaneGeometry faces +z,
 // so that is the rotation that lays it flat on each wall, facing out.
@@ -2381,7 +2384,9 @@ function addHeightMark(geo, y) {
   const band = MARK_BAND * cityUnit;
   for (const wall of WALLS) {
     const span = wall[0] ? geo.depth : geo.width;
-    group.add(wallQuad(geo, wall, y, band, span, dashMaterial,
+    // Sitting ON the old roofline and pointing up, rather than straddling it: the height
+    // is what the mark means, so it is the bottom edge that has to land on it.
+    group.add(wallQuad(geo, wall, y + band / 2, band, span, dashMaterial,
                        Math.max(1, Math.round(span / (MARK_DASH_WORLD * cityUnit)))));
   }
   // What the first-run intro reads to single a mark out and trace it in SVG.
@@ -2395,66 +2400,6 @@ function addHeightMark(geo, y) {
   changeMarks.push(group);
 }
 
-// One stroke weight for the whole city. Drawn as GEOMETRY rather than as an arrow painted
-// into a texture and stretched to fit: a texture on a quad sized from its building gives a
-// fat arrow on a wide block and a hairline on a narrow one, and then the reader is comparing
-// stroke weights that mean nothing. Only the LENGTH is allowed to vary — that is the one
-// thing the arrow is actually measuring.
-const ARROW_STROKE = 1.5;       // × cityUnit — the shaft
-const ARROW_HEAD_W = 4.4;       // × cityUnit — the head's base
-const ARROW_HEAD_LEN = 5.0;     // × cityUnit — the head's height
-
-// The rise from that line to today's ceiling, as an arrow painted on ONE wall — the one
-// facing the camera, chosen every frame (see updateGrowthArrowFacing). A mark nailed to a
-// face at build time spends most of an orbit inside its own building.
-function addGrowthArrow(geo, y0, y1) {
-  const rise = y1 - y0;
-  if (rise <= MARK_MIN_DELTA) return;
-  // Two clamps, both of them "it physically does not fit" rather than "this block is big":
-  // a head longer than the rise it sits on, and a head wider than the wall it is painted on.
-  const wall = Math.min(geo.width, geo.depth);
-  const scale = Math.min(1, rise * 0.6 / (ARROW_HEAD_LEN * cityUnit),
-                            wall * 0.7 / (ARROW_HEAD_W * cityUnit));
-  const headLen = ARROW_HEAD_LEN * cityUnit * scale;
-  const headW = ARROW_HEAD_W * cityUnit * scale;
-  const stroke = ARROW_STROKE * cityUnit * scale;
-
-  // Local XY, centred on the wall's midpoint so the facing code only has to place a point.
-  const top = rise / 2, bottom = -rise / 2, neck = top - headLen;
-  const s = stroke / 2, h = headW / 2;
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute([
-    -s, bottom, 0,   s, bottom, 0,   s, neck, 0,      // shaft
-    -s, bottom, 0,   s, neck, 0,    -s, neck, 0,
-    -h, neck, 0,     h, neck, 0,     0, top, 0,       // head
-  ], 3));
-  const mesh = new THREE.Mesh(geometry, arrowMaterial);
-  mesh.userData = { cx: geo.cx, cz: geo.cz, hw: geo.width / 2, hd: geo.depth / 2,
-                    y: y0 + rise / 2 };
-  scene.add(mesh);
-  growthArrows.push(mesh);
-}
-
-// Slide every arrow onto the wall whose outward normal points most at the camera, and turn
-// it to lie in that wall. Cheap by construction: the arrows exist only for the change set,
-// and each one is a position and a rotation — no geometry is rebuilt.
-function updateGrowthArrowFacing() {
-  for (const arrow of growthArrows) {
-    const { cx, cz, hw, hd, y } = arrow.userData;
-    const dx = camera.position.x - cx, dz = camera.position.z - cz;
-    const lift = WALL_LIFT * cityUnit;
-    if (Math.abs(dx) >= Math.abs(dz)) {
-      const nx = Math.sign(dx) || 1;
-      arrow.position.set(cx + nx * (hw + lift), y, cz);
-      arrow.rotation.y = nx * Math.PI / 2;
-    } else {
-      const nz = Math.sign(dz) || 1;
-      arrow.position.set(cx, y, cz + nz * (hd + lift));
-      arrow.rotation.y = nz > 0 ? 0 : Math.PI;
-    }
-  }
-}
-
 function addChangeMarks(file, geo) {
   if (changeMode() !== "highlight") return;
   const before = beforeRowFor(file);
@@ -2466,7 +2411,6 @@ function addChangeMarks(file, geo) {
     // Only a band the eye can separate from the roofline is worth drawing.
     if (geo.height - wasHeight > MARK_MIN_DELTA) {
       addHeightMark(geo, geo.baseY + wasHeight);
-      addGrowthArrow(geo, geo.baseY + wasHeight, geo.baseY + geo.height);
     }
   }
 
@@ -4655,7 +4599,6 @@ function animate() {
   updateStreetFlow();
   syncUndersideView();
   updateFloorLabelFacing();       // keep flat package names turned toward the viewer (never upside down)
-  updateGrowthArrowFacing();      // ...and the growth arrows on the wall you can see
   renderer.render(scene, camera);
   updateLabelVisibility();        // resolve which class labels are non-overlapping from this angle
   labelRenderer.render(scene, camera);
