@@ -245,6 +245,11 @@ What makes the bundle readable:
   footprint marked built-up, and each bundle routed over the free cells. A **turn costs
   `ROAD_TURN_COST` cells' worth of detour**, which is what keeps the result reading as roads
   and not as staircases — a plain BFS gives shortest paths that zigzag every other cell.
+- **Every turn is 90 degrees.** The routed middle is a walk over a grid, so it already was;
+  the two ENDS are the buildings' own anchors, which sit wherever the peer happens to lie,
+  and those legs used to run off at an angle. The missing corner is inserted instead — a
+  city block has no diagonal streets, and one drawn as a shortcut across the plate reads as
+  a mistake in the drawing rather than as a road.
 - **One search per hover, not one per peer.** Dijkstra runs once from the hovered building
   over `(cell, heading)` states; every peer then just walks the sweep back from whichever cell
   around its own footprint was reached most cheaply. Eighty roads cost what one costs. Boxed

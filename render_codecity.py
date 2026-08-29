@@ -3118,6 +3118,28 @@ function roadRouteTo(sweep, cells, grid) {
   return points;
 }
 
+// Roads turn at 90 degrees and never run on a diagonal. The routed middle already does —
+// it is a walk over a grid — but the two ENDS are the buildings' own anchors, which sit
+// wherever the peer happens to lie, so the first and last legs came out at an angle. Insert
+// the missing corner instead: a city block has no diagonal streets, and one drawn as a
+// shortcut across the plate reads as a mistake in the drawing rather than a road.
+//
+// Same dominant-axis-first rule the rest of the routing uses, so an end leg turns the way
+// the run through the city was already going to.
+function orthogonalize(points) {
+  const out = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const a = out[out.length - 1], b = points[i];
+    const dx = Math.abs(b.x - a.x), dz = Math.abs(b.z - a.z);
+    if (dx > 1e-6 && dz > 1e-6) {
+      out.push(dx >= dz ? new THREE.Vector3(b.x, a.y, a.z)
+                        : new THREE.Vector3(a.x, a.y, b.z));
+    }
+    out.push(b);
+  }
+  return out;
+}
+
 // ── Laying the road ──────────────────────────────────────────────────────────
 // Every road in a bundle goes into ONE merged geometry per surface — the roadway, and the
 // lane riding on it — rather than a mesh per straight run. Eighty roads with a corner every
@@ -3260,7 +3282,8 @@ function showStreetsFor(entry) {
         : new THREE.Vector3(here.x, here.y, there.z);
       points = [here.clone(), bend, there.clone()];
     }
-    if (b.kind === "in") points.reverse();
+    points = orthogonalize(points);
+    if (b.kind === "in") points.reverse();   // orthogonal either way round
     addRoad(road, lane, points, roadWidth(b.weight),
             Math.max(here.y, there.y) + ROAD_LIFT * cityUnit);
   }
