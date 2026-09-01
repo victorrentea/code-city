@@ -1892,7 +1892,14 @@ let districtStep = 0.4;
 // One fixed width for every level: a package name is an identifier, not a metric —
 // sizing it by the district's area only said "this package is big", which the plate
 // already says, while making the outer names (victor / training / petclinic) shout.
-const floorLabelBand = () => 13 * cityUnit;
+//
+// Wide enough to hold `floorNameHeight` AND the district rule that takes its outer strip,
+// with air left over on both sides. It used to be 13 while the name was drawn at 19: the
+// letters overhung the band they were supposedly written in, so a package name sat across
+// its own black rule on one side and touched the nearest building on the other. The band
+// is what the name is written in; if the two disagree, the name wins and the district's
+// frame is what gets illegible.
+const floorLabelBand = () => 16 * cityUnit;
 
 // Streets narrow with depth, like a real city: boulevards between top-level modules,
 // alleys between leaf packages. A flat gap at every level costs a deeply nested tree
@@ -3659,13 +3666,17 @@ function halfRoutes(points) {
 // coupling turns into an architectural fact, and it is invisible on a road that simply
 // runs on past a district edge.
 //
-// Only the boundaries that are ON this bundle's business: the hovered building's own
-// package, and the packages its peers live in. Marking every district a road happens to
-// cross on its way turns the bundle into a picket fence.
+// ONE boundary only: the hovered building's own package. The question a gate answers is
+// "where does this class's coupling leave home", and home is the hovered class's package —
+// so the gates ring exactly one district, and reading them is counting the ways in and out
+// of that one perimeter. Gating the peers' packages too was tried first and read wrong: a
+// road out of `domain` into `repository` picked up a second bar on the repository kerb,
+// which says something about repository's perimeter — a district the reader did not ask
+// about — and three or four peer packages turned the bundle into a picket fence with no
+// perimeter belonging to anyone in particular.
 const GATE_REACH = 2.4;   // × cityUnit — how far a gate stands out either side of the road
 const GATE_THICK = 2.4;   // × cityUnit — its thickness along the road
 const GATE_RISE = 6.0;    // × cityUnit — and how high it stands off the tarmac
-const GATE_RECTS_MAX = 12;   // a bundle spanning more packages than this gets the home one only
 // A gate STANDS UP. Painted flat on the road it was one more stripe among the traffic
 // wedges, which are the same colour and also lie across the lane; given height it is the
 // only thing in the bundle with a silhouette, and a silhouette is what says "you pass
@@ -3739,24 +3750,15 @@ function addGate(cap, walls, x, z, ux, uz, width, y) {
   for (let i = 0; i < 4; i++) quad(walls, corner[i], corner[(i + 1) % 4], y, top);
 }
 
-function addPackageGates(laid, entry, bundle, sinks, deck) {
-  const rects = [];
-  const seen = new Set();
-  const take = pkg => {
-    if (!pkg || seen.has(pkg) || rects.length >= GATE_RECTS_MAX) return;
-    seen.add(pkg);
-    const rect = districtRect(pkg);
-    if (rect) rects.push(rect);
-  };
-  take(entry.file.district);
-  for (const b of bundle) if (b.peer) take(b.peer.file.district);
-  if (!rects.length) return;
+function addPackageGates(laid, entry, sinks, deck) {
+  const rect = districtRect(entry.file.district);
+  if (!rect) return;
 
   for (const { path, width, kind } of laid) {
     const y = deck[kind] + 0.12 * cityUnit;
-    // One box around the whole run, tested against each rect before any segment is: on a
-    // god class this loop is (roads x packages x bends) and most of those triples are a
-    // road on the far side of the plate from the district it is being asked about.
+    // One box around the whole run, tested before any segment of it is: on a god class
+    // this loop is (roads x bends), and a road that never comes near the home district
+    // at all — the far half of the plate — is most of them.
     let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
     for (const p of path) {
       if (p.x < bx0) bx0 = p.x;
@@ -3764,40 +3766,37 @@ function addPackageGates(laid, entry, bundle, sinks, deck) {
       if (p.z < bz0) bz0 = p.z;
       if (p.z > bz1) bz1 = p.z;
     }
-    const near = rects.filter(r => bx1 >= r.x0 && bx0 <= r.x1 && bz1 >= r.z0 && bz0 <= r.z1);
-    if (!near.length) continue;
+    if (bx1 < rect.x0 || bx0 > rect.x1 || bz1 < rect.z0 || bz0 > rect.z1) continue;
     for (let i = 1; i < path.length; i++) {
       const a = path[i - 1], b = path[i];
       const dx = b.x - a.x, dz = b.z - a.z;
       const len = Math.hypot(dx, dz);
       if (len < 1e-6) continue;
-      for (const rect of near) {
-        if (inRect(a, rect) === inRect(b, rect)) continue;   // this run stays on one side
-        // Exactly one of the four boundary lines is crossed, since the ends disagree.
-        // Take the crossing nearest the run's start; a corner exit gives two candidates
-        // for the same point and either is the point.
-        let best = -1;
-        const candidates = [];
-        if (Math.abs(dx) > 1e-6) candidates.push((rect.x0 - a.x) / dx, (rect.x1 - a.x) / dx);
-        if (Math.abs(dz) > 1e-6) candidates.push((rect.z0 - a.z) / dz, (rect.z1 - a.z) / dz);
-        for (const t of candidates) {
-          if (!(t > 0 && t < 1)) continue;
-          const x = a.x + dx * t, z = a.z + dz * t;
-          const slack = 1e-3;
-          if (x < rect.x0 - slack || x > rect.x1 + slack ||
-              z < rect.z0 - slack || z > rect.z1 + slack) continue;
-          if (best < 0 || t < best) best = t;
-        }
-        if (best < 0) continue;
-        // Point the heading OUT of the rect, so the slab's body falls on the inside of the
-        // boundary: a gate belongs to the package whose edge it is, standing on that
-        // package's own ground with its face flush against the line. Centred on the line
-        // it straddled two districts and read as belonging to neither.
-        const out = inRect(a, rect) ? 1 : -1;
-        addGate(sinks[kind].gate, sinks[kind].gateSide,
-                a.x + dx * best, a.z + dz * best,
-                out * dx / len, out * dz / len, width, y);
+      if (inRect(a, rect) === inRect(b, rect)) continue;   // this run stays on one side
+      // Exactly one of the four boundary lines is crossed, since the ends disagree.
+      // Take the crossing nearest the run's start; a corner exit gives two candidates
+      // for the same point and either is the point.
+      let best = -1;
+      const candidates = [];
+      if (Math.abs(dx) > 1e-6) candidates.push((rect.x0 - a.x) / dx, (rect.x1 - a.x) / dx);
+      if (Math.abs(dz) > 1e-6) candidates.push((rect.z0 - a.z) / dz, (rect.z1 - a.z) / dz);
+      for (const t of candidates) {
+        if (!(t > 0 && t < 1)) continue;
+        const x = a.x + dx * t, z = a.z + dz * t;
+        const slack = 1e-3;
+        if (x < rect.x0 - slack || x > rect.x1 + slack ||
+            z < rect.z0 - slack || z > rect.z1 + slack) continue;
+        if (best < 0 || t < best) best = t;
       }
+      if (best < 0) continue;
+      // Point the heading OUT of the rect, so the slab's body falls on the inside of the
+      // boundary: a gate belongs to the package whose edge it is, standing on that
+      // package's own ground with its face flush against the line. Centred on the line
+      // it straddled two districts and read as belonging to neither.
+      const out = inRect(a, rect) ? 1 : -1;
+      addGate(sinks[kind].gate, sinks[kind].gateSide,
+              a.x + dx * best, a.z + dz * best,
+              out * dx / len, out * dz / len, width, y);
     }
   }
 }
@@ -4007,7 +4006,7 @@ function showStreetsFor(entry) {
     }
   }
 
-  addPackageGates(laid, entry, bundle, sinks, deck);
+  addPackageGates(laid, entry, sinks, deck);
 
   const group = new THREE.Group();
   for (const kind of ROAD_KINDS) {
@@ -4177,9 +4176,14 @@ function floorTextTexture(text) {
 // or deeply nested package got a visibly smaller name than its neighbour, and the reader
 // had to work out whether that meant anything. It did not: a package name is an
 // identifier, not a metric, and two names in two sizes claim otherwise. The ring is sized
-// to hold this instead (see districtRing), and the letters that overhang it land on the
-// street around the district, where the white halo keeps them legible over nothing.
-const floorNameHeight = () => 19 * cityUnit;
+// to hold this instead (see districtRing).
+//
+// And it FITS in that ring, rather than overhanging it: the strip actually free for a name
+// is the band minus the district rule that eats its outer edge, so at 19 against a band of
+// 13 every name overlapped both the rule outside it and the first terrace inside it. Sized
+// to leave visible air on both sides at every depth — the rule only gets thinner as you
+// nest, so the shallowest district is the tight case and it is the one this clears.
+const floorNameHeight = () => 12 * cityUnit;
 
 function addFloorName(text, x, z, topY, run, yaw) {
   if (_floorLabelBudget <= 0) return;
