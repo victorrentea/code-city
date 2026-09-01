@@ -65,7 +65,7 @@ unsetting `HEATMAP_OPEN_IN`.
 | Step | Script | Produces |
 | --- | --- | --- |
 | 1 | `compute_complexity.py` | `complexity-per-{class,file}.tsv` |
-| 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (the edges those counts aggregate) |
+| 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (`source`, `target`, `weight`, and the `line` in the source where the coupling first appears outside the imports) |
 | 3 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) |
 | 4 | `render_heatmap.py` | `codemap.html` |
 | 5 | `render_codecity.py` | `codecity.html` |
@@ -93,19 +93,32 @@ seen from higher up. That is also the honest picture: it IS the same city with m
 - **height** scales with the tile too, and above the p95 the curve goes logarithmic, so
   one monster class doesn't spike the whole skyline;
 - **streets narrow with nesting depth** — boulevards between top-level modules, alleys
-  between leaf packages, instead of one flat gap that eats a deep tree's plate;
+  between leaf packages, instead of one flat gap that eats a deep tree's plate. The street is
+  charged between SIBLING DISTRICTS; two classes inside one package keep the tight file gap,
+  because they are meant to read as one block;
+- **the plate is flat, and containment is drawn rather than built.** Every nesting level used
+  to rise a terrace above its parent, which said "this package contains those" and, from the
+  low angle a city is actually read at, also walled off the near edge of everything behind it
+  and buried the roads until they had to be flown over the whole stack. Each district gets a
+  **black rule laid inside its own edge** instead, and the rule's **weight falls with depth**:
+  a heavy band round a top-level module, a hairline round a leaf package six levels down.
+  Weight is the one line property the eye reads without measuring, it costs no parallax, and
+  it survives being looked at from ground level. It is a quad ring rather than a line, because
+  WebGL ignores `linewidth` — "thicker for a module" is not expressible as a line at all, and
+  a one-pixel rule vanishes at exactly the zoom that shows the whole city;
 - a class **name appears only once its roof is ≥ 26 px on screen** (waived in *highlight changed*), so a huge city
   zoomed out is a clean plate and the names come back as you zoom in;
 - **package names are written flat on their own floor**, in a margin the treemap
   *reserves* on all four edges of every district, and written into each of them — so
-  whichever way you orbit, a copy faces you. The margin is not decoration: children
-  terraces rise above their parent's floor and tile all of it, so text laid anywhere
-  else is buried. Its width is the *same at every nesting level* (the letters overhang
-  it to stay readable): how big a package is, is what the plate already shows — the
-  name is an identifier, not a metric;
+  whichever way you orbit, a copy faces you. The margin is not decoration: a district's
+  children tile the whole of its interior, so text laid anywhere else is buried. Both the
+  margin and the **cap height are the same at every nesting level** (the letters overhang the
+  margin to stay readable, and are centred in what is left of it once the black rule has taken
+  the outer strip): how big a package is, is what the plate already shows — the name is an
+  identifier, not a metric, and two names in two sizes claim otherwise;
 - the **depth buffer is logarithmic** and the near plane rises with the plate. Without
-  both, a big city flickers where surfaces meet (a base on its floor, a name on its
-  terrace) — even standing still, because camera damping never quite stops.
+  both, a big city flickers where surfaces meet (a base on its floor, a name on the
+  plate) — even standing still, because camera damping never quite stops.
 
 **The control panel** stacks one knob per row, each row a single question, so the three
 visual axes read as independent choices rather than one wide toolbar:
@@ -117,6 +130,7 @@ visual axes read as independent choices rather than one wide toolbar:
 | `AREA` / `HEIGHT` / `COLOR` | the metric on that axis, plus a **`/kloc`** checkbox that swaps a raw count for its density twin (complexity, commits, bugfixes). Where no density exists the checkbox greys out instead of disappearing, so the rows keep their shape. Colour also carries **`lg`**, the log-vs-linear ramp: it ticks itself to what the chosen metric wants and remembers your override per metric for the session. |
 | `ZOOM TO` | drill into one package by name, with autocomplete over every package in the current lens — the typed form of shift-clicking a floor. |
 | `PACKAGES` | package-name style: floating tags, on the floor, or off. |
+| `STREETS` | `only where they leave the package` — drop the intra-package roads from every coupling bundle, so ⌥ answers "what does this class reach OUTSIDE its own package". |
 | `CHANGES` | the change-set filter (below). |
 
 Whatever one metric dropdown shows is greyed out in the other two — spending two of the
@@ -177,6 +191,18 @@ shrink with the building as you pull the camera back. They used to be screen-wid
 floating a hair outside the block, which reads as an overlay drawn on the glass in front of
 the city rather than as something belonging to that building — and which needed a resize
 handler to keep its thickness, where paint needs nothing.
+
+**And the colour it used to be.** Height and area each carry their "before" on the building;
+COLOUR — the third knob, and the one carrying the metric people came to read — carried
+nothing, so a class whose bugfix commits doubled over the branch was painted its new shade
+with nothing on screen to hold it against. The block keeps its new colour, and the part of it
+that **already existed** is skinned in the old one: the wall BELOW the height mark, the roof
+INSIDE the area mark. Every surface the arrowheads point into is the colour it is now;
+everything behind them is the colour it was, and the seam between the two shades falls exactly
+on the mark — so "it grew this much" and "it got this much redder" are one reading rather than
+two. Only where a mark was drawn: with no growth on an axis there is no new surface to put the
+new shade on, and skinning the whole block in the old colour would just be lying about what
+colour the building is.
 
 The before-metrics are recovered from git at the very ref the change set is a diff of (the
 same one that decided which buildings light up — no second notion of "the diff"): size, LOC
@@ -269,18 +295,41 @@ What makes the bundle readable:
   so a road arriving at an unnamed block answers half of it, and a name belonging to some
   third class that happens to be tall is worse than no name at all. Each name wears the
   colour of its own road, so the direction survives the road passing behind a tower.
-- **The network is elevated, on a deck per direction.** A road laid on the plate goes UNDER
-  every district terrace it crosses — terraces rise with nesting depth, so on any city
-  deeper than one package a road spends most of its length invisible. The whole network sits
-  above the HIGHEST floor in the city instead, at one elevation rather than dipping to each
-  road's own two endpoints; and the two directions get a deck each, so where an outbound and
-  an inbound road cross, one flies over the other instead of the two meeting in a junction
-  that belongs to neither.
+- **The network is elevated, on a deck per direction.** The whole network sits above the
+  highest floor in the city at ONE elevation, rather than each road dipping to its own two
+  endpoints' floors — a road that dips is a road that ducks under whatever it crosses. The
+  three directions get a deck each, so where an outbound and an inbound road cross, one flies
+  over the other instead of the two meeting in a junction that belongs to neither.
 - **Every turn is 90 degrees.** The routed middle is a walk over a grid, so it already was;
   the two ENDS are the buildings' own anchors, which sit wherever the peer happens to lie,
   and those legs used to run off at an angle. The missing corner is inserted instead — a
   city block has no diagonal streets, and one drawn as a shortcut across the plate reads as
   a mistake in the drawing rather than as a road.
+- **A both-ways road runs both ways.** Two classes that depend on each other get ONE purple
+  road, and its traffic is drawn from BOTH ends converging on the halfway point: each half
+  runs from its own far end in to the middle, so the wedges meet head-on there. One arrow
+  pointing one way, whatever colour it is, reads as one direction plus a legend to look up;
+  two streams colliding in the middle of the road needs neither. It costs the trunk these
+  roads would otherwise share — a both-ways road is drawn whole, one route per peer, never
+  bundled — because a trunk is by definition a stretch belonging to several peers at once, and
+  halving one would put the meeting point in the middle of nothing. The bill is small: a
+  mutual pair is the rare, interesting case, never the bulk of a bundle.
+- **Gates where a road leaves the package.** A road answers "what does this class touch"; it
+  does not say where the answer stops being the package's own business. So every crossing of
+  a package boundary carries a **bar laid across the tarmac** in the road's own colour — blue
+  where the dependency is leaving, red where it is arriving, purple where it runs both ways.
+  Only the boundaries this bundle is actually about (the hovered building's package, and the
+  packages its peers live in, capped at a dozen): marking every district a road happens to
+  cross on its way turns the bundle into a picket fence.
+- **`STREETS → only where they leave the package`** drops the intra-package roads from the
+  bundle entirely. A coupling between two classes of one package is the package doing its job,
+  and on a well-factored hub it is most of the bundle — a dozen roads between neighbours the
+  layout already shows as neighbours, drawn over the one or two that cross a boundary and mean
+  something to an architecture. It is a checkbox and not a held key (the overlay itself stays
+  on a key) because "which of these roads are worth drawing at all" is a standing choice about
+  what you are reading the city for, and it survives being forgotten: ticked, the bundle is
+  smaller, never bigger. The tooltip still counts the dropped roads as reachable — `6 of 7
+  drawn` — because they are.
 - **Out and back never share tarmac.** A road leaving the hovered building and one arriving
   at it are offset to opposite sides of their common centreline, each by half its own width
   plus half a median strip — so the two directions can share a corridor without ever
@@ -322,6 +371,22 @@ What makes the bundle readable:
   once and one used thirty times are not the same road. The scale is read off the whole lens
   (95th percentile, log ramp), not off the hovered bundle, so "wide" means the same thing on
   every building instead of "the widest one here".
+- **⌘/Ctrl-click a road and land on the line that makes the coupling** — the whole point of
+  drawing it, and the answer is asymmetric, which is what makes it worth a click rather than
+  a tooltip. An **outbound** (blue) road opens **my own file**, at the first line where I
+  name that class: the field, the constructor parameter, the injection point — "why do I
+  depend on them". An **inbound** (red) road opens **their file**, at the first line where
+  they name me — "what of mine is being used out there". The line is never an `import`:
+  every dependency in Java is declared at the top of the file, so landing a reader there
+  answers "which class" and never "what for". `compute_fanio.py` already has to scan the
+  source to count the references; recording the first hit that is not on an `import` or
+  `package` line costs it one comparison and is entirely static — no language server, no
+  model, nothing to run at view time.
+  A **purple** road opens nothing: it is both questions at once, and a click that silently
+  picks one of the two answers is worse than a click that does nothing. Neither does a
+  **trunk** shared by several peers — that stretch is where the bundle has not yet decided
+  which class it is going to. The cursor says which is which before you click: it turns into
+  a pointer only over a road that names one class.
 - Roads **do not all meet at the building's centre**. Each one leaves (or arrives) at the
   point of the footprint facing its peer, so the bundle fans out in the directions the
   couplings actually run — which is itself information, the city being laid out by package.
@@ -349,15 +414,19 @@ output is the tooltip reading `0 of 214 drawn`.
 
 **The city from underneath.** Orbit below the horizon and the plate is between your eye and
 the only things down there worth looking at. So once the camera drops under the plate's top
-face, **the ground and every district terrace turn to glass** (12% opacity) and the buildings
+face, **the ground and every district floor turn to glass** (12% opacity) and the buildings
 stay solid — their undersides are exactly what you came down there to see. Above the plate
 nothing changes.
 
 The edges are baked into the page **per lens** — class → class, package → package, module →
 module — with a level's internal edges dropped (so a package never roads to itself) and their
-weights summed as they fold up. A build whose `codemap.tsv` has no `coupling-edges.tsv` beside
-it (an older run of the tool) renders normally, with the Coupling row removed; an edge file
-from before the weights simply values every edge at one reference.
+weights summed as they fold up. Only the class lens carries the `line`: a package edge is a
+dozen class edges, and "the line where package A depends on package B" is a question with a
+dozen answers and no way to pick one, so those roads stay roads and are not clickable. A
+build whose `codemap.tsv` has no `coupling-edges.tsv` beside it (an older run of the tool)
+renders normally, with the Coupling row removed; an edge file from before the weights simply
+values every edge at one reference, and one from before the lines draws roads that cannot be
+followed into the code.
 
 **What is not an edge.** `compute_fanio.py` finds same-package references by scanning the
 file for sibling class names, so comments and string literals are **blanked out first**: a

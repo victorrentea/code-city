@@ -10,13 +10,22 @@ Output: /Users/victorrentea/workspace/spring-framework/fanio-per-file.tsv
   file \t fan_in \t fan_out
 
 ...and, beside it, the EDGES those two counts are aggregates of:
-  coupling-edges.tsv:  source \t target \t weight
+  coupling-edges.tsv:  source \t target \t weight \t line
 The counts answer "how coupled is this file"; the edge list answers "to WHAT", which
 is what the Code City needs to draw a dependency pipe from a building to its peers.
 `weight` is how many times the source names the target (comments and string literals
 already stripped) — an import alone says *that* A depends on B, the count says how
 hard, and it is what the pipe's thickness is drawn from.
+
+`line` is where in the SOURCE the coupling actually lives: the first line naming the
+target that is not an `import` or a `package` line. An import says the dependency
+exists and nothing else — every one of them sits at the top of the file, so landing a
+reader there answers "which class" and never "what for". The first real mention is
+usually the injection point (a constructor parameter, a field), which is exactly the
+line someone asking "why does this depend on that" wants to be standing on. 0 when the
+only occurrences ARE the import — a class imported and then never used again.
 """
+import bisect
 import os
 import re
 import sys
@@ -141,6 +150,7 @@ def main():
     print(f"scanning {len(java_files)} java files", file=sys.stderr)
 
     fan_out = defaultdict(dict)  # file -> {target file: how many times it is named}
+    fan_sites = defaultdict(dict)  # file -> {target file: the line that couples them}
 
     for ap in java_files:
         rel = os.path.relpath(ap, REPO)
@@ -171,18 +181,49 @@ def main():
                 if tf != rel:
                     candidates[simple].add(tf)
 
+        # The lines the `import`s and the `package` declaration sit on. A name found on
+        # one of them is the dependency being DECLARED, not used, and it is the one place
+        # a reader learns nothing by being sent to.
+        declaration_lines = set()
+        line_starts = [0]
+        for i, ch in enumerate(src):
+            if ch == "\n":
+                line_starts.append(i + 1)
+
+        def line_of(offset):
+            return bisect.bisect_right(line_starts, offset)      # 1-based
+
+        for m in list(PACKAGE_RE.finditer(src)) + list(IMPORT_RE.finditer(src)):
+            declaration_lines.add(line_of(m.start()))
+
         # ONE regex pass for every candidate name at once — per-name scans turn a big
         # repo into an O(classes x filesize) crawl. A sibling that never appears scores
         # zero and is simply not a dependency; an imported class always scores at least
         # the one occurrence on its own import line.
         targets = {}
+        sites = {}
         if candidates:
             pattern = r"\b(?:" + "|".join(re.escape(n) for n in sorted(candidates)) + r")\b"
-            for name, hits in Counter(re.findall(pattern, src)).items():
+            hits = Counter()
+            first = {}            # candidate name -> its first line outside the declarations
+            for m in re.finditer(pattern, src):
+                name = m.group(0)
+                hits[name] += 1
+                if name not in first:
+                    line = line_of(m.start())
+                    if line not in declaration_lines:
+                        first[name] = line
+            for name, n in hits.items():
                 for tf in candidates[name]:
-                    targets[tf] = targets.get(tf, 0) + hits
+                    targets[tf] = targets.get(tf, 0) + n
+                    # Two names can resolve to one file (an import plus a same-package
+                    # sibling of the same simple name); the earliest of them is the site.
+                    line = first.get(name)
+                    if line and line < sites.get(tf, 1 << 30):
+                        sites[tf] = line
 
         fan_out[rel] = targets
+        fan_sites[rel] = sites
 
     # reverse to fan-in
     fan_in = defaultdict(int)
@@ -206,10 +247,11 @@ def main():
     # produces a byte-identical file and the diff stays about the code.
     edges = 0
     with open(EDGES_OUT, "w") as f:
-        f.write("source\ttarget\tweight\n")
+        f.write("source\ttarget\tweight\tline\n")
         for src_file in sorted(fan_out):
+            sites = fan_sites.get(src_file, {})
             for tf in sorted(fan_out[src_file]):
-                f.write(f"{src_file}\t{tf}\t{fan_out[src_file][tf]}\n")
+                f.write(f"{src_file}\t{tf}\t{fan_out[src_file][tf]}\t{sites.get(tf, 0)}\n")
                 edges += 1
     print(f"wrote {edges} edges to {EDGES_OUT}", file=sys.stderr)
 

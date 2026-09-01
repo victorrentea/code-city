@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import csv
 import json
 import os
 import re
@@ -352,17 +353,27 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertTrue(classes, "the fixture's edges should reach the page")
             rest = "petclinic-backend/src/main/java/victor/training/petclinic/rest"
             domain = "petclinic-backend/src/main/java/victor/training/petclinic/domain"
-            # Weighted now: peer -> how many references the pair carries.
+            # A class edge is [references, line]: how many times the pair is named, and
+            # WHERE in the source it is first named outside an import — the line a
+            # Cmd/Ctrl-click on that road lands on.
             owner_edges = classes[f"{rest}/OwnerRestController.java"]
             self.assertIn(f"{domain}/Owner.java", owner_edges)
-            self.assertGreaterEqual(owner_edges[f"{domain}/Owner.java"], 1)
+            weight, line = owner_edges[f"{domain}/Owner.java"]
+            self.assertGreaterEqual(weight, 1)
+            # This fixture's edge file predates both extra columns, so the edge comes
+            # through as one reference and no line: its roads draw as usual and simply
+            # cannot be followed into the code, which is the documented fallback for a
+            # page built by an older generator.
+            self.assertEqual(line, 0)
             # Folded up to packages, and self-edges (a package's own internals) dropped.
+            # No line up there: a package pair is a dozen class pairs, with a dozen
+            # answers to "where", so its roads stay roads and are not clickable.
             packages = coupling["packages"]
             rest_pkg = packages["victor.training.petclinic.rest"]
             self.assertIn("victor.training.petclinic.domain", rest_pkg)
+            self.assertIsInstance(rest_pkg["victor.training.petclinic.domain"], int)
             # A package pair sums its classes' references, so it outweighs a class pair.
-            self.assertGreater(rest_pkg["victor.training.petclinic.domain"],
-                               owner_edges[f"{domain}/Owner.java"])
+            self.assertGreater(rest_pkg["victor.training.petclinic.domain"], weight)
             for src, targets in packages.items():
                 self.assertNotIn(src, targets, "a package must not pipe to itself")
 
@@ -449,6 +460,82 @@ class RenderCodecityTest(unittest.TestCase):
             # No edges => the help box does not advertise a key that does nothing.
             self.assertIn("if (!HAS_COUPLING) {", html)
             self.assertIn('document.getElementById("roadsHint")', html)
+
+    def test_coupling_edge_carries_the_line_that_couples(self):
+        """compute_fanio finds WHERE a dependency lives, not just that it exists: the
+        first mention of the target outside the imports — the injection point, as a rule
+        — and that line rides the edge all the way into the page, which is what a
+        Cmd/Ctrl-click on a road lands on."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "OrderRepository.java").write_text(
+                "package app;\n"
+                "public interface OrderRepository {\n"
+                "  void save(Object o);\n"
+                "}\n"
+            )
+            # The import is line 2. The dependency the reader cares about is the field on
+            # line 5 — the one place that says what the repository is actually FOR here.
+            (src / "OrderService.java").write_text(
+                "package app;\n"
+                "import app.OrderRepository;\n"
+                "\n"
+                "public class OrderService {\n"
+                "  private final OrderRepository repo = null;\n"
+                "  void go() { repo.save(null); }\n"
+                "}\n"
+            )
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            for script in ("compute_complexity.py", "compute_fanio.py"):
+                subprocess.run(["python3", str(SCRIPT_DIR / script)],
+                               check=True, cwd=str(repo), env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            edges = {}
+            with (repo / "coupling-edges.tsv").open() as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                self.assertIn("line", reader.fieldnames)
+                for row in reader:
+                    edges[(row["source"], row["target"])] = int(row["line"])
+            key = ("src/main/java/app/OrderService.java",
+                   "src/main/java/app/OrderRepository.java")
+            self.assertIn(key, edges)
+            self.assertEqual(edges[key], 5,
+                             "the field, not the import two lines above it")
+
+    def test_a_road_can_be_followed_into_the_source(self):
+        """⌘/Ctrl-click a road and land on the line that couples the two classes — and
+        the asymmetry that makes it useful: an OUTBOUND road opens MY file where I first
+        name them, an inbound one opens THEIRS where they first name me. A both-ways road
+        opens nothing: it is both questions at once, and silently answering one of them
+        is worse than not answering."""
+        with tempfile.TemporaryDirectory() as tmp:
+            html = (Path(tmp) / "codecity.html")
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            page = html.read_text()
+            # The two readers that let one page hold both shapes: [weight, line] for a
+            # class edge, a bare count for a package or module one.
+            self.assertIn("function edgeWeight", page)
+            self.assertIn("function edgeLine", page)
+            # A raycast comes back as a triangle index; this is what turns it into an edge.
+            self.assertIn("function pickRoadJump", page)
+            self.assertIn("roadOwners[hit.faceIndex >> 1]", page)
+            self.assertIn("roadway.userData.roadOwners", page)
+            # The asymmetry, in the one place it is decided.
+            self.assertIn('path: kind === "out" ? path : peerPath', page)
+            # ...and the line it opens at.
+            self.assertIn('"vscode://file" + encodeURI(abs) + (line ? ":" + line : "")', page)
+            # A purple road carries no jump at all.
+            self.assertIn("peer: buildingByPath.get(peerPath) || null, jump: null", page)
 
     def test_change_set_auto_detects_pr_branch(self):
         """With NO config, a feature branch is recognised as a PR and its whole

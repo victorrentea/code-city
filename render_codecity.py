@@ -631,6 +631,12 @@ def _coupling_adjacency():
                 weight = max(1, int(row.get("weight") or 1))
             except ValueError:
                 weight = 1
+            # `line` arrived with the ⌘-click-to-source; an older edge file has none, and
+            # a road from such a page simply cannot be followed into the code.
+            try:
+                line = max(0, int(row.get("line") or 0))
+            except ValueError:
+                line = 0
             # Only edges between two rendered buildings can be drawn.
             if src not in class_paths or dst not in class_paths or src == dst:
                 continue
@@ -642,7 +648,14 @@ def _coupling_adjacency():
                 if a is None or b is None or a == b:
                     continue
                 peers = views[view].setdefault(a, {})
-                peers[b] = peers.get(b, 0) + weight
+                # Only the class view carries a line. A package's edge is the sum of the
+                # edges of the classes under it, and "the line where package A depends on
+                # package B" is a question with a dozen answers and no way to pick one; a
+                # road there stays a road and is not clickable.
+                if view == "classes":
+                    peers[b] = [peers.get(b, [0])[0] + weight, line]
+                else:
+                    peers[b] = peers.get(b, 0) + weight
     return {
         view: {k: dict(sorted(v.items())) for k, v in sorted(adj.items())}
         for view, adj in views.items()
@@ -815,6 +828,7 @@ html = """<!doctype html>
      it swallows the two checkbox columns so the dropdown keeps the 1fr column and
      therefore the exact width of the metric dropdowns above it. */
   .controls .spanRest { grid-column: 3 / -1; }
+.controls .spanAll { grid-column: 2 / -1; }
   /* Preset bubbles: ten colours, no words. The label is in the tooltip, because a row
      of ten names would be a menu, and this is meant to be poked at. */
   .presets { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; }
@@ -1303,7 +1317,8 @@ html = """<!doctype html>
   Cmd/Ctrl-drag to rotate<br>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
-  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br></span>
+  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
+    &nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span>
   <b>&#8679; over a building</b>: what changes with it (needs the co-change colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
@@ -1394,6 +1409,13 @@ html = """<!doctype html>
     </select>
     <span class="spanRest"></span>
 
+    <span class="knob" id="streetsKnob">Streets</span>
+    <label class="checkbox spanAll" id="interPkgOnlyRow"
+           title="Hold &#8997; over a building: draw only the roads that cross a package boundary, and leave its couplings inside its own package undrawn.">
+      <input id="interPkgOnly" type="checkbox" aria-label="only roads that leave the package">
+      only where they leave the package
+    </label>
+
     <span class="knob" id="changesKnob">Changes</span>
     <select id="changeMode" aria-label="change-set filter">
       <option value="off">show everything</option>
@@ -1473,7 +1495,17 @@ function inflateAdjacency(packed) {
 }
 // Coupling adjacency per view: { classes|packages|modules: { path: { peer: references } } }.
 // Only the outgoing direction is stored; incoming is its transpose, built once per view below.
+//
+// A class-view edge's value is `[references, line]` rather than a bare count: `line` is
+// where in the SOURCE file the coupling actually lives — the first mention of the target
+// that is not an import (see compute_fanio.py). Package and module edges keep the bare
+// count, because "the line where package A depends on package B" has a dozen answers and
+// no way to pick one. Both shapes go through these two readers, so nothing else has to
+// know which view it is looking at, and a page from an older generator (all bare counts)
+// keeps working with its roads simply not clickable.
 const COUPLING = inflateAdjacency(__COUPLING_JSON__);
+function edgeWeight(value) { return Array.isArray(value) ? value[0] : value; }
+function edgeLine(value) { return Array.isArray(value) ? value[1] : 0; }
 // Change coupling per view: { unit: { peer: [shared commits, severity 0..1] } }. Cross-
 // package pairs only. Severity is how far apart the two live — see build_heatmap.py.
 const COCHANGE = inflateAdjacency(__COCHANGE_JSON__);
@@ -1574,6 +1606,12 @@ const viewSelect = document.getElementById("viewMode");   // the title-row view 
 const packageOpt = document.getElementById("packageOpt");
 const moduleOpt = document.getElementById("moduleOpt");
 const pkgLabelSelect = document.getElementById("pkgLabelMode");
+// The one thing about the roads that is a SETTING and not a question. The overlay itself
+// stays on a held key — a layer someone forgot they switched on is a city that cannot be
+// read — but "which of these roads are worth drawing at all" is a standing choice about
+// what you are reading the city for, and it survives being forgotten: with it ticked the
+// bundle is smaller, never bigger.
+const interPkgOnlyCheck = document.getElementById("interPkgOnly");
 const changeSelect = document.getElementById("changeMode");   // off / highlight / hide unchanged
 const changeCountEl = document.getElementById("changeCount");
 const filterInput = document.getElementById("pkgFilter");
@@ -1598,6 +1636,14 @@ function changeMode() { return changeSelect ? changeSelect.value : "off"; }
 // Nothing to trace if the tool that produced this page predates coupling-edges.tsv —
 // then ⌥ simply does nothing, and the hint that advertises it is not shown.
 const HAS_COUPLING = Object.values(COUPLING || {}).some(adj => Object.keys(adj).length);
+// No coupling data (a page from a generator that predates coupling-edges.tsv): there are
+// no roads to filter, so the row would be a control over nothing.
+if (!HAS_COUPLING) {
+  for (const el of [document.getElementById("streetsKnob"),
+                    document.getElementById("interPkgOnlyRow")]) {
+    if (el) el.style.display = "none";
+  }
+}
 // No coupling data (a page from an older tool run) => nothing the checkbox could draw,
 // so the row goes, the same way the Changes row goes when there is no diff.
 if (!HAS_COUPLING) {
@@ -1823,16 +1869,23 @@ const REFERENCE_FOOTPRINT = 95;
 function tuneCityToTileSize(leafCount) {
   const tile = Math.sqrt((cityW * cityD) / Math.max(1, leafCount));
   cityUnit = Math.max(0.35, tile / REFERENCE_FOOTPRINT);
-  districtGap = 14 * cityUnit;
+  districtGap = 22 * cityUnit;
   fileGap = 3 * cityUnit;
-  districtStep = 9 * cityUnit;
+  districtStep = 0.4 * cityUnit;
   maxHeight = 190 * cityUnit;
   minHeight = 5 * cityUnit;
 }
 let cityTop = 0;                                             // tallest building; heights are p95-scaled, so outliers blow past maxHeight
-let districtGap = 14;
+let districtGap = 22;
 let fileGap = 3;
-let districtStep = 9;   // terrace rise per nesting level: tall enough to separate floors without hatching
+// The city used to be TERRACED: nine units of rise per nesting level, so a parent package
+// visibly contained its children. From the low angle the city is actually read at, that
+// step was also a wall — it hid the near edge of every district behind it, buried the
+// roads until they were flown over the whole stack, and turned an eight-level tree into a
+// staircase you had to orbit to see past. So the plate is FLAT: what is left of the step
+// is a hair, just enough to keep a child floor from z-fighting the parent it lies on, and
+// containment is DRAWN instead of built — see addDistrictRule.
+let districtStep = 0.4;
 // Margin kept clear on ALL FOUR sides of every district, where its name is written.
 // It has to be reserved in the treemap itself: children terraces rise ABOVE their
 // parent's floor and tile its whole area, so text laid anywhere else is buried.
@@ -1846,6 +1899,16 @@ const floorLabelBand = () => 13 * cityUnit;
 // (org.springframework.a.b.c.d) most of its plate in white gaps.
 const streetFor = node => Math.max(3, districtGap / (1 + node.depth * 0.7));
 
+// The gap BETWEEN two siblings. d3 charges one inner padding per PARENT, so the question
+// is asked of the parent: a package whose children are packages gets a street between
+// them; one whose children are classes gets the tight file gap, because two classes of a
+// package are meant to read as one block. It used to be fileGap at every level, so two
+// neighbouring packages were held apart by the same three units as two files inside one of
+// them — and once the terraces went, that gap was the only thing left saying where one
+// district ended and the next began.
+const districtStreet = node =>
+  node.children && node.children.some(c => c.children) ? streetFor(node) : fileGap;
+
 // The ring a district keeps clear around its children — street and name band in one,
 // on all four edges, so whichever way you orbit a copy of the name faces you.
 //
@@ -1856,7 +1919,10 @@ const streetFor = node => Math.max(3, districtGap / (1 + node.depth * 0.7));
 // most a share of the tile it frames, and the band reuses the street instead of adding
 // to it. Called with the node's own rect both by the layout and by the label placement,
 // so the name is always drawn in exactly the space that was reserved for it.
-const RING_SHARE = 0.07;   // per side: at worst ~14% of each dimension
+// Raised from 0.07 once every package name was drawn at ONE size: the ring is what the
+// name is written in, so a share too small to hold a same-size name is a share that sends
+// the name out over the district's own children.
+const RING_SHARE = 0.10;   // per side: at worst ~20% of each dimension
 function districtRing(node) {
   if (node.depth === 0) return streetFor(node);
   const room = Math.min(node.x1 - node.x0, node.y1 - node.y0);
@@ -2044,7 +2110,12 @@ const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(ROTATE_CURSO
 // hover cursor (hand over a building, arrow over empty ground).
 function applyCursor(event) {
   let cursor;
-  if (event.metaKey || event.ctrlKey) cursor = ROTATE_CURSOR;
+  // While ⌘ is held over a road that names one class, the pointer says so: a trunk (which
+  // names none) and a purple road (which names two) keep the orbit cursor, so "this one
+  // can be followed" is answered before the click rather than by its silence afterwards.
+  if ((event.metaKey || event.ctrlKey) && !isDragging && streetGroup && pickRoadJump(event)) {
+    cursor = "pointer";
+  } else if (event.metaKey || event.ctrlKey) cursor = ROTATE_CURSOR;
   else if (isDragging) cursor = "move";
   else cursor = hoverCursor;
   renderer.domElement.style.cursor = cursor;
@@ -2061,9 +2132,9 @@ function pickBuilding(event) {
   return raycaster.intersectObjects(buildings.map(b => b.mesh), false)[0] || null;
 }
 
-function openInEditor(rel) {
+function openInEditor(rel, line) {
   const abs = REPO_ABS + "/" + rel;
-  window.location.href = "vscode://file" + encodeURI(abs);
+  window.location.href = "vscode://file" + encodeURI(abs) + (line ? ":" + line : "");
 }
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8592a3, 2.1));
@@ -2229,6 +2300,15 @@ function clearCity() {
     entry.mesh.material.dispose();
   }
   buildings = [];
+  for (const group of beforeSkins) {
+    scene.remove(group);
+    // Unlike the marks, each skin carries its own colour, so its material is ours to free.
+    group.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+  }
+  beforeSkins = [];
   for (const mark of changeMarks) {
     scene.remove(mark);
     // Every mark is a group of painted quads sharing one material now: only the geometry
@@ -2311,7 +2391,19 @@ function stripeTexture(draw, w, h) {
   canvas.width = w; canvas.height = h;
   draw(canvas.getContext("2d"), w, h);
   const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  // u repeats along the band — that is what tiles one arrowhead into a row of them.
+  // v does NOT: it spans the band once, so wrapping it makes the top row of texels
+  // blend with the bottom one across the seam.
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  // No mipmaps. An arrowhead is a thin sliver at its tip, so the first mip level
+  // averages that sliver with the transparent gap around it and paints the whole top
+  // row a flat half-alpha — which, tinted black, came out as a grey hairline ruled
+  // across every arrow tip in the city. There is no minification to defend against
+  // here anyway: the band is a few pixels tall on screen at worst, and at that size
+  // the mip chain was only ever making things up.
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   return tex;
 }
 
@@ -2323,8 +2415,11 @@ function stripeTexture(draw, w, h) {
 const dashTex = stripeTexture((ctx, w, h) => {
   ctx.fillStyle = "#fff";
   const head = Math.round(w * 0.62);
+  // The apex stops one texel short of the tile's top edge. Landing exactly ON it, the
+  // clamped edge row is stretched by the sampler over whatever fraction of a screen
+  // pixel is left, and the tip smears into a line instead of ending in a point.
   ctx.beginPath();
-  ctx.moveTo(head / 2, 0);
+  ctx.moveTo(head / 2, 1);
   ctx.lineTo(head, h);
   ctx.lineTo(0, h);
   ctx.closePath();
@@ -2436,10 +2531,75 @@ function addHeightMark(geo, y, rise) {
   changeMarks.push(group);
 }
 
+// ── The colour it used to be ────────────────────────────────────────────────
+// Height and area both carry their "before" on the building: a band where it used to end,
+// a rectangle where the roof used to stop, each with arrowheads pointing the way it moved
+// since. COLOUR — the third knob, and the one that carries the metric people actually came
+// to read — carried nothing. A class whose bugfix commits doubled over the branch was
+// painted its new shade and that was the whole story, with nothing on screen to hold it
+// against.
+//
+// So the block keeps its NEW colour, and the part of it that ALREADY EXISTED is skinned in
+// the OLD one: the wall BELOW the height mark, and the roof INSIDE the area mark. Every
+// surface the arrowheads point into is the colour it is now; everything behind them is the
+// colour it was. The seam between the two shades falls exactly on the mark, so "it grew
+// this much" and "it got this much redder" are one reading rather than two.
+//
+// Only where a mark was drawn. With no growth on an axis there is no new surface to put
+// the new shade on, and skinning the whole block in the old colour would simply be lying
+// about what colour the building is.
+let beforeSkins = [];   // own materials, unlike the marks — so their own disposal, below
+
+// The building's own material, minus the shadow-casting: these lie ON its faces, a hair
+// off, and win the depth fight with polygonOffset rather than by floating clear of it —
+// a visible standoff was the thing that made the first "before" outline read as an
+// overlay hung in front of the city instead of paint on the block.
+function skinMaterial(color) {
+  return new THREE.MeshStandardMaterial({
+    color, roughness: 0.58, metalness: 0.06,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+}
+
+function keepSkin(group) {
+  group.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+  scene.add(group);
+  beforeSkins.push(group);
+}
+
+function addWallSkin(geo, wasHeight, color) {
+  if (wasHeight <= 0) return;
+  const group = new THREE.Group();
+  const material = skinMaterial(color);
+  for (const wall of WALLS) {
+    const span = wall[0] ? geo.depth : geo.width;
+    group.add(wallQuad(geo, wall, geo.baseY + wasHeight / 2, wasHeight, span, material, 0));
+  }
+  keepSkin(group);
+}
+
+function addRoofSkin(geo, wasW, wasD, color) {
+  const plane = new THREE.PlaneGeometry(wasW, wasD);
+  plane.rotateX(-Math.PI / 2);
+  const mesh = new THREE.Mesh(plane, skinMaterial(color));
+  mesh.position.set(geo.cx, geo.baseY + geo.height + WALL_LIFT * cityUnit, geo.cz);
+  const group = new THREE.Group();
+  group.add(mesh);
+  keepSkin(group);
+}
+
 function addChangeMarks(file, geo) {
   if (changeMode() !== "highlight") return;
   const before = beforeRowFor(file);
   if (!before) return;                       // unchanged, added by the diff, or an aggregate view
+
+  // The shade the city WOULD have given this building at the base commit. null when the
+  // colour metric has no snapshot at all (fan-in, fan-out and instability are whole-repo
+  // facts git cannot reconstruct per commit), and skipped when it comes out the same
+  // colour — a skin in the identical shade is a seam and no information.
+  const wasColor = beforeValue(before, geo.colorMetric);
+  let skin = wasColor === null ? null : colorFor(wasColor, geo.maxColor);
+  if (skin && skin.getHex() === colorFor(geo.colorValue, geo.maxColor).getHex()) skin = null;
 
   const wasHeightMetric = beforeValue(before, geo.heightMetric);
   if (wasHeightMetric !== null) {
@@ -2447,6 +2607,7 @@ function addChangeMarks(file, geo) {
     // Only a band the eye can separate from the roofline is worth drawing.
     if (geo.height - wasHeight > MARK_MIN_DELTA) {
       addHeightMark(geo, geo.baseY + wasHeight, geo.height - wasHeight);
+      if (skin) addWallSkin(geo, wasHeight, skin);
     }
   }
 
@@ -2455,8 +2616,61 @@ function addChangeMarks(file, geo) {
     const [wasW, wasD] = footprintFor(Math.max(1, wasArea), geo.cellW, geo.cellD, geo.areaScale);
     if (geo.width - wasW > MARK_MIN_DELTA || geo.depth - wasD > MARK_MIN_DELTA) {
       addAreaMark(geo, geo.baseY + geo.height, wasW, wasD);
+      if (skin) addRoofSkin(geo, wasW, wasD, skin);
     }
   }
+}
+
+// ── The black rule around a district ─────────────────────────────────────────
+// What the terrace used to say — this package contains those ones — drawn instead of
+// built. A flat rule laid inside the district's own edge, and its WEIGHT carries the
+// nesting: a top-level module gets a heavy black band, a leaf package four levels down a
+// hairline. Weight is the one line property the eye reads without measuring anything, and
+// unlike the terrace it costs no parallax, hides nothing behind it, and survives being
+// looked at from ground level, which is where the coupling roads are read from.
+//
+// A quad ring rather than LineSegments: a LineBasicMaterial's `linewidth` is ignored on
+// every platform that matters (it is always one device pixel), so "thicker for a module"
+// is simply not expressible as a line — and a one-pixel rule vanishes the moment you pull
+// the camera back far enough to see the whole city, which is the view it exists for.
+const DISTRICT_RULE = 6.5;      // × cityUnit — the rule around a top-level district
+const DISTRICT_RULE_MIN = 1.2;  // × cityUnit — ...and the thinnest a deep one gets
+function districtRuleWidth(level) {
+  return Math.max(DISTRICT_RULE_MIN * cityUnit, DISTRICT_RULE * cityUnit / (1 + level * 0.5));
+}
+
+function addDistrictRule(cx, cz, width, depth, topY, level) {
+  const w = districtRuleWidth(level);
+  const hw = width / 2, hd = depth / 2;
+  if (w * 2 >= Math.min(width, depth)) return;   // a district too small to be a frame
+  const position = [], index = [];
+  const quad = (x0, z0, x1, z1) => {
+    const base = position.length / 3;
+    position.push(x0, 0, z0,  x1, 0, z0,  x1, 0, z1,  x0, 0, z1);
+    index.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  quad(-hw, -hd, hw, -hd + w);                   // north edge
+  quad(-hw, hd - w, hw, hd);                     // south edge
+  quad(-hw, -hd + w, -hw + w, hd - w);           // west, between the two above
+  quad(hw - w, -hd + w, hw, hd - w);             // east
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(position, 3));
+  geometry.setIndex(index);
+  // Its own material per district, not one shared: clearCity disposes every object tagged
+  // "package", so a shared one would be disposed on the first district of a rebuild and
+  // dead for the other five hundred.
+  // DoubleSide, because these quads are wound the way the road sinks wind theirs and a
+  // horizontal quad has a front face pointing at exactly one of the two places you can
+  // look at the plate from. Culled the wrong way it is not a thin rule, it is no rule.
+  const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+    color: 0x0b1220, side: THREE.DoubleSide,
+    transparent: true, opacity: 0.88, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+  }));
+  mesh.position.set(cx, topY + 0.06 * cityUnit, cz);
+  mesh.renderOrder = 2;
+  mesh.userData.kind = "package";
+  scene.add(mesh);
 }
 
 function rebuildCity() {
@@ -2481,7 +2695,7 @@ function rebuildCity() {
     .paddingBottom(districtRing)
     .paddingLeft(districtRing)
     .paddingRight(districtRing)
-    .paddingInner(fileGap)
+    .paddingInner(districtStreet)
     .round(true);
   const root = layout(buildHierarchy(areaMetric));
 
@@ -2522,14 +2736,7 @@ function rebuildCity() {
     districts.push(block);
     districtByName.set(block.userData.name, block);
 
-    const outline = new THREE.LineSegments(
-      new THREE.EdgesGeometry(block.geometry),
-      new THREE.LineBasicMaterial({ color: 0xcdd6e4, transparent: true, opacity: 0.45 })
-    );
-    outline.position.copy(block.position);
-    outline.userData.kind = "package";
-    scene.add(outline);
-
+    addDistrictRule(cx, cz, width, depth, topY, node.depth);
     addPackageLabel(node, cx, cz, topY, width, depth);
   }
 
@@ -2587,7 +2794,8 @@ function rebuildCity() {
     buildingByPath.set(file.path, buildings[buildings.length - 1]);
     cityTop = Math.max(cityTop, baseY + height);
     addChangeMarks(file, { cellW, cellD, areaScale, areaMetric, heightMetric,
-                           maxMetric, heightScale, width, depth, height, baseY, cx, cz });
+                           maxMetric, heightScale, width, depth, height, baseY, cx, cz,
+                           colorMetric, maxColor, colorValue });
   }
   styleForChanges();
   crimePath = null;        // fresh materials: nothing to restore, and nothing painted
@@ -2911,6 +3119,7 @@ let roadKeyHeld = false;
 // third hand you do not have.
 let pinnedStreetPath = null;
 function streetsOn() { return (roadKeyHeld || pinnedStreetPath !== null) && HAS_COUPLING; }
+function interPkgOnly() { return !!(interPkgOnlyCheck && interPkgOnlyCheck.checked); }
 
 function couplingViewName() { return viewSelect ? viewSelect.value : "classes"; }
 
@@ -2945,7 +3154,9 @@ function couplingWeightScale() {
   if (!_roadScaleByView.has(view)) {
     const weights = [];
     const out = outgoingAdjacency();
-    for (const src of Object.keys(out)) weights.push(...Object.values(out[src]));
+    for (const src of Object.keys(out)) {
+      for (const value of Object.values(out[src])) weights.push(edgeWeight(value));
+    }
     _roadScaleByView.set(view, percentile(weights, 0.95) || 1);
   }
   return _roadScaleByView.get(view);
@@ -3253,9 +3464,16 @@ function statesToPoints(states, grid) {
 // routes sharing a state provably share every step from there to the root.
 function bundleRoutes(sweep, ends) {
   const carried = new Map();     // state -> total weight of the peers behind it
-  for (const { state, weight } of ends) {
+  // ...and WHICH peer, while there is only one: a chain runs exactly as far as `carried`
+  // stays put, so the peer recorded at its first state is the peer of every state in it.
+  // Null the moment a second one joins — that is a trunk, and it belongs to no single
+  // class, which is why it cannot be followed into the code.
+  const owner = new Map();
+  for (const { state, weight, item } of ends) {
     for (let s = state; s >= 0; s = sweep.prev[s]) {
       carried.set(s, (carried.get(s) || 0) + weight);
+      if (!owner.has(s)) owner.set(s, item);
+      else if (owner.get(s) !== item) owner.set(s, null);
     }
   }
   const children = new Map();
@@ -3283,7 +3501,7 @@ function bundleRoutes(sweep, ends) {
       }
       break;
     }
-    chains.push({ states, weight: carried.get(start) });
+    chains.push({ states, weight: carried.get(start), item: owner.get(start) });
     for (const kid of children.get(current) || []) pending.push(kid);
   }
   return chains;
@@ -3341,7 +3559,11 @@ function offsetPath(points, d) {
 // few cells is a couple of thousand meshes, which is a couple of thousand draw calls per
 // frame: the city stops turning and the traffic stops moving, on a page whose whole point is
 // that it turns. Merged, a bundle costs two draw calls whatever its size.
-function roadSink() { return { position: [], uv: [], index: [] }; }
+// `owner` is one entry per QUAD, in the order the quads were pushed — which is what turns
+// a raycast hit (a triangle index) back into "which road is this, and where does it go in
+// the source". Only the roadway sink fills it: the lane and the gates ride on top of a
+// road that already answers the question.
+function roadSink() { return { position: [], uv: [], index: [], owner: [] }; }
 
 // One flat quad from a to b, `width` across, with the texture's v running from `v0` at the a
 // end to `v1` at the b end — which is what keeps a wedge crossing a corner instead of
@@ -3374,7 +3596,7 @@ function sinkMesh(sink, material, renderOrder) {
 // PAST the corner and the outgoing one starts half a width AFTER it, which covers the corner
 // square exactly once: butt them together and every turn has a notch bitten out of it,
 // overlap them and the lane gets a bright square at each one.
-function addRoad(road, lane, points, width, y) {
+function addRoad(road, lane, points, width, y, owner) {
   const spacing = FLOW_SPACING * cityUnit;
   const laneWidth = width * 0.55;
   let traveled = 0;
@@ -3392,8 +3614,191 @@ function addRoad(road, lane, points, width, y) {
     const p1 = { x: b.x + ux * tail, z: b.z + uz * tail };
     const v0 = (traveled + head) / spacing, v1 = (traveled + len + tail) / spacing;
     addQuad(road, p0, p1, width, y, v0, v1);
+    road.owner.push(owner || null);
     addQuad(lane, p0, p1, laneWidth, y + 0.05 * cityUnit, v0, v1);
     traveled += len;
+  }
+}
+
+// Cut a route at its half-way point and hand back the two halves, each running from its
+// OWN far end in to the cut. `addRoad` writes v as distance travelled from a run's first
+// point and the traffic always slides toward +v, so reversing the second half is the whole
+// trick: two streams converging on the middle, out of one texture and one offset per frame.
+// The two halves butt exactly at the cut — addRoad only extends a run past a bend it owns,
+// and neither half owns this one — so the tarmac has no seam and no overlap there.
+function halfRoutes(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += Math.hypot(points[i].x - points[i - 1].x, points[i].z - points[i - 1].z);
+  }
+  if (total < 1e-6) return [points];
+  let traveled = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const len = Math.hypot(b.x - a.x, b.z - a.z);
+    if (traveled + len >= total / 2) {
+      const t = len > 1e-6 ? (total / 2 - traveled) / len : 0;
+      const mid = new THREE.Vector3(a.x + (b.x - a.x) * t, a.y, a.z + (b.z - a.z) * t);
+      const first = points.slice(0, i);
+      first.push(mid);
+      const second = points.slice(i);
+      second.unshift(mid);
+      second.reverse();
+      return [first, second];
+    }
+    traveled += len;
+  }
+  return [points];
+}
+
+// ── Gates: where a road leaves the package ──────────────────────────────────
+// A road answers "what does this class touch"; it does not say where the answer stops
+// being the package's own business. Every crossing of a package boundary gets a bar laid
+// across the tarmac, in the road's own colour — blue where the dependency is leaving,
+// red where it is arriving, purple where it runs both ways. The crossing is the moment a
+// coupling turns into an architectural fact, and it is invisible on a road that simply
+// runs on past a district edge.
+//
+// Only the boundaries that are ON this bundle's business: the hovered building's own
+// package, and the packages its peers live in. Marking every district a road happens to
+// cross on its way turns the bundle into a picket fence.
+const GATE_REACH = 2.4;   // × cityUnit — how far a gate stands out either side of the road
+const GATE_THICK = 2.4;   // × cityUnit — its thickness along the road
+const GATE_RISE = 6.0;    // × cityUnit — and how high it stands off the tarmac
+const GATE_RECTS_MAX = 12;   // a bundle spanning more packages than this gets the home one only
+// A gate STANDS UP. Painted flat on the road it was one more stripe among the traffic
+// wedges, which are the same colour and also lie across the lane; given height it is the
+// only thing in the bundle with a silhouette, and a silhouette is what says "you pass
+// through here" rather than "more road".
+//
+// Opaque, and with the four walls a shade darker than the cap: the whole road network is
+// MeshBasic — no lighting, so no face shading — and a flat-coloured box reads as a
+// pentagon rather than as a solid. Two materials cost nothing and the contrast is the
+// same at every camera angle, which a light would not be.
+const gateMaterial = {}, gateSideMaterial = {};
+for (const kind of ROAD_KINDS) {
+  gateMaterial[kind] = new THREE.MeshBasicMaterial({
+    color: FLOW_BLUE[kind], side: THREE.DoubleSide,
+  });
+  gateSideMaterial[kind] = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(FLOW_BLUE[kind]).multiplyScalar(0.72), side: THREE.DoubleSide,
+  });
+}
+
+// Which package a coupling peer lives in, whether or not it has a building on the plate:
+// the "only where they leave the package" filter has to answer for peers that were
+// filtered out or drilled past too, or it would keep exactly the roads it was asked to drop.
+const _pkgByPathByView = new Map();
+function packageOfPath(rowPath) {
+  const view = couplingViewName();
+  let map = _pkgByPathByView.get(view);
+  if (!map) {
+    map = new Map();
+    for (const row of activeDataset()) map.set(row.path, row.district || "");
+    _pkgByPathByView.set(view, map);
+  }
+  return map.get(rowPath);
+}
+
+function districtRect(pkg) {
+  const block = pkg ? districtByName.get(pkg) : null;
+  if (!block) return null;
+  const p = block.geometry.parameters;
+  return { x0: block.position.x - p.width / 2, x1: block.position.x + p.width / 2,
+           z0: block.position.z - p.depth / 2, z1: block.position.z + p.depth / 2 };
+}
+
+function inRect(p, r) {
+  return p.x >= r.x0 && p.x <= r.x1 && p.z >= r.z0 && p.z <= r.z1;
+}
+
+// A slab standing across the road, its far face ON the boundary it marks: (ux, uz) is the
+// road's heading there, so the slab is its perpendicular, and it reaches past the kerb on
+// both sides so it still reads on the widest road in the city. (x, z) is where the far
+// face goes; the body is pushed back along `-u` from there, which is the caller's job —
+// a gate is meant to sit on the ground of the package whose edge it is, flush with it,
+// not straddling a line that belongs to two of them.
+function addGate(cap, walls, x, z, ux, uz, width, y) {
+  const half = width / 2 + GATE_REACH * cityUnit;
+  const thick = GATE_THICK * cityUnit;
+  const top = y + GATE_RISE * cityUnit;
+  const px = -uz * half, pz = ux * half;         // across the road
+  const qx = ux * thick, qz = uz * thick;        // along it, one full thickness back
+  const corner = [[x - px, z - pz], [x + px, z + pz],
+                  [x + px - qx, z + pz - qz], [x - px - qx, z - pz - qz]];
+  const quad = (sink, a, b, ya, yb) => {
+    const base = sink.position.length / 3;
+    sink.position.push(a[0], ya, a[1],  b[0], ya, b[1],  b[0], yb, b[1],  a[0], yb, a[1]);
+    sink.uv.push(0, 0,  1, 0,  1, 1,  0, 1);
+    sink.index.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  const base = cap.position.length / 3;
+  for (const [cx, cz] of corner) cap.position.push(cx, top, cz);
+  cap.uv.push(0, 0,  1, 0,  1, 1,  0, 1);
+  cap.index.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  for (let i = 0; i < 4; i++) quad(walls, corner[i], corner[(i + 1) % 4], y, top);
+}
+
+function addPackageGates(laid, entry, bundle, sinks, deck) {
+  const rects = [];
+  const seen = new Set();
+  const take = pkg => {
+    if (!pkg || seen.has(pkg) || rects.length >= GATE_RECTS_MAX) return;
+    seen.add(pkg);
+    const rect = districtRect(pkg);
+    if (rect) rects.push(rect);
+  };
+  take(entry.file.district);
+  for (const b of bundle) if (b.peer) take(b.peer.file.district);
+  if (!rects.length) return;
+
+  for (const { path, width, kind } of laid) {
+    const y = deck[kind] + 0.12 * cityUnit;
+    // One box around the whole run, tested against each rect before any segment is: on a
+    // god class this loop is (roads x packages x bends) and most of those triples are a
+    // road on the far side of the plate from the district it is being asked about.
+    let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
+    for (const p of path) {
+      if (p.x < bx0) bx0 = p.x;
+      if (p.x > bx1) bx1 = p.x;
+      if (p.z < bz0) bz0 = p.z;
+      if (p.z > bz1) bz1 = p.z;
+    }
+    const near = rects.filter(r => bx1 >= r.x0 && bx0 <= r.x1 && bz1 >= r.z0 && bz0 <= r.z1);
+    if (!near.length) continue;
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1], b = path[i];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-6) continue;
+      for (const rect of near) {
+        if (inRect(a, rect) === inRect(b, rect)) continue;   // this run stays on one side
+        // Exactly one of the four boundary lines is crossed, since the ends disagree.
+        // Take the crossing nearest the run's start; a corner exit gives two candidates
+        // for the same point and either is the point.
+        let best = -1;
+        const candidates = [];
+        if (Math.abs(dx) > 1e-6) candidates.push((rect.x0 - a.x) / dx, (rect.x1 - a.x) / dx);
+        if (Math.abs(dz) > 1e-6) candidates.push((rect.z0 - a.z) / dz, (rect.z1 - a.z) / dz);
+        for (const t of candidates) {
+          if (!(t > 0 && t < 1)) continue;
+          const x = a.x + dx * t, z = a.z + dz * t;
+          const slack = 1e-3;
+          if (x < rect.x0 - slack || x > rect.x1 + slack ||
+              z < rect.z0 - slack || z > rect.z1 + slack) continue;
+          if (best < 0 || t < best) best = t;
+        }
+        if (best < 0) continue;
+        // Point the heading OUT of the rect, so the slab's body falls on the inside of the
+        // boundary: a gate belongs to the package whose edge it is, standing on that
+        // package's own ground with its face flush against the line. Centred on the line
+        // it straddled two districts and read as belonging to neither.
+        const out = inRect(a, rect) ? 1 : -1;
+        addGate(sinks[kind].gate, sinks[kind].gateSide,
+                a.x + dx * best, a.z + dz * best,
+                out * dx / len, out * dz / len, width, y);
+      }
+    }
   }
 }
 
@@ -3415,21 +3820,37 @@ function showStreetsFor(entry) {
   const incoming = incomingAdjacency().get(path) || {};
   const bundle = [];
   const mutual = new Set();
+  const homePackage = entry.file.district || "";
+  const outsideOnly = interPkgOnly();
   for (const [kind, peers] of [["out", outgoing], ["in", incoming]]) {
-    let n = 0;
-    for (const [peerPath, weight] of Object.entries(peers)) {
+    let n = 0, kept = 0;
+    for (const [peerPath, value] of Object.entries(peers)) {
       if (peerPath === path) continue;
       if (n >= ROAD_CAP) { n++; continue; }
       n++;
+      const weight = edgeWeight(value);
+      // "Only where they leave the package": a coupling between two classes of the same
+      // package is the package doing its job, and on a well-factored hub it is most of the
+      // bundle — a dozen roads between neighbours the layout already shows as neighbours,
+      // drawn over the one or two that actually cross a boundary and mean something to an
+      // architecture. Dropped here, before routing, so the sweep never pays for them; the
+      // tooltip still counts them as reachable, because they are.
+      if (outsideOnly && packageOfPath(peerPath) === homePackage) continue;
       // A pair that depends on both ways gets ONE road, in its own colour, rather than two
       // the reader has to notice are the same two classes. The tooltip still counts it on
       // both of its lines — it really is an edge each way.
       const other = kind === "out" ? incoming[peerPath] : outgoing[peerPath];
       if (other !== undefined) {
+        kept++;
         if (mutual.has(peerPath)) continue;
         mutual.add(peerPath);
-        bundle.push({ kind: "both", weight: weight + other,
-                      peer: buildingByPath.get(peerPath) || null });
+        // No jump on a purple road, deliberately. Every other road answers ONE question
+        // and so lands in one file: an outbound one in mine, where I reach for them; an
+        // inbound one in theirs, where they reach for me. A both-ways road is both
+        // questions at once, and a click that silently picks one of the two answers is
+        // worse than a click that does nothing.
+        bundle.push({ kind: "both", weight: weight + edgeWeight(other),
+                      peer: buildingByPath.get(peerPath) || null, jump: null });
         continue;
       }
       // A peer with no building is not absent from the truth, only from the picture:
@@ -3437,10 +3858,21 @@ function showStreetsFor(entry) {
       // running to the edge of what IS rendered and stopping there with nothing at the far
       // end — which is exactly the fact. Dropping it silently makes the bundle under-report
       // what the building is tied to, and that is the one thing it must never do.
-      bundle.push({ kind, weight, peer: buildingByPath.get(peerPath) || null });
+      kept++;
+      // Where a ⌘-click on this road lands, and the asymmetry is the whole point of it.
+      // OUT: my own file, at the line where I first name them — the injection point, as a
+      // rule, which is what "why does this depend on that" is actually asking. IN: THEIR
+      // file, at the line where they first name me — "what of mine is used out there".
+      // The line always belongs to the file the edge points OUT of, which is why one
+      // number serves both readings. A peer with no building on the plate still has a
+      // file on disk, so an inbound road to a filtered-out class stays followable.
+      const line = edgeLine(value);
+      bundle.push({ kind, weight, peer: buildingByPath.get(peerPath) || null,
+                    jump: line ? { path: kind === "out" ? path : peerPath, line } : null });
     }
-    // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200.
-    wireStatus[kind] = { drawn: Math.min(n, ROAD_CAP), reachable: n };
+    // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200 —
+    // or, with the filter on, 2 of 14.
+    wireStatus[kind] = { drawn: Math.min(kept, ROAD_CAP), reachable: n };
   }
   if (!bundle.length) return;
   if (bundle.length > ROAD_DRAW_MAX) {          // a wash of tarmac answers nothing
@@ -3471,7 +3903,10 @@ function showStreetsFor(entry) {
   }
 
   const sinks = {};
-  for (const kind of ROAD_KINDS) sinks[kind] = { road: roadSink(), lane: roadSink() };
+  for (const kind of ROAD_KINDS) {
+    sinks[kind] = { road: roadSink(), lane: roadSink(),
+                    gate: roadSink(), gateSide: roadSink() };
+  }
   // One elevation for the whole network, per direction — not per road: a road that dips to
   // its own two endpoints' floors is a road that ducks under whatever it crosses.
   const floorTop = grid ? grid.floorTop : entry.baseY;
@@ -3482,15 +3917,32 @@ function showStreetsFor(entry) {
   // counterpart to keep clear of, so it takes the middle.
   const SIDE = { out: 1, in: -1, both: 0 };
 
+  // Every polyline this bundle actually puts down, kept so the package gates can be
+  // placed on the tarmac as drawn rather than on the route as planned — the two differ by
+  // the lateral offset, and a gate half a road-width off its own road reads as litter.
+  const laid = [];
+
   // One lateral sign per direction, so a trunk carrying traffic out and one carrying it in
   // can share a corridor without ever sharing a segment.
-  const draw = (points, weight, kind) => {
+  const draw = (points, weight, kind, jump) => {
     if (points.length < 2) return;
     const width = roadWidth(weight);
     let path = orthogonalize(points);
     path = offsetPath(path, SIDE[kind] * (width / 2 + ROAD_GAP * cityUnit / 2));
     if (kind === "in") path.reverse();
-    addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind]);
+    laid.push({ path, width, kind });
+    if (kind === "both") {
+      // Both halves run from their own far end IN to the middle, so the traffic on them
+      // does too: v is distance from the start of the run, and the wedges always slide
+      // toward +v. Two streams meeting head-on at the halfway point is the only drawing of
+      // "these two depend on each other" that does not have to be decoded — one arrow
+      // pointing one way, whatever colour it is, reads as one direction and a legend.
+      for (const half of halfRoutes(path)) {
+        addRoad(sinks[kind].road, sinks[kind].lane, half, width, deck[kind]);
+      }
+      return;
+    }
+    addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump);
   };
 
   for (const kind of ROAD_KINDS) {
@@ -3507,12 +3959,33 @@ function showStreetsFor(entry) {
         const bend = Math.abs(there.x - here.x) >= Math.abs(there.z - here.z)
           ? new THREE.Vector3(there.x, here.y, here.z)
           : new THREE.Vector3(here.x, here.y, there.z);
-        draw([here, bend, there], b.weight, kind);
+        draw([here, bend, there], b.weight, kind, b.jump);
         continue;
       }
       ends.push({ state, weight: b.weight, item: b });
     }
     if (!ends.length) continue;
+
+    // A both-ways road is drawn WHOLE, one route per peer, and never bundled into a trunk.
+    // Its halves have to meet at the middle of the road between these two classes, and a
+    // trunk is by definition a stretch belonging to several peers at once — halving it
+    // would put a meeting point in the middle of a shared stretch, which is the middle of
+    // nothing. The cost is the trunk these roads would have saved, and it is small: a
+    // mutual pair is the rare, interesting case, never the bulk of a bundle.
+    if (kind === "both") {
+      for (const { state, weight, item } of ends) {
+        const states = [];
+        for (let s = state; s >= 0; s = sweep.prev[s]) states.push(s);
+        states.reverse();
+        const points = statesToPoints(states, grid);
+        if (!points.length) continue;
+        points.unshift(baseAnchor(entry, points[0]));
+        const last = points[points.length - 1];
+        points.push(item.peer ? baseAnchor(item.peer, last) : item.exit.clone());
+        draw(points, weight, kind);
+      }
+      continue;
+    }
 
     for (const chain of bundleRoutes(sweep, ends)) {
       const points = statesToPoints(chain.states, grid);
@@ -3520,20 +3993,32 @@ function showStreetsFor(entry) {
       // trunk left them, which is already the first cell of the chain.
       const root = sweep.prev[chain.states[0]] < 0;
       if (root && points.length) points.unshift(baseAnchor(entry, points[0]));
-      draw(points, chain.weight, kind);
+      // A trunk shared by several peers names none of them, so it carries no jump and a
+      // ⌘-click over it does nothing. That is the honest answer: the trunk IS the stretch
+      // where the bundle has not yet decided which class it is going to. Every branch past
+      // the last fork, and every peer's own last stretch, does name one.
+      draw(points, chain.weight, kind, chain.item ? chain.item.jump : null);
     }
     // ...and each peer's own last stretch, from where its branch ended to its wall.
     for (const { state, weight, item } of ends) {
       const from = cellCentre(state >> 2, grid);
       const to = item.peer ? baseAnchor(item.peer, from) : item.exit.clone();
-      draw([from, to], weight, kind);
+      draw([from, to], weight, kind, item.jump);
     }
   }
 
+  addPackageGates(laid, entry, bundle, sinks, deck);
+
   const group = new THREE.Group();
   for (const kind of ROAD_KINDS) {
-    for (const mesh of [sinkMesh(sinks[kind].road, roadMaterial[kind], 0),
-                        sinkMesh(sinks[kind].lane, flowMaterial[kind], 1)]) {
+    const roadway = sinkMesh(sinks[kind].road, roadMaterial[kind], 0);
+    // Quad i of this geometry is triangles 2i and 2i+1, so a raycast's faceIndex >> 1 is
+    // the index into the owner table the sink filled as it was built.
+    if (roadway) roadway.userData.roadOwners = sinks[kind].road.owner;
+    for (const mesh of [roadway,
+                        sinkMesh(sinks[kind].lane, flowMaterial[kind], 1),
+                        sinkMesh(sinks[kind].gate, gateMaterial[kind], 2),
+                        sinkMesh(sinks[kind].gateSide, gateSideMaterial[kind], 2)]) {
       if (mesh) group.add(mesh);
     }
   }
@@ -3608,6 +4093,7 @@ function clearCrimeScene() {
     m.opacity = 1;
     m.depthWrite = true;
   }
+  for (const skin of beforeSkins) skin.visible = true;
   styleForChanges();    // ...and re-drain the unchanged ones, if a diff is on screen
 }
 
@@ -3624,6 +4110,10 @@ function showCoChangeFor(entry) {
   // along, which does it drag hardest? — and a quiet class would otherwise light nothing.
   let worst = 0;
   for (const peer of Object.values(peers)) worst = Math.max(worst, peer[0] * peer[1]);
+  // The "colour it used to be" patches are painted in the CITY's ramp; this overlay
+  // repaints the whole plate in a different one, so leaving them up would put two
+  // unrelated scales on one building. They come back with clearCrimeScene.
+  for (const skin of beforeSkins) skin.visible = false;
   for (const b of buildings) {
     const m = b.mesh.material;
     if (b === entry) { m.color.setHex(CRIME_SUBJECT); continue; }
@@ -3680,15 +4170,21 @@ function floorTextTexture(text) {
 
 // One name laid along one edge of the ring. `run` is the length of that edge, so the
 // name only has to fit across it; when it doesn't, shrink it rather than drop it, down
-// to the point of illegibility. The band is fixed, so every name comes out the same size.
-function addFloorName(text, x, z, topY, run, band, yaw) {
+// to the point of illegibility.
+//
+// ONE cap height for every package in the city, whatever its depth or its plate. It used
+// to be derived from the district's own ring — which is capped by RING_SHARE — so a small
+// or deeply nested package got a visibly smaller name than its neighbour, and the reader
+// had to work out whether that meant anything. It did not: a package name is an
+// identifier, not a metric, and two names in two sizes claim otherwise. The ring is sized
+// to hold this instead (see districtRing), and the letters that overhang it land on the
+// street around the district, where the white halo keeps them legible over nothing.
+const floorNameHeight = () => 19 * cityUnit;
+
+function addFloorName(text, x, z, topY, run, yaw) {
   if (_floorLabelBudget <= 0) return;
   const { tex, w, h } = floorTextTexture(text);
-  // Letters twice as tall as the strip they sit in: the band is what the layout takes
-  // AWAY from the children, so widening it to fit bigger letters would cost the city
-  // real estate. The overhang lands on the street/gap around the district, where the
-  // white halo keeps it legible and there is nothing to cover.
-  let worldH = (band - 4) * 2;
+  let worldH = floorNameHeight();
   let worldW = worldH * (w / h);
   const room = run - 6;
   if (worldW > room) {
@@ -3758,14 +4254,18 @@ function addPackageLabel(node, cx, cz, topY, width, depth) {
     if (depth < band + 2 || width < band + 2) return;   // district smaller than its own ring
     // The four edges of the ring the layout reserved around this district's children.
     // Whichever way you orbit, one of them faces you, so the name is always at hand.
-    const near = node.y1 - band / 2 - cityD / 2;
-    const far = node.y0 + band / 2 - cityD / 2;
-    const left = node.x0 + band / 2 - cityW / 2;
-    const right = node.x1 - band / 2 - cityW / 2;
-    addFloorName(shortName, cx, near, topY, width, band, 0);
-    addFloorName(shortName, cx, far, topY, width, band, 0);
-    addFloorName(shortName, left, cz, topY, depth, band, Math.PI / 2);
-    addFloorName(shortName, right, cz, topY, depth, band, Math.PI / 2);
+    // Centred in what is LEFT of the ring once the black rule has taken the outer strip
+    // of it: a name straddling its own boundary line is a name you read through a bar.
+    const rule = districtRuleWidth(node.depth);
+    const inset = rule + Math.max(0, band - rule) / 2;
+    const near = node.y1 - inset - cityD / 2;
+    const far = node.y0 + inset - cityD / 2;
+    const left = node.x0 + inset - cityW / 2;
+    const right = node.x1 - inset - cityW / 2;
+    addFloorName(shortName, cx, near, topY, width, 0);
+    addFloorName(shortName, cx, far, topY, width, 0);
+    addFloorName(shortName, left, cz, topY, depth, Math.PI / 2);
+    addFloorName(shortName, right, cz, topY, depth, Math.PI / 2);
     remember();
     return;
   }
@@ -4183,12 +4683,46 @@ function applyScopePick() {
   scopeTo(value);
 }
 
+// ⌘/Ctrl-click a road and land on the line that makes the coupling. The roadway meshes
+// are merged per direction, so the hit comes back as a triangle index rather than as an
+// object; `roadOwners` turns it back into the one edge that quad was laid for. Only the
+// roadway is tested — the lane and the gates sit on top of it and would only ever mask
+// the wider thing underneath.
+function pickRoadJump(event) {
+  // Also called from applyCursor, which is wired to keydown/keyup as well: a keyboard
+  // event has no clientX, and casting a ray through a NaN pointer is nonsense the
+  // raycaster answers with silence rather than an error.
+  if (!streetGroup || event.clientX === undefined) return null;
+  const roads = streetGroup.children.filter(o => o.userData.roadOwners);
+  if (!roads.length) return null;
+  updatePointer(event);
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(roads, false)[0];
+  if (!hit || hit.faceIndex === undefined) return null;
+  return hit.object.userData.roadOwners[hit.faceIndex >> 1] || null;
+}
+
 function onSceneClick(event) {
   if (introEl || event.target !== renderer.domElement) return;   // ignore UI / overlay clicks
   if (performance.now() - lastScopeAt < 350) return;             // swallow the 2nd click of a double-click
   if (pointerDownAt) {
     const moved = Math.hypot(event.clientX - pointerDownAt.x, event.clientY - pointerDownAt.y);
     if (moved > 6) return;                                        // it was a drag (pan/orbit), not a click
+  }
+  // ⌘/Ctrl-click on a road: into the code, at the line that couples the two classes.
+  // Tried before anything else that ⌘ means, and only while a bundle is actually up —
+  // with no roads on the plate this is not a gesture at all and everything below still
+  // sees the click.
+  // ⌥ may still be down — holding it to see the roads and ⌘-clicking one of them is the
+  // gesture, not a two-step ritual of pin-then-click. ⌘ wins over the ⌥-click pin below,
+  // which is why this is tested first.
+  if ((event.metaKey || event.ctrlKey) && !event[NAV_KEY]) {
+    const jump = pickRoadJump(event);
+    if (jump) {
+      event.preventDefault();
+      openInEditor(jump.path, jump.line);
+      return;
+    }
   }
   // ⌥-click toggles the pin on the building's road bundle.
   if (event.altKey && !event.metaKey && !event.ctrlKey && !event[NAV_KEY]) {
@@ -4659,6 +5193,15 @@ viewSelect.addEventListener("change", () => {
 });
 // Package-label style only swaps the floor/floating labels — re-render in place.
 pkgLabelSelect.addEventListener("change", () => { dismissIntro(); rebuildCity(); });
+
+// Ticked with the mouse parked over a building and a pin up: no pointer event is coming,
+// so drop the bundle that is on screen and replay the last hover, the same way the held
+// keys do. An overlay that only changes once you jiggle the mouse reads as broken.
+if (interPkgOnlyCheck) interPkgOnlyCheck.addEventListener("change", () => {
+  dismissIntro();
+  clearStreets();
+  if (lastPointerEvent) onPointerMove(lastPointerEvent, true);
+});
 
 // Change-set filter. "hide" changes the visible set, so reset the drill scope and
 // reframe (like the package filter); "highlight"/"off" just re-render in place.
