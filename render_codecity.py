@@ -4885,13 +4885,31 @@ function buildIntro() {
   };
 
   // Hero = the tallest building whose top projects into a clear right-of-panel area.
-  let hero = null;
-  let bestHeight = -Infinity;
-  for (const b of buildings) {
-    const top = project(b.mesh.position.x, b.roofY, b.mesh.position.z);
-    const clear = top.z < 1 && top.x > W * 0.34 && top.x < W * 0.78 && top.y > H * 0.24 && top.y < H * 0.7;
-    if (clear && b.height > bestHeight) { bestHeight = b.height; hero = b; }
+  // "Tallest that clears the panel" is also the shape the callouts need: tall enough
+  // for the HEIGHT dimension line to read as something, and unoccluded so AREA's roof
+  // hatch and COLOR's swatch land on visible geometry rather than a hidden face.
+  function tallestClear(pool) {
+    let best = null;
+    let bestHeight = -Infinity;
+    for (const b of pool) {
+      const top = project(b.mesh.position.x, b.roofY, b.mesh.position.z);
+      const clear = top.z < 1 && top.x > W * 0.34 && top.x < W * 0.78 && top.y > H * 0.24 && top.y < H * 0.7;
+      if (clear && b.height > bestHeight) { bestHeight = b.height; best = b; }
+    }
+    return best;
   }
+  // When the city opens on "highlight changed" with an actual change set, the eye is
+  // already drawn to the touched buildings — the tour should land there too, not on an
+  // arbitrary grey one the reader has no reason to look at. Search the changed set
+  // first, by the same tallest-and-clear rule as below, and only fall back to the
+  // whole city (today's behaviour, unchanged) when that search finds nothing — either
+  // because nothing changed, or because no changed building clears the panel.
+  let hero = null;
+  if (changeMode() === "highlight") {
+    const changed = buildings.filter(b => b.file.changed);
+    if (changed.length) hero = tallestClear(changed);
+  }
+  if (!hero) hero = tallestClear(buildings);
   if (!hero) hero = buildings.reduce((a, b) => (b.height > a.height ? b : a));
 
   const params = hero.mesh.geometry.parameters;
