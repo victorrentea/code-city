@@ -892,12 +892,20 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("geo.height - wasHeight > MARK_MIN_DELTA", html)
             self.assertIn("geo.width - wasW > MARK_MIN_DELTA || geo.depth - wasD > MARK_MIN_DELTA", html)
             # The intro explains the marks the way it explains area/height/colour: a
-            # fourth card, wired to a REAL mark, naming the axis that mark measures.
+            # fourth card, wired to a REAL mark — and, since only growth is ever marked,
+            # saying so in as many words rather than the vaguer "CHANGED" it used to.
             self.assertIn("function clearestChangeMark", html)
-            self.assertIn('title: "CHANGED"', html)
-            self.assertIn('"dashed = its old footprint" : "dashed = its old height"', html)
+            self.assertIn('title: "INCREASED"', html)
+            self.assertIn('sub: "versus its previous value"', html)
             # ...and it only appears when a mark is actually on screen at startup.
             self.assertIn("if (changeMark && changeSelect) {", html)
+            # The leader lands on one ARROWHEAD, ringed rather than dotted so the arrow is
+            # still visible inside it — and the head is read back off the quad that draws
+            # it, so a different change set moves the ring instead of stranding it.
+            self.assertIn("function markArrowHeads", html)
+            self.assertIn("function clearestArrowHead", html)
+            self.assertIn("attributes.uv.getX(1)", html)
+            self.assertIn('fill="none" stroke="${row.color}" stroke-width="2.5"', html)
 
     def test_opens_on_the_diff_and_hides_the_row_without_one(self):
         """A city built from a checkout that HAS a change set is nearly always being read

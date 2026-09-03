@@ -4813,9 +4813,9 @@ const INTRO_CHANNELS = [
 ];
 const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-black, like them
 
-// The clearest change mark on screen, or null when the city carries none. A dashed
-// rectangle floating over a roof is the one thing on a building that the three metric
-// selectors do NOT explain, so if one is up at startup the intro has to name it.
+// The clearest change mark on screen, or null when the city carries none. A row of black
+// arrowheads standing on a roof or a wall is the one thing on a building that the three
+// metric selectors do NOT explain, so if one is up at startup the intro has to name it.
 //
 // `cardsLeft` is where the label stack begins. Every leader in this overlay leaves its
 // card by the LEFT edge, so a mark to the right of the stack can only be reached by a
@@ -4824,10 +4824,25 @@ const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-b
 //
 // Among what is left the pick goes in tiers, best first:
 //   1. a roof mark low on screen   2. any mark low on screen   3. anything reachable
-// Low wins because the CHANGED card sits at the BOTTOM of the stack: a leader that
+// Low wins because the INCREASED card sits at the BOTTOM of the stack: a leader that
 // leaves it heading down-left passes under the other three leaders instead of through
-// them. Roof marks win over facade bands: a band wraps the block, so half of it is
-// behind geometry the SVG overlay would happily draw through.
+// them. Roof marks win over facade bands for a reason that only matters now that the ring
+// lands on an arrowhead: the outline this overlay traces is where the metric USED to
+// stand, and on a facade band that is the very line the arrows stand on, so a 3 px dashed
+// rule is drawn straight through every head and the ring comes out full of dashes. On a
+// roof the arrows stand OUTSIDE the traced old footprint, in the ring of new floor, with
+// clear air between the trace and the head the circle is on. (The older reason — that half
+// a band wraps round the back of the block — is now answered head by head, by testing that
+// the quad an arrow is painted on faces the camera at all.)
+//
+// Inside a tier the winner is still the mark that draws the biggest RECTANGLE on screen,
+// as it was when the leader ended on the middle of that rectangle — but a mark whose
+// arrowheads are visibly bigger now overrules it, because the head is what the card is
+// about. Visibly means a whole pixel: on a city seen whole almost every head comes out
+// the same fraction of a pixel (the head is sized by the growth it stands in, and most
+// growth saturates the same cap), so ranking on head size alone would be ranking on
+// rounding noise and would hand the card to an arbitrary block.
+const HEAD_TIEBREAK = 1;   // px of head radius worth overruling a bigger rectangle for
 function clearestChangeMark(project, cardsLeft) {
   const W = window.innerWidth;
   const H = window.innerHeight;
@@ -4838,17 +4853,125 @@ function clearestChangeMark(project, cardsLeft) {
     const x = points.reduce((sum, p) => sum + p.x, 0) / 4;
     const y = points.reduce((sum, p) => sum + p.y, 0) / 4;
     if (x < W * 0.34 || x > cardsLeft - 24 || y < H * 0.12 || y > H * 0.9) continue;
-    let area = 0;   // shoelace, so "clearest" means "biggest on screen"
+    // The card is about the ARROWHEADS, so a mark is only a candidate if one of its own
+    // heads can be pointed at. Checked here rather than after the winner is picked: a mark
+    // that wins on size and then turns out to have no reachable head would leave the card
+    // with nothing to land on, and the next-best mark has already been discarded by then.
+    const head = clearestArrowHead(mark, project, cardsLeft);
+    if (!head) continue;
+    let area = 0;   // shoelace, so "biggest" means "biggest on screen"
     for (let i = 0; i < 4; i++) {
       const a = points[i], b = points[(i + 1) % 4];
       area += a.x * b.y - b.x * a.y;
     }
     const low = y > H * 0.5;
     const tier = low && mark.userData.axis === "area" ? 0 : low ? 1 : 2;
-    const candidate = { score: Math.abs(area) / 2, points, axis: mark.userData.axis, anchor: { x, y } };
-    if (!tiers[tier] || candidate.score > tiers[tier].score) tiers[tier] = candidate;
+    const candidate = {
+      area: Math.abs(area) / 2, size: head.size, points, axis: mark.userData.axis,
+      anchor: head.anchor, ring: head.ring,
+    };
+    const held = tiers[tier];
+    const wins = !held ||
+      candidate.size - held.size > HEAD_TIEBREAK ||
+      (held.size - candidate.size <= HEAD_TIEBREAK && candidate.area > held.area);
+    if (wins) tiers[tier] = candidate;
   }
   return tiers.find(Boolean) || null;
+}
+
+// One arrowhead of a mark, in world space, as the three corners the texture draws it with.
+// Nothing is remembered when the mark is built: both kinds of mark tile the SAME arrowhead
+// texture along their quad's u axis — one head plus one gap per unit of u — so the heads
+// can be READ BACK off the geometry that draws them. That is what keeps the intro honest
+// across a different change set: the ring lands wherever the renderer actually put an
+// arrow, for whatever building the tour picked, at whatever size the growth allowed.
+const HEAD_W = 0.625;      // 25 of the tile's 40 texels are head, the rest is the gap
+const HEAD_SAMPLE = 32;    // heads looked at per quad, at most — see the stride below
+function markArrowHeads(group) {
+  const heads = [];
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  for (const mesh of group.children) {
+    const pos = mesh.geometry.attributes.position;
+    // PlaneGeometry's four corners come out (0,1) (u,1) (0,0) (u,0), and the UVs were
+    // multiplied by the repeat count when the quad was built — so vertex 1's u IS the
+    // number of tiles, and a point at (u, v) is a lerp along one of the two v edges.
+    const repeats = Math.max(1, Math.round(mesh.geometry.attributes.uv.getX(1)));
+    mesh.updateMatrixWorld();
+    const at = (i, j, f) => a.fromBufferAttribute(pos, i)
+      .lerp(b.fromBufferAttribute(pos, j), f).clone().applyMatrix4(mesh.matrixWorld);
+    // A band on a barely-grown building tiles into hundreds of hair-thin heads, and the
+    // intro only needs ONE of them. Stride over the row instead of walking it: every k
+    // visited is still a real tile, and the work stays flat no matter how fine the tiling.
+    const stride = Math.max(1, Math.ceil(repeats / HEAD_SAMPLE));
+    for (let k = 0; k < repeats; k += stride) {
+      heads.push({
+        mesh,
+        along: (k + 0.5) / repeats,                     // where in its own row this head sits
+        tip: at(0, 1, (k + HEAD_W / 2) / repeats),      // v = 1 is the apex row
+        left: at(2, 3, k / repeats),                    // v = 0 is the row it stands on
+        right: at(2, 3, (k + HEAD_W) / repeats),
+      });
+    }
+  }
+  return heads;
+}
+
+// The arrowhead the leader lands on, and the radius of a ring that holds it. One thing a
+// whole mark does not have to pass: the quad must FACE the camera. A height band wraps all
+// four walls and half of them are on the far side of the block, where a leader would end
+// on an arrow nobody can see — and the mark as a whole gives no sign of that, because the
+// half that faces you is the half you were looking at when you judged it.
+function clearestArrowHead(mark, project, cardsLeft) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const normal = new THREE.Vector3();
+  const toEye = new THREE.Vector3();
+  // The head nearest the MIDDLE of its own row wins, and only ties on that are settled by
+  // taking the right-most (the shortest leader, since every card in this overlay is left of
+  // its target). "Nearest the card" alone was the first rule tried and it is a trap: the
+  // head closest to the card is by construction the one at the END of a row, which is the
+  // corner where two rows of arrows meet, where the traced old outline turns, and where the
+  // block's own silhouette edge runs. Ringed there, the circle came out full of dashes and
+  // corner and read as circling the corner — the arrow inside it was not findable at all.
+  let best = null;
+  let bestOff = Infinity;
+  for (const head of markArrowHeads(mark)) {
+    normal.fromBufferAttribute(head.mesh.geometry.attributes.normal, 0)
+      .transformDirection(head.mesh.matrixWorld);
+    if (normal.dot(toEye.copy(camera.position).sub(head.tip)) <= 0) continue;
+    const corners = [head.tip, head.left, head.right].map(p => project(p.x, p.y, p.z));
+    if (corners.some(p => p.z >= 1)) continue;
+    const anchor = {
+      x: corners.reduce((sum, p) => sum + p.x, 0) / 3,
+      y: corners.reduce((sum, p) => sum + p.y, 0) / 3,
+    };
+    if (anchor.x < W * 0.3 || anchor.x > cardsLeft - 30) continue;
+    if (anchor.y < H * 0.1 || anchor.y > H * 0.92) continue;
+    // Big enough to cover the head's own corners, plus a hair of air so the ring reads as
+    // being AROUND the arrow rather than drawn on top of it — and no bigger. An arrowhead
+    // is only a few pixels tall on a city seen whole (the head is sized by the growth it
+    // stands in, not by the screen), and its neighbours sit about two head-heights away,
+    // so a generous ring stops circling ONE arrow and starts circling a run of them.
+    // `size` is the head itself, kept unclamped so it can rank one mark against another;
+    // `ring` is what gets drawn, floored so a tiny head still gets a circle the eye can
+    // see and capped so a huge one does not get a hoop.
+    const size = Math.max(...corners.map(p => Math.hypot(p.x - anchor.x, p.y - anchor.y)));
+    // Only a head with no extent at all is rejected — an edge-on quad, or one collapsed by
+    // the projection. Sub-pixel is NOT a reason to skip it: on a city of five thousand
+    // classes every arrowhead is about a pixel across, and that is precisely the city where
+    // a ring around one is the only thing that makes it findable. The ring's own floor
+    // below is what keeps it visible; measuring the head only decides how much bigger than
+    // that floor the circle has to be.
+    if (size < 0.2) continue;
+    const off = Math.abs(head.along - 0.5);   // 0 in the middle of its row, 0.5 at a corner
+    const better = !best ||
+      off < bestOff - 0.02 ||                                  // further from either corner
+      (off < bestOff + 0.02 && anchor.x > best.anchor.x);      // as central, and nearer the card
+    if (!better) continue;
+    bestOff = Math.min(bestOff, off);
+    best = { anchor, size, ring: Math.min(Math.max(size + 4.5, 7), 26) };
+  }
+  return best;
 }
 
 function escapeXml(value) {
@@ -4947,16 +5070,20 @@ function buildIntro() {
   const LH = 50;
   const lx = Math.min(heroRight + 46, W - LW - 18);
 
-  // The dashed marks are the one thing on a building the metric selectors do not
-  // explain, so when the city opens with some up, they get a card of their own —
-  // pointing at a real mark, not at the hero, and saying which axis it measures.
+  // The black arrowheads are the one thing on a building the metric selectors do not
+  // explain, so when the city opens with some up, they get a card of their own — ringing
+  // a REAL arrowhead rather than the middle of a roof, which is what the leader used to
+  // land on. The middle of a roof is the one part of the mark that carries no meaning:
+  // the reading is in the heads standing in the ring or band the building has grown into,
+  // and they are only ever drawn where a metric went UP, never where it fell.
   const channels = INTRO_CHANNELS.slice();
   const changeMark = clearestChangeMark(project, lx);
   if (changeMark && changeSelect) {
     channels.push({
-      key: "changes", color: MARK_INK, title: "CHANGED",
+      key: "changes", color: MARK_INK, title: "INCREASED",
       select: () => changeSelect,
-      sub: changeMark.axis === "area" ? "dashed = its old footprint" : "dashed = its old height",
+      sub: "versus its previous value",
+      ring: changeMark.ring,
     });
     anchors.changes = changeMark.anchor;
   }
@@ -5003,8 +5130,9 @@ function buildIntro() {
     `<circle cx="${bodyMid.x.toFixed(1)}" cy="${bodyMid.y.toFixed(1)}" r="9" ` +
     `fill="${swatch}" stroke="#fff" stroke-width="2.5"/>`
   );
-  // CHANGED: re-draw the picked mark in the overlay, fatter and in the same dashes, so
-  // the eye finds the 1.75 px rule on the building the card is talking about.
+  // INCREASED: trace where the metric USED to stand — the roofline the wall arrows rise
+  // from, the footprint the roof arrows spread out of — so the ringed head below reads as
+  // a distance from something rather than as a decoration on a wall.
   if (changeMark) {
     parts.push(
       `<polygon points="${changeMark.points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")}" ` +
@@ -5040,11 +5168,23 @@ function buildIntro() {
     const boxLeft = { x: box.x, y: box.y + box.h / 2 };
     // Connector: selector → label (dashed, channel colour).
     parts.push(...connector(rect, { x: box.x + 22, y: box.y }, row.color));
-    // Leader: label → building feature (solid, channel colour).
+    // Leader: label → building feature (solid, channel colour), ending in a dot ON that
+    // feature — except where the feature is something the reader has to SEE THROUGH the
+    // mark. A ringed row gets a hollow circle instead, and the leader stops on its rim:
+    // a filled 4 px dot in the middle of an arrowhead covers the very arrow it is naming,
+    // and a line run into the centre of the ring fills the gap the ring exists to leave.
+    const ring = row.ring || 0;
+    const dx = row.anchor.x - boxLeft.x;
+    const dy = row.anchor.y - boxLeft.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const end = { x: row.anchor.x - (dx / len) * ring, y: row.anchor.y - (dy / len) * ring };
     parts.push(
-      `<line x1="${boxLeft.x}" y1="${boxLeft.y}" x2="${row.anchor.x.toFixed(1)}" y2="${row.anchor.y.toFixed(1)}" ` +
+      `<line x1="${boxLeft.x}" y1="${boxLeft.y}" x2="${end.x.toFixed(1)}" y2="${end.y.toFixed(1)}" ` +
       `stroke="${row.color}" stroke-width="2.5"/>`,
-      `<circle cx="${row.anchor.x.toFixed(1)}" cy="${row.anchor.y.toFixed(1)}" r="4" fill="${row.color}"/>`
+      ring
+        ? `<circle cx="${row.anchor.x.toFixed(1)}" cy="${row.anchor.y.toFixed(1)}" r="${ring.toFixed(1)}" ` +
+          `fill="none" stroke="${row.color}" stroke-width="2.5"/>`
+        : `<circle cx="${row.anchor.x.toFixed(1)}" cy="${row.anchor.y.toFixed(1)}" r="4" fill="${row.color}"/>`
     );
     // Label card.
     parts.push(
