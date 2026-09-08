@@ -53,6 +53,7 @@ BUG_SUBJECT_RE = re.compile(_bug_subj_src, re.IGNORECASE) if _bug_subj_src else 
 OUT_FILE = os.path.join(OUT_DIR, "codemap.tsv")
 COMPLEXITY_FILE = os.path.join(OUT_DIR, "complexity-per-file.tsv")
 FANIO_FILE = os.path.join(OUT_DIR, "fanio-per-file.tsv")
+CRAP_FILE = os.path.join(OUT_DIR, "crap-per-file.tsv")
 
 # load bug issue set (optional — absent for repos without a bug-issue list, e.g. when
 # fetch_bugs.py was never run because no GITHUB_TOKEN/GH_TOKEN was available)
@@ -389,6 +390,71 @@ if os.path.exists(FANIO_FILE):
 else:
     print(f"WARN: {FANIO_FILE} not found, fan-in/out will be 0", file=sys.stderr)
 
+# load CRAP + coverage per file (compute_crap.py; absent whenever no jacoco.xml was
+# found, which is the normal case for a repo whose tests we did not run). Unlike every
+# other input here, a missing entry is NOT folded to zero: an unmeasured file has to
+# stay distinguishable from a file measured at 0%, all the way to the page. So the
+# columns below travel as empty strings, and the renderer turns those into nulls.
+crap_map = {}
+if os.path.exists(CRAP_FILE):
+    with open(CRAP_FILE) as f:
+        next(f)
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 8:
+                crap_map[parts[0]] = {
+                    "cov_covered": int(parts[1]),
+                    "cov_total": int(parts[2]),
+                    "crap_max": float(parts[3]),
+                    "crap_max_method": parts[4],
+                    "crap_load": float(parts[5]),
+                    "crappy_methods": int(parts[6]),
+                }
+    print(f"loaded CRAP/coverage for {len(crap_map)} files", file=sys.stderr)
+else:
+    print(f"no {CRAP_FILE}: CRAP and coverage will be absent from this city", file=sys.stderr)
+
+
+def _crap_cols(entry, lines):
+    """The six CRAP/coverage cells of one row, blank when the unit was never measured."""
+    if not entry:
+        return ["", "", "", "", "", ""]
+    kloc = lines / 1000.0 if lines else 0
+    # A scored method with no LINE counter at all is rare but real (JaCoCo does it for
+    # some synthetics), and it leaves a file with a CRAP number and no coverage to show.
+    # The CRAP columns still stand; only the percentage goes blank.
+    coverage = f"{100.0 * entry['cov_covered'] / entry['cov_total']:.1f}" if entry["cov_total"] else ""
+    return [
+        coverage,
+        f"{entry['crap_max']:.1f}",
+        entry["crap_max_method"],
+        f"{entry['crap_load']:.1f}",
+        f"{(entry['crap_load'] / kloc) if kloc else 0:.1f}",
+        str(entry["crappy_methods"]),
+    ]
+
+
+def _crap_sum(entries):
+    """Roll files up into the aggregate a package or module shows.
+
+    Coverage re-divides the summed line counters rather than averaging percentages,
+    which would let a 3-line fully covered class outvote a 300-line untested one. The
+    worst method is the worst anywhere inside, and the load simply adds up: "how much
+    crap is in here" is exactly a sum.
+    """
+    measured = [e for e in entries if e]
+    if not measured:
+        return None
+    worst = max(measured, key=lambda e: e["crap_max"])
+    return {
+        "cov_covered": sum(e["cov_covered"] for e in measured),
+        "cov_total": sum(e["cov_total"] for e in measured),
+        "crap_max": worst["crap_max"],
+        "crap_max_method": worst["crap_max_method"],
+        "crap_load": sum(e["crap_load"] for e in measured),
+        "crappy_methods": sum(e["crappy_methods"] for e in measured),
+    }
+
 rows = []
 for ap in java_files:
     rel = os.path.relpath(ap, REPO_DIR)
@@ -409,14 +475,14 @@ for ap in java_files:
     bugs_per_kloc = (bug_commits / kloc) if kloc else 0
     bugs_per_commit = (bug_commits / commits) if commits else 0
     cog_per_kloc = (cog / kloc) if kloc else 0
-    rows.append((rel, sz, lines, commits, bug_commits, commits_per_kloc, bugs_per_kloc, bugs_per_commit, cog, cog_per_kloc, fi, fo, committers, _cochange_out("classes", rel)))
+    rows.append((rel, sz, lines, commits, bug_commits, commits_per_kloc, bugs_per_kloc, bugs_per_commit, cog, cog_per_kloc, fi, fo, committers, _cochange_out("classes", rel), *_crap_cols(crap_map.get(rel), lines)))
 
 rows.sort(key=lambda r: (r[6], r[4], r[3]), reverse=True)
 
 with open(OUT_FILE, "w") as f:
-    f.write("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\n")
+    f.write("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
     for r in rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]:.2f}\t{r[6]:.2f}\t{r[7]:.3f}\t{r[8]}\t{r[9]:.2f}\t{r[10]}\t{r[11]}\t{r[12]}\t{r[13]:.3f}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]:.2f}\t{r[6]:.2f}\t{r[7]:.3f}\t{r[8]}\t{r[9]:.2f}\t{r[10]}\t{r[11]}\t{r[12]}\t{r[13]:.3f}\t{r[14]}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\n")
 
 print(f"wrote {len(rows)} rows to {OUT_FILE}", file=sys.stderr)
 
@@ -426,8 +492,10 @@ print(f"wrote {len(rows)} rows to {OUT_FILE}", file=sys.stderr)
 # per-package sets built during the git walk. Ratios recompute from the totals.
 OUT_FILE_PKG = os.path.join(OUT_DIR, "codemap-packages.tsv")
 pkg_agg = {}  # package -> [files, bytes, lines, cog, fan_in, fan_out]
+pkg_crap = defaultdict(list)
 for r in rows:
     pkg = _district(r[0])
+    pkg_crap[pkg].append(crap_map.get(r[0]))
     a = pkg_agg.setdefault(pkg, [0, 0, 0, 0, 0, 0])
     a[0] += 1        # files
     a[1] += r[1]     # bytes
@@ -462,14 +530,15 @@ for pkg, (files, sz, lines, cog, fi, fo) in pkg_agg.items():
         fo,
         committers,
         _cochange_out('packages', pkg),
+        *_crap_cols(_crap_sum(pkg_crap[pkg]), lines),
     ))
 
 pkg_rows.sort(key=lambda r: (r[6], r[5], r[4]), reverse=True)
 
 with open(OUT_FILE_PKG, "w") as f:
-    f.write("package\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\n")
+    f.write("package\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
     for r in pkg_rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\n")
 
 print(f"wrote {len(pkg_rows)} package rows to {OUT_FILE_PKG}", file=sys.stderr)
 
@@ -478,8 +547,10 @@ print(f"wrote {len(pkg_rows)} package rows to {OUT_FILE_PKG}", file=sys.stderr)
 # are EXACT distinct counts from the per-module sets built during the git walk.
 OUT_FILE_MOD = os.path.join(OUT_DIR, "codemap-modules.tsv")
 mod_agg = {}  # module -> [files, bytes, lines, cog, fan_in, fan_out]
+mod_crap = defaultdict(list)
 for r in rows:
     mod = _module(r[0])
+    mod_crap[mod].append(crap_map.get(r[0]))
     a = mod_agg.setdefault(mod, [0, 0, 0, 0, 0, 0])
     a[0] += 1        # files
     a[1] += r[1]     # bytes
@@ -514,14 +585,15 @@ for mod, (files, sz, lines, cog, fi, fo) in mod_agg.items():
         fo,
         committers,
         _cochange_out('modules', mod),
+        *_crap_cols(_crap_sum(mod_crap[mod]), lines),
     ))
 
 mod_rows.sort(key=lambda r: (r[3], r[4]), reverse=True)   # by lines, then commits
 
 with open(OUT_FILE_MOD, "w") as f:
-    f.write("module\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\n")
+    f.write("module\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
     for r in mod_rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\n")
 
 print(f"wrote {len(mod_rows)} module rows to {OUT_FILE_MOD}", file=sys.stderr)
 

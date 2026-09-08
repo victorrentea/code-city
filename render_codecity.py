@@ -23,6 +23,53 @@ def _number(row, key, cast=float):
     return cast(value)
 
 
+def _optional(row, key, cast=float):
+    """A metric that can be genuinely ABSENT rather than zero.
+
+    CRAP and coverage exist only where a JaCoCo report covered the file, and an
+    unmeasured class is not a class measured at 0%: folding the two together would paint
+    a module nobody built as either flawless or hopeless, depending on the metric. An
+    empty cell becomes None here, null in the page, and the "not measured" grey on the
+    plate.
+    """
+    value = row.get(key, "")
+    if value is None or value == "":
+        return None
+    try:
+        return cast(value)
+    except ValueError:
+        return None
+
+
+# The CRAP columns are only carried into the page when a report was actually read.
+# Nulls for every file would otherwise add ~150 KB of "null" to a 5000-class city with
+# no coverage data to show, and the inline JSON is parsed before the first frame.
+HAS_CRAP = TSV.with_name("crap-per-file.tsv").exists()
+
+
+def _crap_fields(row):
+    """CRAP and coverage for one row, or nothing at all where there is nothing to say.
+
+    A row the report never covered carries NO keys rather than six nulls: on Spring's
+    5003 classes, of which a stray build had measured 857, spelling out the absence cost
+    half a megabyte of page that is downloaded and parsed before the first frame. The
+    page reads a missing key exactly the way it reads a null — not measured — so the
+    cheaper of the two spellings is the right one.
+    """
+    if not HAS_CRAP:
+        return {}
+    if _optional(row, "crap_max") is None:
+        return {}
+    return {
+        "coverage": _optional(row, "coverage"),
+        "crap_max": _optional(row, "crap_max"),
+        "crap_max_method": row.get("crap_max_method") or "",
+        "crap_load": _optional(row, "crap_load"),
+        "crap_per_kloc": _optional(row, "crap_per_kloc"),
+        "crappy_methods": _optional(row, "crappy_methods", int),
+    }
+
+
 _CAMEL_TOKEN = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*")
 
 
@@ -514,6 +561,7 @@ with TSV.open() as f:
             # (Robert C. Martin's package metric): 0 = maximally stable (only
             # depended upon), 1 = maximally unstable (only depends on others).
             "instability": (fan_out / (fan_in + fan_out)) if (fan_in + fan_out) else 0.0,
+            **_crap_fields(row),
             # In the current git change set (drives the change-set filter).
             "changed": path in CHANGED_FILES,
         })
@@ -551,6 +599,7 @@ if PKG_TSV.exists():
                 "fan_out": fan_out,
                 "committers": _number(row, "committers", int),
                 "instability": (fan_out / (fan_in + fan_out)) if (fan_in + fan_out) else 0.0,
+                **_crap_fields(row),
                 "cochange_out": _number(row, "cochange_out"),
                 "changed": pkg in _changed_districts,
             })
@@ -588,6 +637,7 @@ if MOD_TSV.exists():
                 "fan_out": fan_out,
                 "committers": _number(row, "committers", int),
                 "instability": (fan_out / (fan_in + fan_out)) if (fan_in + fan_out) else 0.0,
+                **_crap_fields(row),
                 "cochange_out": _number(row, "cochange_out"),
                 "changed": (mod or ".") in _changed_dirs,   # keyed like the row's path
             })
@@ -1375,6 +1425,9 @@ html = """<!doctype html>
       <option value="fan_in">incoming coupling</option>
       <option value="fan_out">outgoing coupling</option>
       <option value="cochange_out">cross-package co-change</option>
+      <option value="crap_max">CRAP &mdash; worst method</option>
+      <option value="crap_load">CRAP load</option>
+      <option value="coverage">line coverage %</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -1514,6 +1567,7 @@ const COCHANGE = inflateAdjacency(__COCHANGE_JSON__);
 // hover tooltip's colour-scale marker can place this building on the ramp.
 let activeColorMax = 1;
 let activeColorLog = false;   // whether the active colour metric is on a log ramp
+let activeColorInvert = false;   // ...and whether its ramp runs backwards (coverage)
 
 // "Build this for your own repo" overlay: reveal the copy-pasteable recipe and let the
 // reader run the very pipeline that produced this page against any other source folder.
@@ -1573,6 +1627,7 @@ const PER_KLOC = {
   cognitive_complexity: "complexity_per_kloc",
   commits: "commits_per_kloc",
   bug_commits: "bugs_per_kloc",
+  crap_load: "crap_per_kloc",
 };
 const METRIC_KNOBS = [
   { select: areaSelect, kloc: document.getElementById("areaKloc") },
@@ -1656,6 +1711,18 @@ const HAS_COCHANGE = Object.values(COCHANGE || {}).some(adj => Object.keys(adj).
 if (!HAS_COCHANGE) {
   const opt = document.querySelector('#colorMetric option[value="cochange_out"]');
   if (opt) opt.remove();
+}
+// CRAP and coverage need a JaCoCo report, which needs the repo's tests to have been RUN
+// — everything else in this city is read off the sources and the git log alone. Most
+// runs will not have one, and an option that colours every building "not measured" is
+// worse than no option, so the three of them go the same way the co-change one does.
+const CRAP_METRICS = ["crap_max", "crap_load", "coverage"];
+const HAS_CRAP = FILES.some(f => f.coverage !== undefined);
+if (!HAS_CRAP) {
+  for (const key of CRAP_METRICS) {
+    const opt = document.querySelector(`#colorMetric option[value="${key}"]`);
+    if (opt) opt.remove();
+  }
 }
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
@@ -2183,6 +2250,7 @@ function percentile(values, p) {
 // uniformly short, pale plate — the very comparison you drilled in to make is flattened
 // by files you are no longer looking at.
 function metricMax(key) {
+  if (FIXED_COLOR_MAX[key] !== undefined) return FIXED_COLOR_MAX[key];
   return percentile(visibleDataset().map(f => Number(f[key]) || 0), 0.95);
 }
 
@@ -2191,6 +2259,20 @@ function metricMax(key) {
 // those on a log ramp so the crowded low end spreads across the palette;
 // evenly-distributed metrics (instability, couplings) stay linear.
 const LOG_DEFAULT_METRICS = new Set(["commits_per_kloc", "bugs_per_kloc", "complexity_per_kloc"]);
+
+// Two metrics arrive with a meaning already attached to the number, and scaling those to
+// the p95 of what is on screen throws away the very thing that makes them worth showing.
+// CRAP's 30 is Savoia's line between "complex but tested" and crap; a coverage
+// percentage runs 0..100 by definition. Pinned, red means the same thing in a drilled
+// package as in the whole city — on the p95, the cleanest class in a clean package still
+// comes out red, which is exactly the reading a threshold metric exists to prevent.
+// crap_load is deliberately NOT here: it is a sum with no threshold anyone has defended,
+// so it keeps the relative ramp every other count gets.
+const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100 };
+
+// Coverage is the one metric where MORE is better. Its ramp therefore runs backwards —
+// red at 0%, light at 100% — so that on this page red never stops meaning "look here".
+const INVERTED_METRICS = new Set(["coverage"]);
 
 // Ticking "log" yourself pins that metric to your choice for the rest of the session;
 // metrics you never touched keep following the default above. Deliberately not
@@ -2214,12 +2296,24 @@ function colorT(value, max) {
   const t = activeColorLog
     ? Math.log1p(v) / Math.log1p(m)
     : v / m;
-  return Math.max(0, Math.min(1, t));
+  const clamped = Math.max(0, Math.min(1, t));
+  return activeColorInvert ? 1 - clamped : clamped;
 }
 
 function colorFor(value, max) {
   // Light blue (0) -> burgundy red (max): the city reads light with hot spots in red.
   return new THREE.Color(0xe8eefc).lerp(new THREE.Color(0x800020), colorT(value, max));
+}
+
+// Off the ramp entirely: a building the current metric has no measurement for. Only
+// CRAP and coverage can be in this state, and only where JaCoCo never loaded the class
+// (a module the build skipped, code generated at build time). A mid grey, because both
+// ends of the ramp are already claimed by real answers and this one is "we do not know",
+// which must not be readable as either of them.
+const UNMEASURED_COLOR = new THREE.Color(0x9aa0a6);
+function isMeasured(file, metric) {
+  const v = file[metric];
+  return v !== null && v !== undefined;
 }
 
 // Same ramp, drained of hue: light grey (0) -> slate grey (max). Used for the
@@ -2691,6 +2785,7 @@ function rebuildCity() {
   const maxColor = metricMax(colorMetric);
   activeColorMax = maxColor;   // remembered for the hover tooltip's colour-scale marker
   activeColorLog = wantsLog(colorMetric);   // ditto: log vs linear for the tick position
+  activeColorInvert = INVERTED_METRICS.has(colorMetric);   // ...and which end is the bad end
 
   // Streets narrow with depth, like a real city: boulevards between top-level
   // modules, alleys between leaf packages. A flat districtGap at every level costs
@@ -2782,7 +2877,7 @@ function rebuildCity() {
     const cz = leaf.y0 + (leaf.y1 - leaf.y0) / 2 - cityD / 2;
     const geometry = new THREE.BoxGeometry(width, height, depth);
     const material = new THREE.MeshStandardMaterial({
-      color: colorFor(colorValue, maxColor),
+      color: isMeasured(file, colorMetric) ? colorFor(colorValue, maxColor) : UNMEASURED_COLOR,
       roughness: 0.58,
       metalness: 0.06,
     });
@@ -4358,7 +4453,36 @@ const HOVER_PROPS = [
   { key: "fan_out", label: "outgoing coupling (fan out)" },
   { key: "instability", label: "instability Ce/(Ce+Ca)" },
   { key: "cochange_out", label: "cross-package co-change" },
+  // Only in a city built with a JaCoCo report; `crap` marks the rows that go with it.
+  { key: "coverage", label: "line coverage", crap: true, fmt: pctOrUnmeasured },
+  { key: "crap_max", label: "worst method CRAP", crap: true, fmt: crapOrUnmeasured,
+    note: worstMethodNote },
+  { key: "crap_load", label: "CRAP load", crap: true, sub: "crap_per_kloc",
+    fmt: crapOrUnmeasured },
 ];
+
+// "not measured" and 0 are different findings, and the hover is the only place that can
+// say which one a grey building is. Spelling it out costs one line and stops a reader
+// from filing an unbuilt module as untested code.
+const UNMEASURED_NOTE = '<span class="perkloc">not measured</span>';
+function pctOrUnmeasured(v) {
+  return (v === null || v === undefined) ? UNMEASURED_NOTE : fmtMetric(Number(v)) + "%";
+}
+function crapOrUnmeasured(v) {
+  return (v === null || v === undefined) ? UNMEASURED_NOTE : fmtMetric(Number(v));
+}
+
+// CRAP is a METHOD's number; a class only has one because we took its worst. Naming that
+// method is what turns "this class is crap" into somewhere to actually go, and in a
+// package or module row it names the single worst method anywhere inside it.
+function worstMethodNote(file) {
+  if (!isMeasured(file, "crap_max") || !file.crap_max_method) return "";
+  const crappy = Number(file.crappy_methods) || 0;
+  const over = crappy > 1 ? `, ${crappy} methods over 30`
+             : crappy === 1 ? ", the only one over 30"
+             : "";
+  return ` <span class="perkloc">in ${escapeXml(file.crap_max_method)}()${over}</span>`;
+}
 
 // Trailing marker(s) for whichever of area / height / colour this metric drives:
 //   AREA → left/right arrow · HEIGHT → up/down arrow · COLOUR → a light→red scale bar
@@ -4370,6 +4494,7 @@ function marksFor(file, ...keys) {
     if (key === areaMetricKey()) marks.push('<span class="mk-area" title="area / footprint">&#x2194;&#xFE0F;</span>');
     if (key === heightMetricKey()) marks.push('<span class="mk-height" title="height">&#x2195;&#xFE0F;</span>');
     if (key === colorMetricKey()) {
+      if (!isMeasured(file, key)) continue;   // no measurement, no place on the scale
       const t = colorT(Number(file[key]) || 0, activeColorMax);
       marks.push('<span class="cbar" title="colour scale (light-&gt;red, capped at 95th pct)">' +
         `<span class="cbar-mark" style="left:${(t * 100).toFixed(1)}%"></span></span>`);
@@ -4393,10 +4518,12 @@ function formatHover(file) {
   const items = [];
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
+    if (p.crap && !HAS_CRAP) continue;   // no report was read: the row has nothing to say
     const val = p.fmt ? p.fmt(file[p.key]) : fmtMetric(Number(file[p.key]) || 0);
     let label = `${p.label}: <b>${val}</b>${wasNote(file, p.key, p.fmt)}`;
+    if (p.note) label += p.note(file);
     let on = active.has(p.key);
-    if (p.sub) {   // fold the /KLOC density onto the same line: "commits: 4 (181.82 / KLOC)"
+    if (p.sub && isMeasured(file, p.key)) {   // fold the /KLOC density onto the same line: "commits: 4 (181.82 / KLOC)"
       const subVal = fmtMetric(Number(file[p.sub]) || 0);
       label += ` <span class="perkloc">(${subVal} / KLOC)</span>${wasNote(file, p.sub)}`;
       on = on || active.has(p.sub);
@@ -5274,7 +5401,14 @@ const PRESETS = [
     metrics: ["bytes", "lines", "cognitive_complexity"], kloc: [false, false, false], log: false },
   { dot: "#4f46e5", label: "Dependencies — who is depended on, who depends",
     metrics: ["bytes", "fan_in", "fan_out"], kloc: [false, false, false], log: false },
-];
+  { dot: "#b45309", label: "CRAP — complexity the tests never covered",
+    metrics: ["bytes", "cognitive_complexity", "crap_max"], kloc: [false, false, false], log: false },
+  { dot: "#15803d", label: "Coverage — what the tests actually run",
+    metrics: ["bytes", "lines", "coverage"], kloc: [false, false, false], log: false },
+// A preset is only offered when the city HAS the metrics it names. The two above need a
+// JaCoCo report; without one their colour option was removed above, and a dot that
+// silently blanks the colour dropdown is worse than a dot that was never drawn.
+].filter((p) => document.querySelector(`#colorMetric option[value="${p.metrics[2]}"]`));
 
 function applyPreset(preset) {
   // Clear the mutual lock-out first: the target metrics may still be greyed out by

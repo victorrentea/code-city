@@ -11,10 +11,20 @@
 # Pipeline:
 #   compute_complexity.py  -> complexity-per-{class,file}.tsv   (tree-sitter cognitive complexity)
 #   compute_fanio.py       -> fanio-per-file.tsv                (internal fan-in / fan-out)
+#   compute_crap.py        -> crap-per-file.tsv                 (CRAP + coverage, if a jacoco.xml exists)
 #   build_heatmap.py       -> codemap.tsv                       (joins git history + size + above)
 #   render_heatmap.py      -> codemap.html                      (self-contained Plotly page)
 #   render_codecity.py     -> codecity.html                     (Three.js CodeCity)
 #   render_combined.py     -> combined.html                     (2D codemap <-> 3D city, linked)
+#
+# Coverage signal: everything else here is read off the sources and the git log, so a
+# city builds without ever running the code. CRAP and line coverage cannot be — they need
+# a JaCoCo report, which needs the repo's tests to have run. So compute_crap.py looks for
+# a jacoco.xml where Maven and Gradle leave one and simply produces nothing when there is
+# none, and the page drops the three metrics rather than colouring every building "not
+# measured". Point CODECITY_JACOCO at the report(s) if they live somewhere else; running
+# the tests is the caller's business, not this script's, because on a repo the size of
+# Spring that is hours and this pipeline is thirty seconds.
 #
 # Bug signal: build_heatmap.py flags a commit as bug-linked when its subject matches a
 # default heuristic (a leading "fix"/"fixed"/"fixes"/"bugfix", which covers both strict
@@ -69,10 +79,12 @@ echo "repo:  $HEATMAP_REPO"
 echo "out:   $HEATMAP_OUT"
 mkdir -p "$HEATMAP_OUT"
 
-echo "[1/5] cognitive complexity (tree-sitter)..."
+echo "[1/7] cognitive complexity (tree-sitter)..."
 python3 compute_complexity.py
-echo "[2/5] fan-in / fan-out..."
+echo "[2/7] fan-in / fan-out..."
 python3 compute_fanio.py
+echo "[3/7] CRAP + coverage (JaCoCo report, if there is one)..."
+python3 compute_crap.py
 
 # Optional accurate bug signal (see the header comment above for why this is opt-in):
 # crawl the analysed repo's own GitHub bug labels into bug_issues.txt before the walk
@@ -93,7 +105,7 @@ else
   echo "[bugs] no GITHUB_TOKEN/GH_TOKEN set; skipping the GitHub bug-label crawl and relying on the subject-regex heuristic" >&2
 fi
 
-echo "[3/5] join git history + size into codemap.tsv..."
+echo "[4/7] join git history + size into codemap.tsv..."
 # Captured (not just streamed) so the subtitle below can read the walk's own bug-commit
 # count back out, rather than re-deriving it here with a second copy of the detection
 # regex that could silently drift from the one build_heatmap.py actually applied.
@@ -106,13 +118,13 @@ BUGFIX="$(sed -n -E 's/.*walked [0-9]+ commits, ([0-9]+) flagged as bug-linked.*
 BUGFIX="${BUGFIX:-0}"
 export HEATMAP_SUBTITLE="${FILES} source Java files · ${COMMITS} commits walked · ${BUGFIX} bug-fix commits."
 
-echo "[4/5] render interactive HTML..."
+echo "[5/7] render interactive HTML..."
 python3 render_heatmap.py
 
-echo "[5/6] render Code City HTML..."
+echo "[6/7] render Code City HTML..."
 HEATMAP_TITLE="$CODECITY_TITLE" python3 render_codecity.py
 
-echo "[6/6] render combined side-by-side (2D codemap <-> 3D city)..."
+echo "[7/7] render combined side-by-side (2D codemap <-> 3D city)..."
 python3 render_combined.py
 
 echo "done -> $HEATMAP_OUT/codemap.html"

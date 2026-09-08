@@ -59,6 +59,8 @@ unsetting `HEATMAP_OPEN_IN`.
 | `cognitive_complexity` | Sonar-style cognitive complexity (tree-sitter, summed over methods) |
 | `cochange_out` | of the commits that touched this file, the share that also reached outside its package, weighted by how far out ([Change coupling](#change-coupling--the-crime-scene)) |
 | `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, weighted by reference count — what the Coupling-streets overlay draws |
+| `coverage` | line coverage %, from a JaCoCo report ([CRAP and coverage](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run)) |
+| `crap_max` / `crap_load` | the worst method's CRAP in this file, and the sum over its methods |
 
 ## Pipeline
 
@@ -66,9 +68,10 @@ unsetting `HEATMAP_OPEN_IN`.
 | --- | --- | --- |
 | 1 | `compute_complexity.py` | `complexity-per-{class,file}.tsv` |
 | 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (`source`, `target`, `weight`, and the `line` in the source where the coupling first appears outside the imports) |
-| 3 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) |
-| 4 | `render_heatmap.py` | `codemap.html` |
-| 5 | `render_codecity.py` | `codecity.html` |
+| 3 | `compute_crap.py` | `crap-per-file.tsv` — CRAP and line coverage, **only** where a JaCoCo report was found |
+| 4 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) |
+| 5 | `render_heatmap.py` | `codemap.html` |
+| 6 | `render_codecity.py` | `codecity.html` |
 
 ## CodeCity
 
@@ -478,6 +481,74 @@ coupling edges, capped at `HEATMAP_COCHANGE_TOP` (20) partners per building and
 being recomputed in the browser: the distance model is the single source of truth for how bad a
 jump is, and a second copy of that curve in JS would be a second answer.
 
+## CRAP and coverage — the two metrics that need the tests to have run
+
+Everything else in this city is read off the sources and the git log, which is why a city
+of five thousand classes builds in thirty seconds without a compiler anywhere near it.
+These two cannot be: they need to know what the tests actually executed.
+
+[CRAP](https://testing.googleblog.com/2011/02/this-code-is-crap.html) — Alberto Savoia's
+Change Risk Anti-Patterns — is defined per **method**:
+
+    CRAP(m) = comp(m)^2 * (1 - cov(m))^3 + comp(m)
+
+Complexity is forgivable exactly to the degree it is tested. A straight-line method costs
+1 whether or not anyone ever ran it. A method with a cyclomatic complexity of 10 costs 10
+when it is fully covered and **1010** when it is not, and the cube is what makes the
+middle of that range fall away so fast: covering half of it still leaves 135. Savoia's
+threshold is 30.
+
+Both numbers come out of one file. A JaCoCo XML report carries, per method, a
+`COMPLEXITY` counter whose missed+covered **is** the cyclomatic complexity, next to the
+`LINE` counter that gives the coverage — so `compute_crap.py` parses a report rather than
+adding a second complexity analyser beside `compute_complexity.py`. It deliberately does
+not substitute that one's *cognitive* complexity, which is a different definition on a
+different scale and would quietly turn the formula into a number nobody defined.
+
+Run your tests, then build the city:
+
+```bash
+mvn test -Dmaven.test.failure.ignore=true     # ...or gradle test jacocoTestReport
+./generate.sh . /tmp/city
+```
+
+`-Dmaven.test.failure.ignore=true` is not optional politeness. Maven binds `jacoco:report`
+to the same `test` phase surefire fails in, so one red test aborts the phase before the
+report is written and leaves **yesterday's** `jacoco.xml` on disk — a city coloured from a
+run that no longer exists, with nothing on the page saying so.
+
+No report, no metrics: the three colour options remove themselves from the dropdown the
+way the co-change one does, rather than colouring every building "not measured".
+
+**Three things the city does differently for them.**
+
+*The ramp is pinned, not relative.* Every other colour metric scales to the p95 of what is
+on screen. A threshold metric must not: 30 is 30 in a drilled-into package as much as in
+the whole city, and on a relative ramp the cleanest class in a clean package still comes
+out red. `crap_max` is pinned at 30, `coverage` at its own 100. `crap_load` is a sum with
+no threshold anyone has defended, so it keeps the relative ramp.
+
+*Coverage runs backwards.* It is the one metric here where more is better, so its ramp is
+inverted — red at 0%, light at 100% — because on this page red has to keep meaning "look
+here".
+
+*Not measured is its own colour.* A class JaCoCo never loaded and a class at 0% coverage
+are completely different findings, and every other metric in this tool would collapse them
+into the same zero. A file with no measurement is painted a neutral grey, carries no CRAP
+keys at all in the page's JSON, and says "not measured" in the hover. Interfaces, Spring
+Data repositories and marker classes land here too: no method in them carries any
+complexity, so there is nothing to cover and a row of zeros would render them as
+flawlessly tested code.
+
+**A building is a class; CRAP is a method's number.** The colour metric is the worst
+method in the class, and the hover names it — `worst method CRAP: 420 in resolve(), 3
+methods over 30` — because "this class is crap" is only useful once it tells you where to
+go. `CRAP load` sums the whole class for the "how much of it" reading, and takes a `/KLOC`
+density like the other counts do. Packages and modules roll up the same way: worst method
+anywhere inside, load summed, coverage re-divided from the summed line counters rather
+than averaged over percentages, which would let a 3-line fully covered class outvote a
+300-line untested one.
+
 ## Performance on a big repo
 
 Measured in headless Chromium on Spring Framework (5003 classes, 565 packages, 31509
@@ -592,6 +663,7 @@ Every script is repo-agnostic and driven by env vars (`generate.sh` sets them):
 | `HEATMAP_TITLE` / `HEATMAP_SUBTITLE` | page heading text |
 | `HEATMAP_OPEN_IN` | `vscode` / `intellij` to enable ⌘/Ctrl-click-to-open (empty = off) |
 | `HEATMAP_REPO_ABS` | absolute repo root for editor links (default: `HEATMAP_REPO`) |
+| `CODECITY_JACOCO` | path(s)/glob(s) to `jacoco.xml`, `:`- or `,`-separated. Unset, `compute_crap.py` globs the repo for Maven's and Gradle's default report locations |
 | `HEATMAP_CHANGED_BASE` | **optional** override of the auto-detected base ref for the change-set filter (e.g. `origin/release-1.x`); unset = auto-detect PR base → uncommitted work → last commit |
 
 ## Provenance

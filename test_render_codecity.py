@@ -935,5 +935,138 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function wasNote", html)
 
 
+class CrapTest(unittest.TestCase):
+    """CRAP and coverage: the one pair of metrics that cannot be read off the sources.
+
+    https://testing.googleblog.com/2011/02/this-code-is-crap.html
+        CRAP(m) = comp(m)^2 * (1 - cov(m))^3 + comp(m)
+    """
+
+    JACOCO = """<?xml version="1.0" encoding="UTF-8"?>
+<report name="x">
+  <package name="com/acme/app">
+    <class name="com/acme/app/Untested" sourcefilename="Untested.java">
+      <method name="tangle" desc="()V" line="10">
+        <counter type="LINE" missed="9" covered="0"/>
+        <counter type="COMPLEXITY" missed="4" covered="0"/>
+      </method>
+    </class>
+    <class name="com/acme/app/Tested" sourcefilename="Tested.java">
+      <method name="tangle" desc="()V" line="10">
+        <counter type="LINE" missed="0" covered="9"/>
+        <counter type="COMPLEXITY" missed="0" covered="4"/>
+      </method>
+    </class>
+    <class name="com/acme/app/Marker" sourcefilename="Marker.java">
+      <counter type="CLASS" missed="1" covered="0"/>
+    </class>
+  </package>
+</report>
+"""
+
+    def repo(self, tmp):
+        """A checkout shaped enough for the walk: three sources under a Maven layout."""
+        src = Path(tmp) / "src/main/java/com/acme/app"
+        src.mkdir(parents=True)
+        for name in ("Untested", "Tested", "Marker"):
+            (src / f"{name}.java").write_text(f"class {name} {{}}\n")
+        report = Path(tmp) / "target/site/jacoco"
+        report.mkdir(parents=True)
+        (report / "jacoco.xml").write_text(self.JACOCO)
+        return src
+
+    def run_crap(self, tmp, out):
+        env = os.environ.copy()
+        env["HEATMAP_REPO"] = str(tmp)
+        env["HEATMAP_OUT"] = str(out)
+        subprocess.run(["python3", str(SCRIPT_DIR / "compute_crap.py")],
+                       check=True, cwd=SCRIPT_DIR, env=env)
+        path = Path(out) / "crap-per-file.tsv"
+        if not path.exists():
+            return None
+        with path.open() as f:
+            return {r["file"]: r for r in csv.DictReader(f, delimiter="\t")}
+
+    def test_scores_a_method_by_savoias_formula(self):
+        """Complexity 4, never run: 4^2 * 1^3 + 4 = 20. The same method fully covered
+        costs its complexity and nothing more: 4^2 * 0^3 + 4 = 4. That gap IS the metric —
+        complexity is forgivable exactly to the degree it is tested."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.repo(tmp)
+            rows = self.run_crap(tmp, tmp)
+            untested = rows["src/main/java/com/acme/app/Untested.java"]
+            tested = rows["src/main/java/com/acme/app/Tested.java"]
+            self.assertEqual("20.0", untested["crap_max"])
+            self.assertEqual("tangle", untested["crap_max_method"])
+            self.assertEqual("0", untested["cov_covered"])
+            self.assertEqual("4.0", tested["crap_max"])
+            self.assertEqual("9", tested["cov_covered"])
+
+    def test_a_class_with_no_body_is_not_a_clean_class(self):
+        """An interface or a marker has no method carrying complexity: there is nothing
+        to cover, and a row of zeros would render it as flawlessly tested code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.repo(tmp)
+            rows = self.run_crap(tmp, tmp)
+            self.assertNotIn("src/main/java/com/acme/app/Marker.java", rows)
+
+    def test_no_report_writes_nothing_and_clears_a_stale_one(self):
+        """Most runs have no jacoco.xml, and a run that loses one must not leave last
+        week's coverage standing for the page to colour today's city with."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.repo(tmp)
+            self.assertIsNotNone(self.run_crap(tmp, tmp))
+            (Path(tmp) / "target/site/jacoco/jacoco.xml").unlink()
+            self.assertIsNone(self.run_crap(tmp, tmp))
+
+    def test_the_page_carries_crap_and_paints_the_unmeasured_apart(self):
+        """Joined into the city: measured files get numbers, a file the report never
+        mentioned gets null and its own grey, and the colour ramp pins itself to 30."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.mkdir()
+            src = self.repo(tmp)
+            subprocess.run(["git", "init", "-q", str(tmp)], check=True)
+            subprocess.run(["git", "-C", str(tmp), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(tmp), "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-qm", "in"], check=True)
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(tmp)
+            env["HEATMAP_OUT"] = str(out)
+            for step in ("compute_complexity.py", "compute_fanio.py", "compute_crap.py",
+                         "build_heatmap.py", "render_codecity.py"):
+                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                               check=True, cwd=SCRIPT_DIR, env=env)
+            html = (out / "codecity.html").read_text()
+            files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html, re.S).group(1))
+            by_name = {f["name"]: f for f in files}
+            self.assertEqual(20.0, by_name["Untested"]["crap_max"])
+            self.assertEqual(0.0, by_name["Untested"]["coverage"])
+            self.assertEqual(100.0, by_name["Tested"]["coverage"])
+            # Nothing to cover is not the same claim as covering nothing: the row keeps
+            # no CRAP keys at all, which the page reads as "not measured".
+            self.assertNotIn("coverage", by_name["Marker"])
+            self.assertNotIn("crap_max", by_name["Marker"])
+            self.assertIn("const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100 };", html)
+            self.assertIn('const INVERTED_METRICS = new Set(["coverage"]);', html)
+            self.assertIn("UNMEASURED_COLOR", html)
+
+    def test_without_a_report_the_metrics_leave_no_trace(self):
+        """A city built the usual way (no tests run) must not carry a null per file or
+        offer three colour options that colour everything 'not measured'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            solo = Path(tmp) / "codemap.tsv"
+            solo.write_text(SAMPLE_TSV.read_text())
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
+                           check=True, cwd=SCRIPT_DIR, env=env)
+            html = (Path(tmp) / "codecity.html").read_text()
+            files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html, re.S).group(1))
+            self.assertNotIn("coverage", files[0])
+            self.assertIn("const HAS_CRAP = FILES.some(", html)
+            self.assertIn("if (!HAS_CRAP) {", html)
+
+
 if __name__ == "__main__":
     unittest.main()
