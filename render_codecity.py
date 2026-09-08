@@ -4487,6 +4487,14 @@ function worstMethodNote(file) {
 // Trailing marker(s) for whichever of area / height / colour this metric drives:
 //   AREA → left/right arrow · HEIGHT → up/down arrow · COLOUR → a light→red scale bar
 //   with a tick at this building's spot (value / 95th-percentile, clamped 0..1).
+function scaleNote(key) {
+  if (key === "coverage") return "colour scale, 0-100% and inverted: red is uncovered";
+  if (FIXED_COLOR_MAX[key] !== undefined) {
+    return `colour scale, pinned at ${FIXED_COLOR_MAX[key]} — CRAP's threshold, not a percentile`;
+  }
+  return "colour scale (light-&gt;red, capped at 95th pct)";
+}
+
 function marksFor(file, ...keys) {
   const marks = [];
   for (const key of keys) {
@@ -4496,7 +4504,9 @@ function marksFor(file, ...keys) {
     if (key === colorMetricKey()) {
       if (!isMeasured(file, key)) continue;   // no measurement, no place on the scale
       const t = colorT(Number(file[key]) || 0, activeColorMax);
-      marks.push('<span class="cbar" title="colour scale (light-&gt;red, capped at 95th pct)">' +
+      // The tick means something different on a pinned ramp, and saying "capped at the
+      // 95th pct" over a scale that is not would undo the one thing pinning it bought.
+      marks.push(`<span class="cbar" title="${scaleNote(key)}">` +
         `<span class="cbar-mark" style="left:${(t * 100).toFixed(1)}%"></span></span>`);
     }
   }
