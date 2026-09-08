@@ -1790,6 +1790,15 @@ if (!HAS_CRAP) {
     if (opt) opt.remove();
   }
 }
+// The acceptance report is a second, independent ask: a project can measure coverage
+// without ever running a browser suite, and then this one metric would offer itself and
+// paint the entire city "not measured". Gated on its own data, not on the group's.
+const HAS_ACCEPTANCE = FILES.some(f => f.coverage_acceptance !== undefined
+                                    && f.coverage_acceptance !== null);
+if (!HAS_ACCEPTANCE) {
+  const opt = document.querySelector('#colorMetric option[value="coverage_acceptance"]');
+  if (opt) opt.remove();
+}
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
 // is staring at a delta and needs to know which one. The tag ("commit: a5d03cb")
@@ -4521,7 +4530,7 @@ const HOVER_PROPS = [
   { key: "cochange_out", label: "cross-package co-change" },
   // Only in a city built with a JaCoCo report; `crap` marks the rows that go with it.
   { key: "coverage", label: "line coverage", crap: true, fmt: pctOrUnmeasured },
-  { key: "coverage_acceptance", label: "acceptance coverage", crap: true,
+  { key: "coverage_acceptance", label: "acceptance coverage", acceptance: true,
     fmt: pctOrUnmeasured },
   { key: "crap_max", label: "worst method CRAP", crap: true, fmt: crapOrUnmeasured,
     note: worstMethodNote },
@@ -4599,6 +4608,7 @@ function formatHover(file) {
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
     if (p.crap && !HAS_CRAP) continue;   // no report was read: the row has nothing to say
+    if (p.acceptance && !HAS_ACCEPTANCE) continue;   // ...and its own report, separately
     const val = p.fmt ? p.fmt(file[p.key]) : fmtMetric(Number(file[p.key]) || 0);
     let label = `${p.label}: <b>${val}</b>${wasNote(file, p.key, p.fmt)}`;
     if (p.note) label += p.note(file);

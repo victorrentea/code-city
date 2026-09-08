@@ -1058,6 +1058,9 @@ class CrapTest(unittest.TestCase):
             # No acceptance report was named, so that column stays blank rather than
             # claiming the browser suite reached 0% of a class it was never asked about.
             self.assertIsNone(by_name["Untested"].get("coverage_acceptance"))
+            # ...and the option removes itself rather than offering a colour that would
+            # paint the whole city "not measured".
+            self.assertIn("const HAS_ACCEPTANCE = FILES.some(", html)
             self.assertIn("UNMEASURED_COLOR", html)
 
     def test_the_before_side_comes_from_the_baseline_the_repo_carries(self):
