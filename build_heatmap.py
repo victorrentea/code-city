@@ -412,6 +412,10 @@ if os.path.exists(CRAP_FILE):
                     "crap_max_method": parts[4],
                     "crap_load": float(parts[5]),
                     "crappy_methods": int(parts[6]),
+                    # Last two, and optional: a baseline written before the acceptance
+                    # suite was measured has eight columns, not ten.
+                    "acc_covered": int(parts[8]) if len(parts) >= 10 else 0,
+                    "acc_total": int(parts[9]) if len(parts) >= 10 else 0,
                 }
     print(f"loaded CRAP/coverage for {len(crap_map)} files", file=sys.stderr)
 else:
@@ -419,16 +423,22 @@ else:
 
 
 def _crap_cols(entry, lines):
-    """The six CRAP/coverage cells of one row, blank when the unit was never measured."""
+    """The CRAP/coverage cells of one row, blank when the unit was never measured."""
     if not entry:
-        return ["", "", "", "", "", ""]
+        return ["", "", "", "", "", "", ""]
     kloc = lines / 1000.0 if lines else 0
     # A scored method with no LINE counter at all is rare but real (JaCoCo does it for
     # some synthetics), and it leaves a file with a CRAP number and no coverage to show.
     # The CRAP columns still stand; only the percentage goes blank.
     coverage = f"{100.0 * entry['cov_covered'] / entry['cov_total']:.1f}" if entry["cov_total"] else ""
+    # Blank, not 0, when no acceptance report covered this file: "the browser suite never
+    # walked through this class" and "we never asked what the browser suite reaches" are
+    # different statements, and only the first one is a finding about the tests.
+    acceptance = (f"{100.0 * entry['acc_covered'] / entry['acc_total']:.1f}"
+                  if entry.get("acc_total") else "")
     return [
         coverage,
+        acceptance,
         f"{entry['crap_max']:.1f}",
         entry["crap_max_method"],
         f"{entry['crap_load']:.1f}",
@@ -452,6 +462,8 @@ def _crap_sum(entries):
     return {
         "cov_covered": sum(e["cov_covered"] for e in measured),
         "cov_total": sum(e["cov_total"] for e in measured),
+        "acc_covered": sum(e.get("acc_covered", 0) for e in measured),
+        "acc_total": sum(e.get("acc_total", 0) for e in measured),
         "crap_max": worst["crap_max"],
         "crap_max_method": worst["crap_max_method"],
         "crap_load": sum(e["crap_load"] for e in measured),
@@ -483,9 +495,9 @@ for ap in java_files:
 rows.sort(key=lambda r: (r[6], r[4], r[3]), reverse=True)
 
 with open(OUT_FILE, "w") as f:
-    f.write("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
+    f.write("path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcoverage_acceptance\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
     for r in rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]:.2f}\t{r[6]:.2f}\t{r[7]:.3f}\t{r[8]}\t{r[9]:.2f}\t{r[10]}\t{r[11]}\t{r[12]}\t{r[13]:.3f}\t{r[14]}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]:.2f}\t{r[6]:.2f}\t{r[7]:.3f}\t{r[8]}\t{r[9]:.2f}\t{r[10]}\t{r[11]}\t{r[12]}\t{r[13]:.3f}\t{r[14]}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\n")
 
 print(f"wrote {len(rows)} rows to {OUT_FILE}", file=sys.stderr)
 
@@ -539,9 +551,9 @@ for pkg, (files, sz, lines, cog, fi, fo) in pkg_agg.items():
 pkg_rows.sort(key=lambda r: (r[6], r[5], r[4]), reverse=True)
 
 with open(OUT_FILE_PKG, "w") as f:
-    f.write("package\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
+    f.write("package\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcoverage_acceptance\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
     for r in pkg_rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\t{r[21]}\n")
 
 print(f"wrote {len(pkg_rows)} package rows to {OUT_FILE_PKG}", file=sys.stderr)
 
@@ -594,9 +606,9 @@ for mod, (files, sz, lines, cog, fi, fo) in mod_agg.items():
 mod_rows.sort(key=lambda r: (r[3], r[4]), reverse=True)   # by lines, then commits
 
 with open(OUT_FILE_MOD, "w") as f:
-    f.write("module\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
+    f.write("module\tfiles\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\tbugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\tcochange_out\tcoverage\tcoverage_acceptance\tcrap_max\tcrap_max_method\tcrap_load\tcrap_per_kloc\tcrappy_methods\n")
     for r in mod_rows:
-        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\n")
+        f.write(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}\t{r[5]}\t{r[6]:.2f}\t{r[7]:.2f}\t{r[8]:.3f}\t{r[9]}\t{r[10]:.2f}\t{r[11]}\t{r[12]}\t{r[13]}\t{r[14]:.3f}\t{r[15]}\t{r[16]}\t{r[17]}\t{r[18]}\t{r[19]}\t{r[20]}\t{r[21]}\n")
 
 print(f"wrote {len(mod_rows)} module rows to {OUT_FILE_MOD}", file=sys.stderr)
 

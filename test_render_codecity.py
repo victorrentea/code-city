@@ -1051,8 +1051,13 @@ class CrapTest(unittest.TestCase):
             # no CRAP keys at all, which the page reads as "not measured".
             self.assertNotIn("coverage", by_name["Marker"])
             self.assertNotIn("crap_max", by_name["Marker"])
-            self.assertIn("const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100 };", html)
-            self.assertIn('const INVERTED_METRICS = new Set(["coverage"]);', html)
+            self.assertIn("const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100, "
+                          "coverage_acceptance: 100 };", html)
+            self.assertIn('const INVERTED_METRICS = new Set(["coverage", "coverage_acceptance"]);',
+                          html)
+            # No acceptance report was named, so that column stays blank rather than
+            # claiming the browser suite reached 0% of a class it was never asked about.
+            self.assertIsNone(by_name["Untested"].get("coverage_acceptance"))
             self.assertIn("UNMEASURED_COLOR", html)
 
     def test_the_before_side_comes_from_the_baseline_the_repo_carries(self):
@@ -1115,6 +1120,48 @@ class CrapTest(unittest.TestCase):
             row = before["src/main/java/com/acme/app/Tested.java"]
             self.assertNotIn("coverage", row)
             self.assertIn("lines", row)
+
+    ACCEPTANCE = """<?xml version="1.0" encoding="UTF-8"?>
+<report name="x">
+  <package name="com/acme/app">
+    <class name="com/acme/app/Tested" sourcefilename="Tested.java">
+      <method name="tangle" desc="()V" line="10">
+        <counter type="LINE" missed="6" covered="3"/>
+        <counter type="COMPLEXITY" missed="0" covered="4"/>
+      </method>
+      <counter type="LINE" missed="6" covered="3"/>
+    </class>
+  </package>
+</report>
+"""
+
+    def test_acceptance_coverage_is_read_from_its_own_report(self):
+        """The browser suite runs against a JVM surefire's agent never sees, so what it
+        reaches is a separate measurement of the same classes — a second reading, not more
+        of them. A class the acceptance report does not mention gets a blank, because
+        "the browser never walked through this" and "we never asked" are different claims
+        and only the first is a finding about the tests."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.repo(tmp)
+            acc = Path(tmp) / "target/site/jacoco-acceptance"
+            acc.mkdir(parents=True)
+            (acc / "jacoco.xml").write_text(self.ACCEPTANCE)
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(tmp)
+            env["HEATMAP_OUT"] = str(tmp)
+            env["CODECITY_JACOCO_ACCEPTANCE"] = "target/site/jacoco-acceptance/jacoco.xml"
+            subprocess.run(["python3", str(SCRIPT_DIR / "compute_crap.py")],
+                           check=True, cwd=SCRIPT_DIR, env=env)
+            with (Path(tmp) / "crap-per-file.tsv").open() as f:
+                rows = {r["file"]: r for r in csv.DictReader(
+                    (l for l in f if not l.startswith("#")), delimiter="\t")}
+            tested = rows["src/main/java/com/acme/app/Tested.java"]
+            # Every test together cover all nine lines; the browser alone reaches three.
+            self.assertEqual(("9", "9"), (tested["cov_covered"], tested["cov_total"]))
+            self.assertEqual(("3", "9"), (tested["acc_covered"], tested["acc_total"]))
+            # The acceptance report says nothing about Untested.java at all.
+            untested = rows["src/main/java/com/acme/app/Untested.java"]
+            self.assertEqual(("0", "0"), (untested["acc_covered"], untested["acc_total"]))
 
     def test_without_a_report_the_metrics_leave_no_trace(self):
         """A city built the usual way (no tests run) must not carry a null per file or

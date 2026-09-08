@@ -27,7 +27,9 @@ Inputs:
 
 Output:
   - OUT_DIR/crap-per-file.tsv : file \t cov_covered \t cov_total \t crap_max \t
-    crap_max_method \t crap_load \t crappy_methods \t methods
+    crap_max_method \t crap_load \t crappy_methods \t methods \t acc_covered \t acc_total
+    The two acceptance columns come last so that a baseline written by an older run still
+    parses: every reader here indexes from the left and stops where the row does.
     Written only when a report was found; downstream every column is optional, and a
     file the report never mentions gets no row at all (see the note on absence below).
 
@@ -64,6 +66,18 @@ DEFAULT_GLOBS = [
 # Directories that hold a whole second copy of the repo (agent worktrees) or of its
 # dependencies. A jacoco.xml found in there describes somebody else's checkout.
 SKIP_SEGMENTS = {".claude", ".conductor", "node_modules", ".git"}
+
+
+def acceptance_paths():
+    """The acceptance-only report(s), if the caller named any. Never auto-globbed: a
+    report found lying around says nothing about WHICH suite produced it, and guessing
+    would put a number on the page that means something other than its label."""
+    configured = os.environ.get("CODECITY_JACOCO_ACCEPTANCE", "").replace(",", ":")
+    found = []
+    for pat in (p for p in configured.split(":") if p.strip()):
+        pat = pat if os.path.isabs(pat) else os.path.join(REPO_DIR, pat)
+        found.extend(sorted(glob.glob(pat, recursive=True)))
+    return [p for p in found if os.path.isfile(p)]
 
 
 def report_paths():
@@ -129,6 +143,39 @@ def counter(node, kind):
         if c.get("type") == kind:
             return int(c.get("missed", 0)), int(c.get("covered", 0))
     return 0, 0
+
+
+def acceptance_lines(reports, index):
+    """{repo path: [lines missed, lines covered]} across the acceptance report(s).
+
+    Only the line counters, because that is the whole question this metric answers: what
+    did the browser actually walk through. No CRAP is derived from it — CRAP is a claim
+    about whether a method is tested at all, and splitting it per suite would invite the
+    reading that a method has to be crap-free in each suite separately.
+    """
+    per_file = defaultdict(lambda: [0, 0])
+    for report in reports:
+        try:
+            root = ET.parse(report).getroot()
+        except ET.ParseError as e:
+            print(f"WARN: {report} is not parseable ({e}); skipping it", file=sys.stderr)
+            continue
+        module = os.path.relpath(os.path.dirname(report), REPO_DIR)
+        for _ in range(3):
+            module = os.path.dirname(module)
+        for pkg in root.findall("package"):
+            pkg_path = pkg.get("name", "")
+            for cls in pkg.findall("class"):
+                src = cls.get("sourcefilename")
+                if not src:
+                    continue
+                rel = resolve(index, module, pkg_path, src)
+                if rel is None:
+                    continue
+                missed, covered = counter(cls, "LINE")
+                per_file[rel][0] += missed
+                per_file[rel][1] += covered
+    return per_file
 
 
 def _head_sha():
@@ -212,6 +259,7 @@ def main():
     # which is a claim about testing that nobody made. It has nothing to measure, so it
     # goes out with the unmeasured.
     per_file = {rel: acc for rel, acc in per_file.items() if acc[6]}
+    acceptance = acceptance_lines(acceptance_paths(), index)
     rows = sorted(per_file.items(), key=lambda kv: kv[1][2], reverse=True)
     with open(OUT_FILE, "w") as f:
         # This file is worth committing on a default branch (see CODECITY_COVERAGE_BASELINE
@@ -220,15 +268,26 @@ def main():
         # measured at the single most important thing in it — a baseline that has silently
         # drifted behind its own branch reads exactly like today's number.
         f.write(f"# code-city coverage baseline, measured at {_head_sha()}\n")
-        f.write("file\tcov_covered\tcov_total\tcrap_max\tcrap_max_method\tcrap_load\tcrappy_methods\tmethods\n")
+        f.write("file\tcov_covered\tcov_total\tcrap_max\tcrap_max_method\tcrap_load"
+                "\tcrappy_methods\tmethods\tacc_covered\tacc_total\n")
         for rel, (lm, lc, worst, worst_name, load, crappy, methods) in rows:
-            f.write(f"{rel}\t{lc}\t{lm + lc}\t{worst:.1f}\t{worst_name}\t{load:.1f}\t{crappy}\t{methods}\n")
+            # A file the acceptance report never mentions is left at 0 of 0, which the
+            # join downstream reads as "no acceptance measurement" rather than as 0%.
+            am, ac = acceptance.get(rel, (0, 0))
+            f.write(f"{rel}\t{lc}\t{lm + lc}\t{worst:.1f}\t{worst_name}\t{load:.1f}"
+                    f"\t{crappy}\t{methods}\t{ac}\t{am + ac}\n")
 
     covered = sum(v[1] for v in per_file.values())
     total = sum(v[0] + v[1] for v in per_file.values())
     pct = (100.0 * covered / total) if total else 0.0
     print(f"read {len(reports)} jacoco report(s): {len(rows)} files, "
           f"{pct:.1f}% line coverage overall", file=sys.stderr)
+    if acceptance:
+        acc_covered = sum(v[1] for v in acceptance.values())
+        acc_total = sum(v[0] + v[1] for v in acceptance.values())
+        acc_pct = (100.0 * acc_covered / acc_total) if acc_total else 0.0
+        print(f"...of which the acceptance suite alone reaches {acc_pct:.1f}% "
+              f"over {len(acceptance)} files", file=sys.stderr)
     if unresolved:
         # Loud, because the failure mode is silent otherwise: the city just looks less
         # covered than it is, and nothing on the page says which classes went missing.

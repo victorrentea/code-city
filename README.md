@@ -59,7 +59,8 @@ unsetting `HEATMAP_OPEN_IN`.
 | `cognitive_complexity` | Sonar-style cognitive complexity (tree-sitter, summed over methods) |
 | `cochange_out` | of the commits that touched this file, the share that also reached outside its package, weighted by how far out ([Change coupling](#change-coupling--the-crime-scene)) |
 | `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, weighted by reference count — what the Coupling-streets overlay draws |
-| `coverage` | line coverage %, from a JaCoCo report ([CRAP and coverage](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run)) |
+| `coverage` | line coverage %, every suite merged, from a JaCoCo report ([CRAP and coverage](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run)) |
+| `coverage_acceptance` | line coverage % reached by the **acceptance suite alone** ([two suites, two numbers](#two-suites-two-numbers)) |
 | `crap_max` / `crap_load` | the worst method's CRAP in this file, and the sum over its methods |
 
 ## Pipeline
@@ -549,6 +550,41 @@ anywhere inside, load summed, coverage re-divided from the summed line counters 
 than averaged over percentages, which would let a 3-line fully covered class outvote a
 300-line untested one.
 
+### Two suites, two numbers
+
+A browser-driven acceptance suite does not run in the JVM the unit tests run in. It drives
+a *separately started* application, and the agent that measured the unit run never went
+near it — so by default every line only an acceptance test ever reaches counts as
+uncovered. For CRAP that is not noise, it is a one-directional error: the cube punishes
+`cov = 0`, so a method tested impeccably through the browser is coloured exactly like one
+nobody has ever run.
+
+Point the tool at both reports and it carries both readings:
+
+```bash
+CODECITY_JACOCO=petclinic-backend/target/site/jacoco/jacoco.xml CODECITY_JACOCO_ACCEPTANCE=petclinic-backend/target/site/jacoco-acceptance/jacoco.xml   ./generate.sh . /tmp/city
+```
+
+- **`line coverage %`** — every suite merged. This is the honest denominator for "is this
+  tested", and it is the one CRAP is computed from.
+- **`acceptance coverage %`** — what the browser alone walks through. Colour the city by it
+  and you are asking a different question: not *is this tested*, but *does any user-facing
+  journey reach this code at all*. A complex class that is red here and green on the merged
+  metric is unit-tested and unreachable from the product's own front door.
+
+The acceptance report is never auto-discovered, only named: a `jacoco.xml` found lying
+around says nothing about which suite produced it, and guessing would put a number on the
+page that means something other than its label. CRAP is deliberately **not** split per
+suite — it is a claim about whether a method is tested at all, and a per-suite CRAP invites
+the reading that a method has to be crap-free in each of them separately.
+
+Getting the second report is the fiddly part, and it is the project's job, not this tool's:
+the application JVM needs its own agent (`-javaagent:jacocoagent.jar=output=tcpserver,…`),
+the exec has to be pulled **while that JVM is still up** — a shutdown dump depends on a
+signal surviving a chain of wrapper processes — and the two `.exec` files then merge into
+the "all tests" report. PetClinic wires exactly this in `start-apps.ts`, its Playwright
+`globalTeardown` and three `jacoco` executions in its pom, if you want a worked example.
+
 ### The before side: a file the base branch carries
 
 With a change set on screen, every metric sketches what it *was*: a dashed ghost, and a
@@ -702,6 +738,7 @@ Every script is repo-agnostic and driven by env vars (`generate.sh` sets them):
 | `HEATMAP_OPEN_IN` | `vscode` / `intellij` to enable ⌘/Ctrl-click-to-open (empty = off) |
 | `HEATMAP_REPO_ABS` | absolute repo root for editor links (default: `HEATMAP_REPO`) |
 | `CODECITY_COVERAGE_BASELINE` | repo-relative path of a committed `crap-per-file.tsv`. Read out of git **at the diff's base ref** to give CRAP and coverage a "before" ([the baseline](#the-before-side-a-file-the-base-branch-carries)) |
+| `CODECITY_JACOCO_ACCEPTANCE` | path(s)/glob(s) to a report covering only the acceptance suite. Never auto-globbed — a report lying around says nothing about which suite produced it |
 | `CODECITY_JACOCO` | path(s)/glob(s) to `jacoco.xml`, `:`- or `,`-separated. Unset, `compute_crap.py` globs the repo for Maven's and Gradle's default report locations |
 | `HEATMAP_CHANGED_BASE` | **optional** override of the auto-detected base ref for the change-set filter (e.g. `origin/release-1.x`); unset = auto-detect PR base → uncommitted work → last commit |
 

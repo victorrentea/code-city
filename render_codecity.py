@@ -62,6 +62,7 @@ def _crap_fields(row):
         return {}
     return {
         "coverage": _optional(row, "coverage"),
+        "coverage_acceptance": _optional(row, "coverage_acceptance"),
         "crap_max": _optional(row, "crap_max"),
         "crap_max_method": row.get("crap_max_method") or "",
         "crap_load": _optional(row, "crap_load"),
@@ -492,6 +493,10 @@ def _baseline_at(ref):
                 "crap_max": float(parts[3]),
                 "crap_load": float(parts[5]),
                 "crappy_methods": int(parts[6]),
+                # Optional: a baseline written before the acceptance suite was measured
+                # has eight columns, and the before side simply has no acceptance number.
+                "acc_covered": int(parts[8]) if len(parts) >= 10 else 0,
+                "acc_total": int(parts[9]) if len(parts) >= 10 else 0,
             }
         except ValueError:
             continue                 # a baseline written by an older, differently shaped run
@@ -556,6 +561,8 @@ def _before_rows(ref, paths, file_history):
             kloc = lines / 1000.0 if lines else 0
             if base["cov_total"]:
                 row["coverage"] = 100.0 * base["cov_covered"] / base["cov_total"]
+            if base.get("acc_total"):
+                row["coverage_acceptance"] = 100.0 * base["acc_covered"] / base["acc_total"]
             row["crap_max"] = base["crap_max"]
             row["crap_load"] = base["crap_load"]
             row["crap_per_kloc"] = (base["crap_load"] / kloc) if kloc else 0
@@ -1485,7 +1492,8 @@ html = """<!doctype html>
       <option value="cochange_out">cross-package co-change</option>
       <option value="crap_max">CRAP &mdash; worst method</option>
       <option value="crap_load">CRAP load</option>
-      <option value="coverage">line coverage %</option>
+      <option value="coverage">line coverage % (all tests)</option>
+      <option value="coverage_acceptance">acceptance coverage % (browser only)</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -1774,7 +1782,7 @@ if (!HAS_COCHANGE) {
 // — everything else in this city is read off the sources and the git log alone. Most
 // runs will not have one, and an option that colours every building "not measured" is
 // worse than no option, so the three of them go the same way the co-change one does.
-const CRAP_METRICS = ["crap_max", "crap_load", "coverage"];
+const CRAP_METRICS = ["crap_max", "crap_load", "coverage", "coverage_acceptance"];
 const HAS_CRAP = FILES.some(f => f.coverage !== undefined);
 if (!HAS_CRAP) {
   for (const key of CRAP_METRICS) {
@@ -2326,11 +2334,11 @@ const LOG_DEFAULT_METRICS = new Set(["commits_per_kloc", "bugs_per_kloc", "compl
 // comes out red, which is exactly the reading a threshold metric exists to prevent.
 // crap_load is deliberately NOT here: it is a sum with no threshold anyone has defended,
 // so it keeps the relative ramp every other count gets.
-const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100 };
+const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100, coverage_acceptance: 100 };
 
 // Coverage is the one metric where MORE is better. Its ramp therefore runs backwards —
 // red at 0%, light at 100% — so that on this page red never stops meaning "look here".
-const INVERTED_METRICS = new Set(["coverage"]);
+const INVERTED_METRICS = new Set(["coverage", "coverage_acceptance"]);
 
 // Ticking "log" yourself pins that metric to your choice for the rest of the session;
 // metrics you never touched keep following the default above. Deliberately not
@@ -4513,6 +4521,8 @@ const HOVER_PROPS = [
   { key: "cochange_out", label: "cross-package co-change" },
   // Only in a city built with a JaCoCo report; `crap` marks the rows that go with it.
   { key: "coverage", label: "line coverage", crap: true, fmt: pctOrUnmeasured },
+  { key: "coverage_acceptance", label: "acceptance coverage", crap: true,
+    fmt: pctOrUnmeasured },
   { key: "crap_max", label: "worst method CRAP", crap: true, fmt: crapOrUnmeasured,
     note: worstMethodNote },
   { key: "crap_load", label: "CRAP load", crap: true, sub: "crap_per_kloc",
@@ -4546,7 +4556,9 @@ function worstMethodNote(file) {
 //   AREA → left/right arrow · HEIGHT → up/down arrow · COLOUR → a light→red scale bar
 //   with a tick at this building's spot (value / 95th-percentile, clamped 0..1).
 function scaleNote(key) {
-  if (key === "coverage") return "colour scale, 0-100% and inverted: red is uncovered";
+  if (key === "coverage" || key === "coverage_acceptance") {
+    return "colour scale, 0-100% and inverted: red is uncovered";
+  }
   if (FIXED_COLOR_MAX[key] !== undefined) {
     return `colour scale, pinned at ${FIXED_COLOR_MAX[key]} — CRAP's threshold, not a percentile`;
   }
@@ -5473,6 +5485,9 @@ const PRESETS = [
     metrics: ["bytes", "cognitive_complexity", "crap_max"], kloc: [false, false, false], log: false },
   { dot: "#15803d", label: "Coverage — what the tests actually run",
     metrics: ["bytes", "lines", "coverage"], kloc: [false, false, false], log: false },
+  { dot: "#0d9488", label: "Acceptance reach — what the browser alone walks through",
+    metrics: ["bytes", "cognitive_complexity", "coverage_acceptance"],
+    kloc: [false, false, false], log: false },
 // A preset is only offered when the city HAS the metrics it names. The two above need a
 // JaCoCo report; without one their colour option was removed above, and a dot that
 // silently blanks the colour dropdown is worse than a dot that was never drawn.
