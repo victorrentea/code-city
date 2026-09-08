@@ -398,8 +398,11 @@ else:
 crap_map = {}
 if os.path.exists(CRAP_FILE):
     with open(CRAP_FILE) as f:
-        next(f)
         for line in f:
+            # The file leads with a provenance stamp, because a copy of it committed as a
+            # branch's coverage baseline has to say which commit it measured.
+            if line.startswith("#") or line.startswith("file\t"):
+                continue
             parts = line.rstrip("\n").split("\t")
             if len(parts) >= 8:
                 crap_map[parts[0]] = {

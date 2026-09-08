@@ -549,6 +549,44 @@ anywhere inside, load summed, coverage re-divided from the summed line counters 
 than averaged over percentages, which would let a 3-line fully covered class outvote a
 300-line untested one.
 
+### The before side: a file the base branch carries
+
+With a change set on screen, every metric sketches what it *was*: a dashed ghost, and a
+"was 1.2 KB" beside the number. Those come from git — the file's blob at the base ref,
+re-scored in memory. CRAP and coverage cannot come from anywhere near there. They are
+facts about a **test run**, and there is no test run at the base ref.
+
+Re-running the suite there works and costs a second full build of a second checkout — on
+any repo worth drawing, more than this entire pipeline. So it goes the other way round.
+The default branch **commits the `crap-per-file.tsv` it measured**, and a city built on a
+branch reads that file back out of git at whatever ref the diff is against:
+
+```bash
+# on main, after the tests have run, once per merge:
+cp /tmp/city/crap-per-file.tsv docs/generated/codecity/coverage-baseline.tsv
+git add docs/generated/codecity/coverage-baseline.tsv && git commit
+
+# on any branch off it:
+CODECITY_COVERAGE_BASELINE=docs/generated/codecity/coverage-baseline.tsv ./generate.sh . /tmp/city
+```
+
+Nothing is re-run. The base's coverage is simply a file the base already carries, so the
+cost lands where it belongs — one test run per merge, which that branch was going to do
+anyway — and every PR built off it gets the before side for free. A changed building then
+shows its old shade behind its new one, and the hover reads `line coverage: 91% was 78%`.
+
+The file leads with the commit it was measured at:
+
+```
+# code-city coverage baseline, measured at 4d8dc1e8…
+```
+
+because a baseline that has drifted behind its own branch reads exactly like today's
+number, and that is the same failure that makes `-Dmaven.test.failure.ignore=true`
+non-optional above. Unset the variable, or point it at a ref that never carried the file,
+and the before side is simply absent — the same way fan-in, fan-out and instability have
+always been.
+
 ## Performance on a big repo
 
 Measured in headless Chromium on Spring Framework (5003 classes, 565 packages, 31509
@@ -663,6 +701,7 @@ Every script is repo-agnostic and driven by env vars (`generate.sh` sets them):
 | `HEATMAP_TITLE` / `HEATMAP_SUBTITLE` | page heading text |
 | `HEATMAP_OPEN_IN` | `vscode` / `intellij` to enable ⌘/Ctrl-click-to-open (empty = off) |
 | `HEATMAP_REPO_ABS` | absolute repo root for editor links (default: `HEATMAP_REPO`) |
+| `CODECITY_COVERAGE_BASELINE` | repo-relative path of a committed `crap-per-file.tsv`. Read out of git **at the diff's base ref** to give CRAP and coverage a "before" ([the baseline](#the-before-side-a-file-the-base-branch-carries)) |
 | `CODECITY_JACOCO` | path(s)/glob(s) to `jacoco.xml`, `:`- or `,`-separated. Unset, `compute_crap.py` globs the repo for Maven's and Gradle's default report locations |
 | `HEATMAP_CHANGED_BASE` | **optional** override of the auto-detected base ref for the change-set filter (e.g. `origin/release-1.x`); unset = auto-detect PR base → uncommitted work → last commit |
 

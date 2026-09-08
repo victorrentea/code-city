@@ -453,6 +453,51 @@ def _blob_at(ref, path):
         return None
 
 
+# ── The coverage baseline the repo carries ──────────────────────────────────
+# CRAP and coverage are the only metrics here that cannot be recovered from a blob: they
+# are facts about a test RUN, and there is no test run at the base ref. Re-running the
+# suite there would work, and costs a second full build of a second checkout — on any repo
+# worth drawing, more than the entire rest of this pipeline put together.
+#
+# So the other way round. A project that wants the comparison COMMITS the crap-per-file.tsv
+# its own default branch measured, and this reads that file back out of git at whatever ref
+# the diff is against. Nothing is re-run; the base's coverage is simply a file the base
+# already carries. The cost moves to where it belongs — one test run per merge to main,
+# which that branch was going to do anyway — and every PR built off it gets the before side
+# for free.
+#
+# The file names the commit it was measured at, so a baseline that has drifted behind its
+# own branch can be seen for what it is instead of quietly passing for today's number.
+COVERAGE_BASELINE = os.environ.get("CODECITY_COVERAGE_BASELINE", "")
+
+
+def _baseline_at(ref):
+    """{path: the CRAP columns} out of the baseline committed at `ref`, or {} without one."""
+    if not (COVERAGE_BASELINE and ref):
+        return {}
+    blob = _blob_at(ref, COVERAGE_BASELINE)
+    if blob is None:
+        return {}                    # no baseline at that ref: the comparison simply is not offered
+    rows = {}
+    for line in blob.decode("utf-8", "replace").splitlines():
+        if line.startswith("#") or line.startswith("file\t"):
+            continue                 # the provenance stamp, and the header
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 7:
+            continue
+        try:
+            rows[parts[0]] = {
+                "cov_covered": int(parts[1]),
+                "cov_total": int(parts[2]),
+                "crap_max": float(parts[3]),
+                "crap_load": float(parts[5]),
+                "crappy_methods": int(parts[6]),
+            }
+        except ValueError:
+            continue                 # a baseline written by an older, differently shaped run
+    return rows
+
+
 def _derive(lines, commits, bug_commits, cog):
     """The ratio columns, recomputed from the totals exactly as build_heatmap.py does."""
     kloc = lines / 1000.0 if lines else 0
@@ -473,6 +518,7 @@ def _before_rows(ref, paths, file_history):
     if not ref or not paths:
         return {}
     reachable = _reachable_from(ref)
+    baseline = _baseline_at(ref)
     before = {}
     for path in paths:
         blob = _blob_at(ref, path)
@@ -502,6 +548,18 @@ def _before_rows(ref, paths, file_history):
         if cog is None:
             derived.pop("complexity_per_kloc")
         row.update(derived)
+        # Only the numbers the hover and the ghost actually render: the worst method's
+        # NAME is deliberately not carried back, because nothing draws a "was, in foo()"
+        # and a value nothing reads is a value nobody maintains.
+        base = baseline.get(path)
+        if base:
+            kloc = lines / 1000.0 if lines else 0
+            if base["cov_total"]:
+                row["coverage"] = 100.0 * base["cov_covered"] / base["cov_total"]
+            row["crap_max"] = base["crap_max"]
+            row["crap_load"] = base["crap_load"]
+            row["crap_per_kloc"] = (base["crap_load"] / kloc) if kloc else 0
+            row["crappy_methods"] = base["crappy_methods"]
         before[path] = row
     return before
 

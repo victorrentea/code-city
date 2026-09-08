@@ -985,7 +985,11 @@ class CrapTest(unittest.TestCase):
         if not path.exists():
             return None
         with path.open() as f:
-            return {r["file"]: r for r in csv.DictReader(f, delimiter="\t")}
+            # The file leads with the provenance stamp a committed baseline needs.
+            lines = [l for l in f if not l.startswith("#")]
+        self.assertTrue(path.read_text().startswith("# code-city coverage baseline, "
+                                                    "measured at "))
+        return {r["file"]: r for r in csv.DictReader(lines, delimiter="\t")}
 
     def test_scores_a_method_by_savoias_formula(self):
         """Complexity 4, never run: 4^2 * 1^3 + 4 = 20. The same method fully covered
@@ -1050,6 +1054,67 @@ class CrapTest(unittest.TestCase):
             self.assertIn("const FIXED_COLOR_MAX = { crap_max: 30, coverage: 100 };", html)
             self.assertIn('const INVERTED_METRICS = new Set(["coverage"]);', html)
             self.assertIn("UNMEASURED_COLOR", html)
+
+    def test_the_before_side_comes_from_the_baseline_the_repo_carries(self):
+        """The one metric pair git cannot reconstruct from a blob: CRAP and coverage are
+        facts about a test RUN, and there is no run at the base ref. So the base commits
+        the numbers it measured, and the diff reads them back out of git — no second
+        checkout, no second suite, and the "before" side works like every other metric's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.mkdir()
+            src = self.repo(tmp)
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(tmp)
+            env["HEATMAP_OUT"] = str(out)
+            subprocess.run(["python3", str(SCRIPT_DIR / "compute_crap.py")],
+                           check=True, cwd=SCRIPT_DIR, env=env)
+            # The base branch commits what it measured, where the config says to look.
+            baseline = Path(tmp) / "coverage-baseline.tsv"
+            shutil.copy(out / "crap-per-file.tsv", baseline)
+            subprocess.run(["git", "init", "-q", str(tmp)], check=True)
+            subprocess.run(["git", "-C", str(tmp), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(tmp), "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-qm", "base"], check=True)
+            # ...then the branch changes a file, which is the diff the city draws.
+            (src / "Tested.java").write_text("class Tested { void a() {} }\n")
+
+            env["CODECITY_COVERAGE_BASELINE"] = "coverage-baseline.tsv"
+            for step in ("compute_complexity.py", "compute_fanio.py", "compute_crap.py",
+                         "build_heatmap.py", "render_codecity.py"):
+                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                               check=True, cwd=SCRIPT_DIR, env=env)
+            html = (out / "codecity.html").read_text()
+            before = json.loads(re.search(r"const BEFORE = (\{.*?\});\n", html, re.S).group(1))
+            row = before["src/main/java/com/acme/app/Tested.java"]
+            self.assertEqual(100.0, row["coverage"])
+            self.assertEqual(4.0, row["crap_max"])
+
+    def test_a_repo_with_no_baseline_still_renders_its_change_set(self):
+        """Unset, or pointing at a ref that never carried one: the before side simply has
+        no CRAP in it, exactly as it did before any of this existed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.mkdir()
+            src = self.repo(tmp)
+            subprocess.run(["git", "init", "-q", str(tmp)], check=True)
+            subprocess.run(["git", "-C", str(tmp), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(tmp), "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-qm", "base"], check=True)
+            (src / "Tested.java").write_text("class Tested { void a() {} }\n")
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(tmp)
+            env["HEATMAP_OUT"] = str(out)
+            env["CODECITY_COVERAGE_BASELINE"] = "nothing/here.tsv"
+            for step in ("compute_complexity.py", "compute_fanio.py", "compute_crap.py",
+                         "build_heatmap.py", "render_codecity.py"):
+                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                               check=True, cwd=SCRIPT_DIR, env=env)
+            html = (out / "codecity.html").read_text()
+            before = json.loads(re.search(r"const BEFORE = (\{.*?\});\n", html, re.S).group(1))
+            row = before["src/main/java/com/acme/app/Tested.java"]
+            self.assertNotIn("coverage", row)
+            self.assertIn("lines", row)
 
     def test_without_a_report_the_metrics_leave_no_trace(self):
         """A city built the usual way (no tests run) must not carry a null per file or

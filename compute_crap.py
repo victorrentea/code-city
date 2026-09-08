@@ -39,6 +39,7 @@ measured" grey rather than being given a place on the ramp it never earned.
 """
 import glob
 import os
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -130,6 +131,16 @@ def counter(node, kind):
     return 0, 0
 
 
+def _head_sha():
+    """The commit the working tree is on, or "unknown" outside a checkout."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", REPO_DIR, "rev-parse", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL).strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def crap(complexity, coverage):
     """CRAP(m), with coverage as a fraction in [0,1]."""
     return complexity ** 2 * (1.0 - coverage) ** 3 + complexity
@@ -203,6 +214,12 @@ def main():
     per_file = {rel: acc for rel, acc in per_file.items() if acc[6]}
     rows = sorted(per_file.items(), key=lambda kv: kv[1][2], reverse=True)
     with open(OUT_FILE, "w") as f:
+        # This file is worth committing on a default branch (see CODECITY_COVERAGE_BASELINE
+        # in render_codecity.py): every PR built off that branch then gets the "before" side
+        # of its coverage without re-running the suite there. Which makes the commit it was
+        # measured at the single most important thing in it — a baseline that has silently
+        # drifted behind its own branch reads exactly like today's number.
+        f.write(f"# code-city coverage baseline, measured at {_head_sha()}\n")
         f.write("file\tcov_covered\tcov_total\tcrap_max\tcrap_max_method\tcrap_load\tcrappy_methods\tmethods\n")
         for rel, (lm, lc, worst, worst_name, load, crappy, methods) in rows:
             f.write(f"{rel}\t{lc}\t{lm + lc}\t{worst:.1f}\t{worst_name}\t{load:.1f}\t{crappy}\t{methods}\n")
