@@ -1303,8 +1303,23 @@ html = """<!doctype html>
     cursor: pointer;
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
     transition: background 120ms ease, color 120ms ease;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    text-align: left;
+  }
+  /* The URL rides permanently under the label: these pages are shown on recorded
+     video, where a reader can only retype what is actually on screen. */
+  .howto-url {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+    letter-spacing: 0.01em;
   }
   .howto-toggle:hover { background: #1e3a8a; color: #fff; }
+  .howto-toggle:hover .howto-url { color: #dbeafe; }
   /* First-run intro overlay: an annotated building wired to the metric selectors. */
   #intro {
     position: fixed;
@@ -1552,7 +1567,8 @@ html = """<!doctype html>
 </section>
 <nav id="breadcrumb" class="breadcrumb" hidden aria-label="package scope"></nav>
 <button id="howtoToggle" class="howto-toggle" type="button" aria-expanded="false" aria-controls="howto">
-  &#9874; How to build for your own repo
+  <span class="howto-line">&#9874; How to build for your own repo</span>
+  <span class="howto-url">__TOOL_REPO__</span>
 </button>
 <section class="howto" id="howto" hidden>
   <div class="howto-card" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
@@ -5846,6 +5862,7 @@ html = (html
         .replace("__PACKAGES_JSON__", json.dumps(pkg_rows))
         .replace("__MODULES_JSON__", json.dumps(mod_rows))
         .replace("__REPO_ABS__", json.dumps(str(REPO_ABS)))
+        .replace("__TOOL_REPO__", TOOL_REPO)
         .replace("__BUILD_CMD__", json.dumps(BUILD_CMD))
         .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES & ANALYZED_PATHS)
                                                 if ANALYZED_PATHS else bool(CHANGED_FILES)))
