@@ -224,9 +224,12 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function changeMode", html)
             self.assertIn('changeMode() === "hide"', html)    # "only changed" filters the dataset
             # Translucency alone carries the signal — no border shell around changed
-            # buildings, which only crowded the city.
+            # buildings, which only crowded the city. The guard is on that shell, not on
+            # the technique: the hover glow uses one BackSide shell, on one building, only
+            # while the pointer is over it, which is the opposite of crowding.
             self.assertNotIn("addChangeOutline", html)
-            self.assertNotIn("THREE.BackSide", html)
+            self.assertEqual(1, html.count("THREE.BackSide"))
+            self.assertIn("function glowBuilding", html)
             # The page opens ON the diff — a generated city is nearly always read to
             # answer "what did this change?" — and an empty change set removes the row
             # rather than leaving a selector whose three modes all draw the same city.
@@ -235,6 +238,12 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn('changeSelect.value = "off"', html)
             # Cursor: hand over a building, arrow over empty space, 4-way move while dragging.
             self.assertIn('hoverCursor = hit ? "pointer" : "default"', html)
+            # Hovering LIGHTS a building; it never repaints it. Colour is the COLOR
+            # metric, the change set, the drained grey and the "not measured" grey
+            # already — a hover hue would be a fifth meaning on the same channel, and
+            # one the reader could not tell from the data.
+            self.assertIn("material.emissive.copy(material.color)", html)
+            self.assertNotIn("emissive.setHex(0x5a0f1e)", html)
             self.assertIn("function applyCursor", html)
             self.assertIn("let isDragging", html)
             # Flat floor package labels are spun to face the camera each frame (no upside-down text).

@@ -2127,6 +2127,13 @@ if (EMBEDDED) {
 
 // Testability hook: the emissive hex of a building by file path (gold "d4a017"
 // when the codemap is spotlighting it). Mirrors the existing __CODEMAP_3D_READY__.
+// Testability hook: whether the hover glow's halo is up, and around what size — the
+// emissive lift alone cannot be told apart from a repaint by reading one number.
+window.__cityHalo = () => hoverHalo && hoverHalo.visible
+  ? { on: true, w: +hoverHalo.scale.x.toFixed(2), h: +hoverHalo.scale.y.toFixed(2),
+      color: hoverHalo.material.color.getHexString() }
+  : { on: false };
+
 window.__cityEmissiveOf = (path) => {
   for (const entry of buildings) {
     if (entry.file.path === path) return entry.mesh.material.emissive.getHexString();
@@ -2273,6 +2280,66 @@ function applyCursor(event) {
 function updatePointer(event) {
   pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
   pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+}
+
+// ── The hover glow ──────────────────────────────────────────────────────────
+// Colour on this page is already spoken for. It is a metric — the one the COLOR dropdown
+// names — and on top of that it carries the change set, the drained grey of "highlight
+// changed", the co-change crime scene and the "not measured" grey. A hover that repaints
+// the building in a colour of its own adds one more meaning to the single channel that
+// can least afford another, and worse, one the reader cannot tell from the data.
+//
+// So the hover LIGHTS the building instead of recolouring it. Two parts, because either
+// alone fails at one end of the ramp:
+//
+//   * an emissive lift of the building's OWN current colour, so nothing appears on screen
+//     that was not already that building's hue. Obvious on a dark red block, nearly
+//     invisible on a pale one — and pale IS the low end of every ramp;
+//   * a neutral halo shell standing a little proud of the block, which reads the same
+//     whatever the building underneath is coloured, and carries the pale end.
+//
+// One shell, reused, moved and rescaled per hover — never one mesh per building, which is
+// the rule the whole hover path is written under.
+const HOVER_GLOW = 0.55;      // how far towards self-illuminated a hovered building goes
+// The shell stands proud of the block by the SAME amount on every side, so it reads as an
+// even rim rather than a shadow. That rules out a scale factor, which would multiply a
+// tower's height and leave a slab floating over it; the pad is additive per axis instead,
+// sized off the footprint so it holds its share of the block at any zoom, and clamped so a
+// one-pixel building in a 5000-class city still gets a rim and a god class does not get a
+// halo you could park in.
+const HALO_PAD_RATIO = 0.1;
+const HALO_PAD_MIN = 1.5;
+const HALO_PAD_MAX = 12;
+let hoverHalo = null;
+
+function haloMesh() {
+  if (!hoverHalo) {
+    hoverHalo = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      // BackSide so the shell is seen from within: it surrounds the block rather than
+      // hiding it. depthWrite off so it never punches a hole in what is behind it.
+      new THREE.MeshBasicMaterial({ color: 0xfff4c2, transparent: true, opacity: 0.34,
+                                    side: THREE.BackSide, depthWrite: false }));
+    hoverHalo.renderOrder = 2;
+    hoverHalo.visible = false;
+    hoverHalo.userData.kind = "halo";   // not a building, not a package: clearCity leaves it
+    scene.add(hoverHalo);
+  }
+  return hoverHalo;
+}
+
+function glowBuilding(entry) {
+  const halo = haloMesh();
+  if (!entry) { halo.visible = false; return; }
+  const material = entry.mesh.material;
+  // .color, not userData.baseColor: in "highlight changed" the building on screen is a
+  // drained grey, and a glow in the colour it would have had somewhere else is a lie.
+  material.emissive.copy(material.color).multiplyScalar(HOVER_GLOW);
+  const pad = Math.max(HALO_PAD_MIN,
+                Math.min(HALO_PAD_MAX, Math.min(entry.width, entry.depth) * HALO_PAD_RATIO));
+  halo.scale.set(entry.width + pad, entry.height + pad, entry.depth + pad);
+  halo.position.copy(entry.mesh.position);
+  halo.visible = true;
 }
 
 function pickBuilding(event) {
@@ -2458,6 +2525,7 @@ function buildHierarchy(areaMetric) {
 
 function clearCity() {
   clearStreets();        // they point at meshes this rebuild is about to dispose
+  if (hoverHalo) hoverHalo.visible = false;   // it outlives the rebuild; its target does not
   for (const label of cityLabels) {
     label.obj.removeFromParent();
     label.el.remove();
@@ -4699,6 +4767,7 @@ function onPointerMove(event, replayed) {
   for (const entry of buildings) {
     entry.mesh.material.emissive.setHex(0x000000);
   }
+  glowBuilding(null);         // the previous hover's shell, before this one claims it
   applyExternalHighlight();   // keep the codemap-linked building lit even while moving over the city
   postCityHover(hit && hit.object.userData.file ? hit.object.userData.file.path : null);
   // Coupling pipes follow the same hover as the tooltip (no-op unless "pipes" is ticked).
@@ -4718,7 +4787,7 @@ function onPointerMove(event, replayed) {
   hoverCursor = hit ? "pointer" : "default";
 
   if (hit) {
-    hit.object.material.emissive.setHex(0x5a0f1e);
+    glowBuilding(buildingByPath.get(hit.object.userData.file.path) || null);
     tooltipObj = hit.object;
     // ...and while it is answering that, Shift is not also offering to drill in.
     if (navKey && !crimeHover) { glowFloor = districtByName.get(hit.object.userData.file.district) || null; hoverCursor = "zoom-in"; }
