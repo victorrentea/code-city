@@ -954,16 +954,17 @@ html = """<!doctype html>
   }
   .presets .presetDot:hover { transform: scale(1.15); }
   .presets .presetDot.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
-  /* ...and the name of the bubble you are on, spelled out under the title: the tooltip
-     only tells you AFTER you hover, which is no help once you have clicked. It reads
-     "Custom" the moment you turn any knob away from the saved reading. Full panel width
-     and free to wrap — squeezed into the grid it was ellipsed after four words, which
-     is exactly where these labels get interesting ("...churn per KLOC"). */
+  /* ...and the name of the bubble you are on, in the line directly under the bubbles.
+     The tooltip only tells you AFTER you hover, which is no help once you have clicked,
+     so the name is written out — but as a caption to the row it belongs to, not as a
+     banner under the page title, where it was the first thing read on a panel about
+     something else and changed under the reader's eyes every time a knob moved. It
+     reads "Custom" the moment you turn any knob away from the saved reading. Aligned
+     with the bubbles and free to wrap; squeezed into a single grid cell it was ellipsed
+     after four words, which is exactly where these labels get interesting. */
   .presetName {
-    margin: 0 0 8px;
-    padding-bottom: 7px;
-    border-bottom: 1px solid #e4e9f2;
-    font-size: 12px; font-weight: 600; line-height: 1.35; color: #334155;
+    margin: -2px 0 2px;
+    font-size: 11px; font-weight: 600; line-height: 1.3; color: #52606d;
   }
   .presetName.custom { font-weight: 500; color: #7b8794; font-style: italic; }
   .controls .filterCount { min-width: 0; text-align: left; }
@@ -1487,15 +1488,15 @@ html = """<!doctype html>
       <option value="packages" id="packageOpt">Packages</option>
       <option value="modules" id="moduleOpt">Modules</option>
     </select></h1>
-  <div class="presetName" id="presetName" aria-live="polite"></div>
   <div class="controls">
     <span class="knob">Preset</span>
     <div class="presets" id="presets" role="group" aria-label="metric presets"></div>
+    <div class="presetName spanAll" id="presetName" aria-live="polite"></div>
 
     <span class="knob">Area</span>
     <select id="areaMetric">
-      <option value="bytes" selected>file size</option>
-      <option value="lines">lines of code (LOC)</option>
+      <option value="bytes">file size</option>
+      <option value="lines" selected>lines of code (LOC)</option>
       <option value="cognitive_complexity">cognitive complexity</option>
       <option value="commits">total commits</option>
       <option value="committers">committers</option>
@@ -1846,6 +1847,19 @@ const HAS_ACCEPTANCE = FILES.some(f => f.coverage_acceptance !== undefined
 if (!HAS_ACCEPTANCE) {
   const opt = document.querySelector('#colorMetric option[value="coverage_acceptance"]');
   if (opt) opt.remove();
+}
+// ...and where the report IS there, it is what the city opens on. The colour used to
+// start on total commits: true, permanent, and about nobody's afternoon -- a city
+// painted by its git log tells a reviewer holding a pull request nothing they can act
+// on. Acceptance reach does: it is the one metric here that answers "would anything
+// have caught this?", it moves when the branch adds a test, and the plate reads red
+// exactly where the browser never goes. Set on the element rather than as `selected` in
+// the markup, because the option is only in the document at all a few lines above this.
+// With AREA on LOC and HEIGHT on complexity, this lands the panel exactly on the
+// "Acceptance reach" preset, so the city also opens with a bubble lit and named.
+if (HAS_ACCEPTANCE) {
+  const colorSel = document.getElementById("colorMetric");
+  if (colorSel) colorSel.value = "coverage_acceptance";
 }
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
@@ -5583,40 +5597,35 @@ function onMetricChange() {
   rebuildCity();
 }
 
-// Ten saved answers to "what should area, height and colour mean?" — the question the
+// Seven saved answers to "what should area, height and colour mean?" — the question the
 // three dropdowns ask, and the one a newcomer has no basis to answer. Each bubble sets
 // all three metrics plus the four bits (/kloc x3, log), so a reading of the city is one
 // click away and the dropdowns stay there to show WHAT that reading is made of.
+//
+// There were thirteen, and they wrapped onto a second row of bubbles: past about seven,
+// a row of coloured dots stops being a row of buttons and becomes a palette nobody reads.
+// The six that went (bug density, instability, churn vs. team, plain size, dependencies,
+// CRAP) were each one dropdown away from one that stayed -- these are shortcuts, not the
+// only route to a metric. Area is LOC across the board now, because that is the surface
+// the city opens on and a preset that silently swapped it to bytes read as a bug.
 const PRESETS = [
-  { dot: "#2563eb", label: "Overview — size, complexity, churn per KLOC",
-    metrics: ["bytes", "cognitive_complexity", "commits"], kloc: [false, false, true], log: true },
+  { dot: "#2563eb", label: "Overview — LOC, complexity, churn per KLOC",
+    metrics: ["lines", "cognitive_complexity", "commits"], kloc: [false, false, true], log: true },
   { dot: "#dc2626", label: "Hotspots — big files that churn and break",
-    metrics: ["bytes", "commits", "bug_commits"], kloc: [false, false, false], log: true },
-  { dot: "#ea580c", label: "Bug density — bugfixes per KLOC",
-    metrics: ["lines", "bug_commits", "commits"], kloc: [false, true, true], log: true },
+    metrics: ["lines", "commits", "bug_commits"], kloc: [false, false, false], log: true },
   { dot: "#7c3aed", label: "Complexity density — cognitive load per KLOC",
     metrics: ["lines", "cognitive_complexity", "bug_commits"], kloc: [false, true, true], log: true },
   { dot: "#059669", label: "Knowledge risk — how many hands touched each file",
-    metrics: ["bytes", "committers", "commits"], kloc: [false, false, true], log: true },
+    metrics: ["lines", "committers", "commits"], kloc: [false, false, true], log: true },
   { dot: "#0891b2", label: "Coupling — outgoing vs incoming, coloured by instability",
     metrics: ["fan_out", "fan_in", "instability"], kloc: [false, false, false], log: false },
-  { dot: "#d97706", label: "Instability — Martin's I = Ce/(Ce+Ca)",
-    metrics: ["bytes", "instability", "fan_in"], kloc: [false, false, false], log: false },
-  { dot: "#db2777", label: "Churn vs. team — commits per KLOC against committers",
-    metrics: ["lines", "commits", "committers"], kloc: [false, true, false], log: false },
-  { dot: "#4b5563", label: "Plain size — bytes, lines, complexity",
-    metrics: ["bytes", "lines", "cognitive_complexity"], kloc: [false, false, false], log: false },
-  { dot: "#4f46e5", label: "Dependencies — who is depended on, who depends",
-    metrics: ["bytes", "fan_in", "fan_out"], kloc: [false, false, false], log: false },
-  { dot: "#b45309", label: "CRAP — complexity the tests never covered",
-    metrics: ["bytes", "cognitive_complexity", "crap_max"], kloc: [false, false, false], log: false },
   { dot: "#15803d", label: "Coverage — what the tests actually run",
-    metrics: ["bytes", "lines", "coverage"], kloc: [false, false, false], log: false },
+    metrics: ["lines", "cognitive_complexity", "coverage"], kloc: [false, false, false], log: false },
   { dot: "#0d9488", label: "Acceptance reach — what the browser alone walks through",
-    metrics: ["bytes", "cognitive_complexity", "coverage_acceptance"],
+    metrics: ["lines", "cognitive_complexity", "coverage_acceptance"],
     kloc: [false, false, false], log: false },
-// A preset is only offered when the city HAS the metrics it names. The two above need a
-// JaCoCo report; without one their colour option was removed above, and a dot that
+// A preset is only offered when the city HAS the metrics it names. The last two need a
+// coverage report; without one their colour option was removed above, and a dot that
 // silently blanks the colour dropdown is worse than a dot that was never drawn.
 ].filter((p) => document.querySelector(`#colorMetric option[value="${p.metrics[2]}"]`));
 
