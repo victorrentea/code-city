@@ -200,6 +200,13 @@ class RenderCodecityTest(unittest.TestCase):
             # "Build this for your own repo" recipe: button, overlay, baked-in command.
             self.assertIn('id="howtoToggle"', html)
             self.assertIn("Build a Code City for any source folder", html)
+            # ...and beneath it, in the same corner, whose idea a code city is. The plates
+            # here are shot to look like Wettel's; a reader who has never seen the original
+            # would otherwise have no way to know there is one.
+            self.assertIn('class="cityorigin"', html)
+            self.assertIn("Not an original idea", html)
+            self.assertIn('href="https://wettel.github.io/codecity.html"', html)
+            self.assertIn("Richard Wettel", html)
             self.assertIn("const BUILD_CMD =", html)
             # The recipe clones the generators from GitHub: whoever opens a published
             # city has no local checkout of them to point at.

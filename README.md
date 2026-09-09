@@ -81,6 +81,13 @@ Cmd/Ctrl-drag to rotate, scroll to zoom around the mouse cursor, and Cmd/Ctrl-do
 a building to open its Java file in VS Code. The 2D city layout is computed in-browser
 with D3 treemap; Three.js extrudes each file tile into a building.
 
+**Prior art, and the page says so.** The software city — a building per class, a district
+per package, metrics mapped to height, footprint and colour — is
+[CodeCity](https://wettel.github.io/codecity.html), by Richard Wettel (Università della
+Svizzera italiana, 2008). This repo is a re-implementation of that picture over a
+different set of metrics and a different toolchain; the credit and the link ride in the
+bottom-left corner of every page it generates, because that is where the picture is.
+
 **City geometry & camera** — tuned to Wettel's original CodeCity plates. The ground is
 a **landscape rectangle** (1.6:1), not a square, and the opening shot is *computed* from
 the city's bounding box rather than hard-coded: a long 30° lens placed far enough back

@@ -1288,11 +1288,22 @@ html = """<!doctype html>
   .crumb-current { color: #1f2933; cursor: default; }
   .crumb-current:hover { background: transparent; }
   .crumb-sep { color: #9aa5b5; font-size: 12px; }
-  .howto-toggle {
+  /* The bottom-left corner holds two things now, stacked: the offer to build one of
+     these for your own repo, and under it the credit for whose idea a code city is in
+     the first place. The corner is what is fixed to the viewport; the button inside it
+     is laid out normally, so the credit cannot drift away from it. */
+  .corner {
     position: fixed;
     left: 16px;
     bottom: 16px;
     z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    max-width: min(42ch, 38vw);
+  }
+  .howto-toggle {
     border: 1px solid #c2cad6;
     border-radius: 8px;
     background: #ffffff;
@@ -1320,6 +1331,22 @@ html = """<!doctype html>
   }
   .howto-toggle:hover { background: #1e3a8a; color: #fff; }
   .howto-toggle:hover .howto-url { color: #dbeafe; }
+  /* A city of buildings and districts is Richard Wettel's idea, not this repo's, and a
+     reader who has never met the original has no way to tell -- these plates are shot to
+     look like his. So the credit is on the page itself rather than only in the README:
+     it is where the picture is. Set below the button and quieter than it, because it is
+     a footnote to the city and not a control; the translucent card is what keeps 11px
+     type readable over whatever the plate happens to be showing underneath. */
+  .cityorigin {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: #475569;
+    background: rgba(255, 255, 255, 0.82);
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+  .cityorigin a { color: #1e3a8a; font-weight: 650; }
   /* First-run intro overlay: an annotated building wired to the metric selectors. */
   #intro {
     position: fixed;
@@ -1566,10 +1593,15 @@ html = """<!doctype html>
   </div>
 </section>
 <nav id="breadcrumb" class="breadcrumb" hidden aria-label="package scope"></nav>
-<button id="howtoToggle" class="howto-toggle" type="button" aria-expanded="false" aria-controls="howto">
-  <span class="howto-line">&#9874; How to build for your own repo</span>
-  <span class="howto-url">__TOOL_REPO__</span>
-</button>
+<div class="corner">
+  <button id="howtoToggle" class="howto-toggle" type="button" aria-expanded="false" aria-controls="howto">
+    <span class="howto-line">&#9874; How to build for your own repo</span>
+    <span class="howto-url">__TOOL_REPO__</span>
+  </button>
+  <p class="cityorigin">Not an original idea: the software city is
+    <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>,
+    by Richard Wettel (USI Lugano, 2008), re-implemented here over other metrics.</p>
+</div>
 <section class="howto" id="howto" hidden>
   <div class="howto-card" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
     <button class="howto-close" id="howtoClose" type="button" aria-label="Close">&times;</button>
@@ -3221,7 +3253,7 @@ function showLabel(L, on) {
 // canvas. Re-measured each frame — the panel grows and shrinks with its own controls.
 function panelBoxes() {
   const boxes = [];
-  for (const sel of [".panel", "#shortcuts", ".howto-toggle", ".breadcrumb"]) {
+  for (const sel of [".panel", "#shortcuts", ".corner", ".breadcrumb"]) {
     const el = document.querySelector(sel);
     if (!el || el.hidden) continue;
     // Not offsetParent: every one of these is position:fixed, for which it is always
