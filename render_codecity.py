@@ -966,6 +966,19 @@ html = """<!doctype html>
     margin: -3px 0 1px;
     font-size: 11px; font-weight: 400; line-height: 1.3; color: #52606d;
   }
+  /* Every metric here that is a term of art — cognitive complexity, instability, CRAP,
+     churn, the bus factor — has one canonical piece written about WHY it is worth
+     looking at, and that argument is not something a panel caption can make in forty
+     characters. So the caption states what the metric is and links to the argument. In
+     the note's own colour, dotted rather than solid: it is a footnote offering a source,
+     not a control, and a row of blue links under the knobs would read as the panel's
+     main event. */
+  .metricNote a {
+    color: inherit;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  .metricNote a:hover { color: #1e3a8a; text-decoration: underline solid; }
   .controls .filterCount { min-width: 0; text-align: left; }
   /* Greyed out, not hidden: the row keeps its shape when you land on a metric
      (size, committers, instability…) that has no meaningful per-KLOC form. */
@@ -1536,7 +1549,7 @@ html = """<!doctype html>
       <option value="crap_max">CRAP &mdash; worst method</option>
       <option value="crap_load">CRAP load</option>
       <option value="coverage">line coverage % (all tests)</option>
-      <option value="coverage_acceptance">acceptance coverage % (browser only)</option>
+      <option value="coverage_acceptance">acceptance coverage % (UI)</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -5605,20 +5618,33 @@ function onMetricChange() {
 // touch. Written as answers to "what am I looking at?", not as formulas: the formula is
 // in the hover card for anyone who wants it.
 const METRIC_NOTES = {
-  bytes: "how many bytes of source it holds",
-  lines: "lines of code in the file",
-  cognitive_complexity: "how hard it is to follow (Sonar's measure)",
-  commits: "how many commits have touched it",
-  bug_commits: "commits that were fixing something",
-  committers: "how many people have touched it",
-  fan_in: "how many classes depend on it",
-  fan_out: "how many classes it depends on",
-  instability: "0 = only depended on, 1 = only depends",
-  cochange_out: "how often it changes with another package",
-  crap_max: "its worst method: complexity no test ran",
-  crap_load: "how much complexity no test ran",
-  coverage: "how much of it any test runs",
-  coverage_acceptance: "how much of it the browser alone runs",
+  bytes: {note: "how many bytes of source it holds"},
+  lines: {note: "lines of code in the file",
+          href: "https://en.wikipedia.org/wiki/Source_lines_of_code"},
+  cognitive_complexity: {note: "how hard it is to follow (Sonar's measure)",
+          href: "https://www.sonarsource.com/resources/cognitive-complexity/"},
+  commits: {note: "how many commits touched it",
+          href: "https://www.microsoft.com/en-us/research/publication/use-of-relative-code-churn-measures-to-predict-system-defect-density/"},
+  bug_commits: {note: "commits that fixed something",
+          href: "https://codescene.com/blog/prioritize-technical-debt/"},
+  committers: {note: "how many people have touched it",
+          href: "https://en.wikipedia.org/wiki/Bus_factor"},
+  fan_in: {note: "how many classes depend on it",
+          href: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)"},
+  fan_out: {note: "how many classes it depends on",
+          href: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)"},
+  instability: {note: "0 = only depended on, 1 = only depends",
+          href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
+  cochange_out: {note: "how often it changes with another package",
+          href: "https://en.wikipedia.org/wiki/Logical_coupling"},
+  crap_max: {note: "its worst method: complexity no test ran",
+          href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
+  crap_load: {note: "how much complexity no test ran",
+          href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
+  coverage: {note: "how much of it any test runs",
+          href: "https://martinfowler.com/bliki/TestCoverage.html"},
+  coverage_acceptance: {note: "how much of it the browser alone runs",
+          href: "https://martinfowler.com/bliki/TestPyramid.html"},
 };
 
 // `/kloc` turns a count into a density, which is a different sentence about the same
@@ -5628,9 +5654,21 @@ function syncMetricNotes() {
     const el = document.getElementById(id);
     if (!el) continue;
     const knob = METRIC_KNOBS[i];
-    const note = METRIC_NOTES[knob.select.value] || "";
+    const entry = METRIC_NOTES[knob.select.value];
+    el.textContent = "";
+    if (!entry) continue;
     const perKloc = knob.kloc && knob.kloc.checked && !knob.kloc.disabled;
-    el.textContent = note && perKloc ? note + " — per KLOC" : note;
+    const text = perKloc ? entry.note + " — per KLOC" : entry.note;
+    // The whole sentence is the link where there is one, rather than a "?" hung off the
+    // end: the sentence is already the shortest true statement about the metric, and a
+    // reader who wants more has the words themselves to click. Costs one arrow of width.
+    if (!entry.href) { el.textContent = text; continue; }
+    const a = document.createElement("a");
+    a.href = entry.href;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = text + " \u2197";
+    el.appendChild(a);
   }
 }
 
