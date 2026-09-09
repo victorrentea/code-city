@@ -954,19 +954,18 @@ html = """<!doctype html>
   }
   .presets .presetDot:hover { transform: scale(1.15); }
   .presets .presetDot.on { box-shadow: 0 0 0 2px #fff, 0 0 0 3px currentColor; }
-  /* ...and the name of the bubble you are on, in the line directly under the bubbles.
-     The tooltip only tells you AFTER you hover, which is no help once you have clicked,
-     so the name is written out — but as a caption to the row it belongs to, not as a
-     banner under the page title, where it was the first thing read on a panel about
-     something else and changed under the reader's eyes every time a knob moved. It
-     reads "Custom" the moment you turn any knob away from the saved reading. Aligned
-     with the bubbles and free to wrap; squeezed into a single grid cell it was ellipsed
-     after four words, which is exactly where these labels get interesting. */
-  .presetName {
-    margin: -2px 0 2px;
-    font-size: 11px; font-weight: 600; line-height: 1.3; color: #52606d;
+  /* Under each of the three dropdowns, what the metric it is showing actually means.
+     This used to be one line under the bubbles naming the preset ("Overview — LOC,
+     complexity, churn per KLOC"), which explained the preset and not the city: it went
+     to "Custom" the moment anyone turned a knob, and it never said what "cognitive
+     complexity" or "instability" were — the two things a newcomer to this panel is
+     actually missing. Three notes, each under the knob it belongs to, and the preset
+     name is then redundant: you can read what a bubble did off the dropdowns it moved.
+     Deliberately not bold: a caption under a control is read after the control. */
+  .metricNote {
+    margin: -3px 0 1px;
+    font-size: 11px; font-weight: 400; line-height: 1.3; color: #52606d;
   }
-  .presetName.custom { font-weight: 500; color: #7b8794; font-style: italic; }
   .controls .filterCount { min-width: 0; text-align: left; }
   /* Greyed out, not hidden: the row keeps its shape when you land on a metric
      (size, committers, instability…) that has no meaningful per-KLOC form. */
@@ -1491,7 +1490,6 @@ html = """<!doctype html>
   <div class="controls">
     <span class="knob">Preset</span>
     <div class="presets" id="presets" role="group" aria-label="metric presets"></div>
-    <div class="presetName spanAll" id="presetName" aria-live="polite"></div>
 
     <span class="knob">Area</span>
     <select id="areaMetric">
@@ -1506,6 +1504,7 @@ html = """<!doctype html>
       <input id="areaKloc" type="checkbox" aria-label="area per KLOC"> /kloc
     </label>
     <span></span>
+    <div class="metricNote spanAll" id="areaNote"></div>
 
     <span class="knob">Height</span>
     <select id="heightMetric">
@@ -1522,12 +1521,13 @@ html = """<!doctype html>
       <input id="heightKloc" type="checkbox" aria-label="height per KLOC"> /kloc
     </label>
     <span></span>
+    <div class="metricNote spanAll" id="heightNote"></div>
 
     <span class="knob">Color</span>
     <select id="colorMetric">
       <option value="cognitive_complexity">cognitive complexity</option>
-      <option value="bug_commits">bugfix commits</option>
       <option value="commits" selected>total commits</option>
+      <option value="bug_commits">bugfix commits</option>
       <option value="committers">committers</option>
       <option value="instability">instability Ce/(Ce+Ca)</option>
       <option value="fan_in">incoming coupling</option>
@@ -1545,6 +1545,7 @@ html = """<!doctype html>
            title="Colour ramp: log instead of linear. Ticks itself to what the chosen metric wants; your own tick sticks for the session.">
       <input id="colorLog" type="checkbox" aria-label="log colour ramp"> lg
     </label>
+    <div class="metricNote spanAll" id="colorNote"></div>
 
     <span class="knob">Zoom to</span>
     <div class="filterRow" title="Drill into one package — the same scope shift-clicking a floor gives you">
@@ -5593,8 +5594,44 @@ function onMetricChange() {
   syncMetricOptions();
   syncKlocChecks();
   syncColorLogCheck();           // the ramp follows the metric, /kloc included
+  syncMetricNotes();             // ...and the line under each knob saying what it means
   markActivePreset();
   rebuildCity();
+}
+
+// What each metric MEANS, in one line, under the knob showing it. Half of these names
+// are terms of art -- cognitive complexity, instability, CRAP, fan-in -- and a dropdown
+// that offers a term of art without defining it is a dropdown most readers will not
+// touch. Written as answers to "what am I looking at?", not as formulas: the formula is
+// in the hover card for anyone who wants it.
+const METRIC_NOTES = {
+  bytes: "how many bytes of source it holds",
+  lines: "lines of code in the file",
+  cognitive_complexity: "how hard it is to follow (Sonar's measure)",
+  commits: "how many commits have touched it",
+  bug_commits: "commits that were fixing something",
+  committers: "how many people have touched it",
+  fan_in: "how many classes depend on it",
+  fan_out: "how many classes it depends on",
+  instability: "0 = only depended on, 1 = only depends",
+  cochange_out: "how often it changes with another package",
+  crap_max: "its worst method: complexity no test ran",
+  crap_load: "how much complexity no test ran",
+  coverage: "how much of it any test runs",
+  coverage_acceptance: "how much of it the browser alone runs",
+};
+
+// `/kloc` turns a count into a density, which is a different sentence about the same
+// metric, so the note says so rather than going quietly stale.
+function syncMetricNotes() {
+  for (const [i, id] of [[0, "areaNote"], [1, "heightNote"], [2, "colorNote"]]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const knob = METRIC_KNOBS[i];
+    const note = METRIC_NOTES[knob.select.value] || "";
+    const perKloc = knob.kloc && knob.kloc.checked && !knob.kloc.disabled;
+    el.textContent = note && perKloc ? note + " — per KLOC" : note;
+  }
 }
 
 // Seven saved answers to "what should area, height and colour mean?" — the question the
@@ -5644,6 +5681,7 @@ function applyPreset(preset) {
   syncKlocChecks();
   colorLogOverrides.set(colorMetricKey(), preset.log);
   syncColorLogCheck();
+  syncMetricNotes();
   markActivePreset();
   dismissIntro();
   rebuildCity();
@@ -5659,14 +5697,8 @@ function presetMatches(preset) {
 }
 
 const presetButtons = [];
-const presetNameEl = document.getElementById("presetName");
 function markActivePreset() {
   presetButtons.forEach((btn, i) => btn.classList.toggle("on", presetMatches(PRESETS[i])));
-  if (!presetNameEl) return;
-  const active = PRESETS.find(presetMatches);
-  presetNameEl.textContent = active ? active.label : "Custom";
-  presetNameEl.title = active ? active.label : "your own combination of metrics";
-  presetNameEl.classList.toggle("custom", !active);
 }
 
 const presetsRow = document.getElementById("presets");
@@ -5698,6 +5730,7 @@ if (colorLogCheck) colorLogCheck.addEventListener("change", () => {
 syncKlocChecks();                // boot with /kloc greyed out where it makes no sense
 syncColorLogCheck();             // ...the ramp the initial metric wants
 syncMetricOptions();             // ...and the three metrics locked out of each other
+syncMetricNotes();               // ...what each of the three is showing, in words
 markActivePreset();              // ...and the bubble the initial reading belongs to
 viewSelect.addEventListener("change", () => {
   dismissIntro();
