@@ -484,6 +484,11 @@ class RenderCodecityTest(unittest.TestCase):
         Cmd/Ctrl-click on a road lands on."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
+            # A git checkout, not just a folder with sources in it: which files are in
+            # the city is git's answer now (repo_files.py), so a fixture that is not a
+            # repo has no files in it at all. `git init` alone is enough — the sources
+            # below are untracked-and-not-ignored, which counts.
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
             src = repo / "src/main/java/app"
             src.mkdir(parents=True)
             (src / "OrderRepository.java").write_text(
@@ -1197,6 +1202,69 @@ class CrapTest(unittest.TestCase):
             self.assertNotIn("coverage", files[0])
             self.assertIn("const HAS_CRAP = FILES.some(", html)
             self.assertIn("if (!HAS_CRAP) {", html)
+
+
+class RepoFilesTest(unittest.TestCase):
+    """What belongs to the city is git's answer, not the folder's."""
+
+    def _repo(self, tmp):
+        subprocess.run(["git", "init", "-q", str(tmp)], check=True)
+        return Path(tmp)
+
+    def _fanio_rows(self, repo):
+        """Run the two passes that list sources, and read back which ones they saw.
+
+        compute_fanio reads compute_complexity's per-class table to resolve references,
+        so the two run in that order here the way generate.sh runs them."""
+        env = os.environ.copy()
+        env["HEATMAP_REPO"] = str(repo)
+        env["HEATMAP_OUT"] = str(repo)
+        env.pop("HEATMAP_PRUNE", None)
+        for script in ("compute_complexity.py", "compute_fanio.py"):
+            subprocess.run(["python3", str(SCRIPT_DIR / script)],
+                           check=True, cwd=str(repo), env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with (repo / "fanio-per-file.tsv").open() as f:
+            next(f)
+            return {line.split("\t")[0] for line in f if line.strip()}
+
+    def test_an_ignored_java_file_is_not_a_building(self):
+        """The bug that replaced the file walk with this.
+
+        A human-review run leaves the BASE copy of a file it is diffing in
+        `.human-review/.diffbase/<sha>/`, named `<Class>@<sha>.java` so the editor tab
+        reads as a comparison. It is a real .java file, under a real `src/main/java`
+        path, with a real package declaration — and the walk drew it as a second
+        building for a class that exists once, in a package it does not belong to.
+
+        Nothing about the path says "not mine"; only `.gitignore` does. So the listing
+        asks git, and this is the test that it still does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "OrderService.java").write_text("package app;\npublic class OrderService {}\n")
+            (repo / ".gitignore").write_text("/.human-review/\n")
+            ghost = repo / ".human-review/.diffbase/9edd4dd5/src/main/java/app"
+            ghost.mkdir(parents=True)
+            (ghost / "OrderService@9edd4dd5.java").write_text(
+                "package app;\npublic class OrderService {}\n")
+
+            rows = self._fanio_rows(repo)
+            self.assertEqual(rows, {"src/main/java/app/OrderService.java"})
+
+    def test_a_new_file_nobody_has_added_yet_is_a_building(self):
+        """The other half of the same rule, and the reason the listing is not just
+        `git ls-files`: a reviewer builds a city of a working tree, and a class written
+        this morning and not yet `git add`ed is part of what they are reviewing. It is
+        `.gitignore` that says what is noise, not the index."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "Fresh.java").write_text("package app;\npublic class Fresh {}\n")
+
+            self.assertEqual(self._fanio_rows(repo), {"src/main/java/app/Fresh.java"})
 
 
 if __name__ == "__main__":

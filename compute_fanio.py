@@ -32,6 +32,8 @@ import sys
 from collections import Counter, defaultdict
 
 import subprocess
+
+import repo_files
 _here = os.path.dirname(os.path.abspath(__file__))
 def _git_root(start):
     try:
@@ -44,7 +46,6 @@ def _git_root(start):
         return start
 REPO = os.path.abspath(os.environ.get("HEATMAP_REPO") or _git_root(_here))
 OUT_DIR = os.path.abspath(os.environ.get("HEATMAP_OUT") or REPO)
-EXTRA_PRUNE = {d for d in os.environ.get("HEATMAP_PRUNE", "").split(",") if d}
 CLASS_TSV = os.path.join(OUT_DIR, "complexity-per-class.tsv")
 OUT = os.path.join(OUT_DIR, "fanio-per-file.tsv")
 EDGES_OUT = os.path.join(OUT_DIR, "coupling-edges.tsv")
@@ -127,19 +128,11 @@ def load_class_map():
 
 
 def list_java_files():
-    out = []
-    for root, dirs, files in os.walk(REPO):
-        parts = root.split(os.sep)
-        if any(p == ".git" for p in parts) or any(p in EXTRA_PRUNE for p in parts):
-            dirs[:] = []
-            continue
-        if any(parts[i] == "src" and parts[i + 1] in ("test", "testFixtures") for i in range(len(parts) - 1)):
-            dirs[:] = []
-            continue
-        for fn in files:
-            if fn.endswith(".java"):
-                out.append(os.path.join(root, fn))
-    return out
+    """The sources this pass resolves references between — from git, not from a walk.
+
+    repo_files.py has the argument; the short version is that a walk sees whatever is in
+    the folder, and a folder collects things nobody put in the repo."""
+    return repo_files.java_sources(REPO)
 
 
 def main():

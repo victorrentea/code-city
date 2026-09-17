@@ -74,6 +74,28 @@ unsetting `HEATMAP_OPEN_IN`.
 | 5 | `render_heatmap.py` | `codemap.html` |
 | 6 | `render_codecity.py` | `codecity.html` |
 
+### Which files are in the city
+
+`git ls-files --cached --others --exclude-standard`, filtered to non-test `.java` with no
+`package-info` (`repo_files.py`). Not a walk of the folder — which is why the analysed
+directory now has to be a git checkout.
+
+The difference is the whole point. A checkout accumulates files nobody wrote: build
+output, vendored copies, an agent's scratch directory, a second checkout under a
+worktree. There used to be four `os.walk`s here with four drifting denylists of names to
+skip, and a denylist is always one name behind. The one that ended the arrangement: a
+code-review tool left the base copy of a file it was diffing at
+`.human-review/.diffbase/<sha>/…/VisitRestController@9edd4dd5.java` — a real `.java`
+file, under a real `src/main/java` path, with a real `package` line — and the city drew a
+second `VisitRestController` next to the real one.
+
+Nothing in that path says "not mine". `.gitignore` does, and every repo keeps its
+`.gitignore` current because that is what makes `git status` readable. So the listing
+asks the repo. `--others --exclude-standard` is deliberate: a class written this morning
+and not yet `git add`ed is part of the working tree under review and still gets a
+building. `HEATMAP_PRUNE` survives as a second filter, for the repo that commits its own
+`target/` — it is no longer the only thing standing between the city and a stray file.
+
 ## CodeCity
 
 `codecity.html` renders the same TSV as a Three.js CodeCity. Drag to pan,
@@ -735,7 +757,7 @@ Every script is repo-agnostic and driven by env vars (`generate.sh` sets them):
 | --- | --- |
 | `HEATMAP_REPO` | repo root to analyze (default: git toplevel of the script) |
 | `HEATMAP_OUT` | directory for all `.tsv` / `.html` output (default: `HEATMAP_REPO`) |
-| `HEATMAP_PRUNE` | comma-separated dir names to skip (build output, worktrees, …) |
+| `HEATMAP_PRUNE` | comma-separated dir names to skip, **on top of** what git already excludes ([which files are in the city](#which-files-are-in-the-city)) |
 | `HEATMAP_PYLIBS` | path to vendored tree-sitter (for `compute_complexity.py`) |
 | `HEATMAP_BUG_COMMIT_REGEX` | regex on the commit subject that flags a bug-fix commit (default: `^(fix|fixed|fixes|bugfix)\b`; `""` disables the subject heuristic) |
 | `HEATMAP_BUG_FILE` | optional file of bug **issue numbers**, matched via `gh-NNN`/`#NNN` refs (default: `bug_issues.txt` in `HEATMAP_OUT`, written by `fetch_bugs.py`) |

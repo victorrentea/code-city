@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Optional
 
 import subprocess
+
+import repo_files
 # --- vendored tree-sitter discovery (parameterized) ---
 _here = os.path.dirname(os.path.abspath(__file__))
 for _p in (os.environ.get("HEATMAP_PYLIBS"), os.path.join(_here, ".pylibs")):
@@ -40,7 +42,6 @@ def _git_root(start):
 REPO = Path(os.environ.get("HEATMAP_REPO") or _git_root(_here)).resolve()
 OUT_DIR = Path(os.environ.get("HEATMAP_OUT") or str(REPO)).resolve()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-EXTRA_PRUNE = {d for d in os.environ.get("HEATMAP_PRUNE", "").split(",") if d}
 
 # ---------------------------------------------------------------------------
 # Tree helpers
@@ -411,18 +412,6 @@ def class_directly_declared_methods(class_node):
 # ---------------------------------------------------------------------------
 
 
-def should_skip(path: Path) -> bool:
-    s = str(path)
-    if "/src/test/" in s or "/src/testFixtures/" in s:
-        return True
-    if "/build/" in s or "/.gradle/" in s or "/.pylibs/" in s:
-        return True
-    for _seg in EXTRA_PRUNE:
-        if f"/{_seg}/" in s:
-            return True
-    return False
-
-
 def complexity_of_source(src: bytes) -> int:
     """Cognitive complexity of one Java source blob, with no file on disk.
 
@@ -485,18 +474,11 @@ def process_file(abs_path: Path):
 
 
 def main():
-    java_files: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(REPO):
-        # prune common build dirs early
-        _prune = {".git", "build", ".gradle", ".pylibs", "node_modules", "out", ".idea"} | EXTRA_PRUNE
-        dirnames[:] = [d for d in dirnames if d not in _prune]
-        for fn in filenames:
-            if fn.endswith(".java"):
-                p = Path(dirpath) / fn
-                if not should_skip(p):
-                    java_files.append(p)
-
-    java_files.sort()
+    # The list comes from git, not from a walk of the filesystem — see repo_files.py for
+    # why, and for what the difference costs. It arrives sorted and already filtered to
+    # non-test sources, which is what the local should_skip() used to do here on top of
+    # its own copy of the build-directory denylist; both are gone with the walk.
+    java_files: list[Path] = [Path(p) for p in repo_files.java_sources(str(REPO))]
 
     per_class_path = OUT_DIR / "complexity-per-class.tsv"
     per_file_path = OUT_DIR / "complexity-per-file.tsv"

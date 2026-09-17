@@ -55,9 +55,13 @@ if [ ! -d "$HEATMAP_PYLIBS" ]; then
   pip3 install -q -r "$SCRIPT_DIR/requirements.txt" --target "$HEATMAP_PYLIBS"
 fi
 
-# Exclude build outputs (Maven target/, Gradle build/out/.gradle), IDE/agent
-# metadata, and git worktrees (.claude/worktrees and .conductor hold full
-# duplicate copies of the repo). Honour a pre-set value so callers can tune it.
+# A SECOND filter, on top of the one that matters. Which files are in the repo is now
+# git's answer (repo_files.py) rather than a walk of the folder, so build outputs, IDE
+# and agent metadata, vendored copies and the duplicate checkouts under .claude/worktrees
+# and .conductor are already gone: every one of them is in somebody's .gitignore, because
+# that is what makes `git status` readable. This list stays for the repo that COMMITS its
+# own target/ or vendors somebody else's sources — a real case, and one git cannot tell
+# apart from code the project wrote. Honour a pre-set value so callers can tune it.
 export HEATMAP_PRUNE="${HEATMAP_PRUNE:-target,build,out,.gradle,.claude,.conductor,node_modules,.idea,.venv,.codegraph,.serena,__pycache__,dist}"
 
 # HEATMAP_BUG_COMMIT_REGEX is intentionally left unset here so build_heatmap.py's own

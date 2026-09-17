@@ -17,6 +17,8 @@ import subprocess
 import sys
 from collections import defaultdict
 
+import repo_files
+
 _here = os.path.dirname(os.path.abspath(__file__))
 def _git_root(start):
     try:
@@ -30,7 +32,6 @@ def _git_root(start):
 REPO_DIR = os.path.abspath(os.environ.get("HEATMAP_REPO") or _git_root(_here))
 OUT_DIR = os.path.abspath(os.environ.get("HEATMAP_OUT") or REPO_DIR)
 os.makedirs(OUT_DIR, exist_ok=True)
-EXTRA_PRUNE = {d for d in os.environ.get("HEATMAP_PRUNE", "").split(",") if d}
 BUG_FILE = os.environ.get("HEATMAP_BUG_FILE", os.path.join(OUT_DIR, "bug_issues.txt"))
 # A regex on the commit SUBJECT flags a bug-fix commit directly. Two conventions feed
 # this: strict Conventional Commits (petclinic: "fix:", "fix(scope):", "fix!:") and the
@@ -129,15 +130,16 @@ def _is_build_descriptor(fn):
 
 
 def _discover_module_dirs():
+    """Every directory holding a build descriptor — the repo's own module boundaries.
+
+    Read off git's file list rather than a walk, for the reason repo_files.py gives: a
+    `pom.xml` under a vendored or generated directory is not a module of this repo, and
+    the only party that reliably knows which directories those are is the repo itself."""
     dirs = set()
-    for root, subdirs, files in os.walk(REPO_DIR):
-        parts = root.split(os.sep)
-        if any(p == ".git" for p in parts) or any(p in EXTRA_PRUNE for p in parts):
-            subdirs[:] = []
-            continue
-        if any(_is_build_descriptor(fn) for fn in files):
-            rel = os.path.relpath(root, REPO_DIR)
-            dirs.add("" if rel == "." else rel.replace(os.sep, "/"))
+    for rel in repo_files.tracked_paths(REPO_DIR):
+        head, _, base = rel.rpartition("/")
+        if _is_build_descriptor(base):
+            dirs.add(head)
     return dirs
 
 
@@ -157,14 +159,12 @@ def _module(path):
 
 
 def _counts_toward_diagram(fp):
-    """Same inclusion rule as the file walk below: non-test .java, no package-info."""
-    if not fp.endswith(".java") or fp.rsplit("/", 1)[-1] == "package-info.java":
-        return False
-    segs = fp.split("/")
-    for i in range(len(segs) - 1):
-        if segs[i] == "src" and segs[i + 1] in ("test", "testFixtures"):
-            return False
-    return True
+    """Does this repo-relative path belong in the city? Non-test .java, no package-info.
+
+    Applied to paths out of `git log`, which name files at revisions where they may no
+    longer exist. Same predicate the source listing filters on, from the same place, so
+    a class cannot count in the history and be missing from the plate."""
+    return repo_files.is_java_source(fp)
 
 # ── Change coupling: the crime-scene measure ─────────────────────────────────
 # "Files that change together belong together." The inverse of that is a smell you
@@ -339,27 +339,12 @@ proc.wait()
 print(f"walked {total_commits} commits, {total_bug_commits} flagged as bug-linked", file=sys.stderr)
 print(f"touched {len(commits_per_file)} distinct file paths (across all history)", file=sys.stderr)
 
-# collect current java files (non-test) + their bytes + line counts
-java_files = []
-for root, dirs, files in os.walk(REPO_DIR):
-    # prune hidden + test dirs
-    parts = root.split(os.sep)
-    if any(p == ".git" for p in parts) or any(p in EXTRA_PRUNE for p in parts):
-        dirs[:] = []
-        continue
-    skip = False
-    for i in range(len(parts) - 1):
-        if parts[i] == "src" and parts[i+1] in ("test", "testFixtures"):
-            skip = True
-            break
-    if skip:
-        dirs[:] = []
-        continue
-    for fn in files:
-        if fn == "package-info.java":
-            continue  # only package annotations/Javadoc — keep it out of the diagram
-        if fn.endswith(".java"):
-            java_files.append(os.path.join(root, fn))
+# collect current java files (non-test) + their bytes + line counts.
+# From git's idea of what the repo contains, not from a walk of the folder: see
+# repo_files.py. _counts_toward_diagram() above applies the same rule to the historical
+# paths coming out of `git log`, where there is no file on disk to walk in the first
+# place — the two now share one definition instead of two copies that could drift.
+java_files = repo_files.java_sources(REPO_DIR)
 
 print(f"found {len(java_files)} current non-test java files", file=sys.stderr)
 
