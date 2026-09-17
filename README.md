@@ -69,7 +69,7 @@ unsetting `HEATMAP_OPEN_IN`.
 | --- | --- | --- |
 | 1 | `compute_complexity.py` | `complexity-per-{class,file}.tsv` |
 | 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (`source`, `target`, `weight`, and the `line` in the source where the coupling first appears outside the imports) |
-| 3 | `compute_crap.py` | `crap-per-file.tsv` — CRAP and line coverage, **only** where a JaCoCo report was found |
+| 3 | `compute_crap.py` | `crap-per-file.tsv` — CRAP and line coverage. **Switched off**, see [below](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run) |
 | 4 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) |
 | 5 | `render_heatmap.py` | `codemap.html` |
 | 6 | `render_codecity.py` | `codecity.html` |
@@ -512,6 +512,21 @@ being recomputed in the browser: the distance model is the single source of trut
 jump is, and a second copy of that curve in JS would be a second answer.
 
 ## CRAP and coverage — the two metrics that need the tests to have run
+
+> **Currently switched off.** Step 3 of the pipeline is commented out in `generate.sh`.
+> The pass, its readers and the baseline plumbing all still work and are all still here;
+> the rest of this section describes them, and re-enabling is one line. Why: the section
+> below is the argument for the metrics, and it holds — but everything else on the plate
+> is free, and these two are not. A colour that needs a green test run on a machine with
+> the repo's toolchain and its database is a colour that is stale, absent, or the reason
+> the city does not get built. The before/after made it worse rather than better: with no
+> test run at the base ref, the "before" number came from a `crap-per-file.tsv` somebody
+> had remembered to commit, and a measurement whose accuracy rests on a habit is not one.
+>
+> The four options stay in the COLOR dropdown, marked *unavailable*, rather than being
+> removed from it. Coverage is the first thing people look for in a tool like this, and a
+> list that simply does not contain it answers "this cannot measure coverage" — which is
+> false and unfalsifiable from the page. Selecting one says what is missing and why.
 
 Everything else in this city is read off the sources and the git log, which is why a city
 of five thousand classes builds in thirty seconds without a compiler anywhere near it.

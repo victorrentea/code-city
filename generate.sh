@@ -17,14 +17,13 @@
 #   render_codecity.py     -> codecity.html                     (Three.js CodeCity)
 #   render_combined.py     -> combined.html                     (2D codemap <-> 3D city, linked)
 #
-# Coverage signal: everything else here is read off the sources and the git log, so a
-# city builds without ever running the code. CRAP and line coverage cannot be — they need
-# a JaCoCo report, which needs the repo's tests to have run. So compute_crap.py looks for
-# a jacoco.xml where Maven and Gradle leave one and simply produces nothing when there is
-# none, and the page drops the three metrics rather than colouring every building "not
-# measured". Point CODECITY_JACOCO at the report(s) if they live somewhere else; running
-# the tests is the caller's business, not this script's, because on a repo the size of
-# Spring that is hours and this pipeline is thirty seconds.
+# Coverage signal: NONE, for now. Everything here is read off the sources and the git log,
+# so a city builds for any checkout in thirty seconds with nothing installed and nothing
+# run. CRAP and line coverage were the two exceptions — facts about a test RUN, needing a
+# JaCoCo report, the repo's toolchain and its database — and the exception cost more than
+# the metrics were worth: see the comment at step [3] for the argument. The pass and its
+# readers are all still here and all still work; step [3] is commented out, and the three
+# colours it fed stay in the dropdown marked unavailable rather than vanishing from it.
 #
 # Bug signal: build_heatmap.py flags a commit as bug-linked when its subject matches a
 # default heuristic (a leading "fix"/"fixed"/"fixes"/"bugfix", which covers both strict
@@ -87,8 +86,35 @@ echo "[1/7] cognitive complexity (tree-sitter)..."
 python3 compute_complexity.py
 echo "[2/7] fan-in / fan-out..."
 python3 compute_fanio.py
-echo "[3/7] CRAP + coverage (JaCoCo report, if there is one)..."
-python3 compute_crap.py
+# [3/7] CRAP + coverage — SWITCHED OFF, deliberately, and left here rather than deleted.
+#
+# Both metrics are facts about a test RUN: they need a jacoco.xml, which needs the repo's
+# tests to have passed, on a machine with the repo's toolchain and its database. Every
+# other number on the plate is read off the sources and the git log in thirty seconds
+# with nothing installed. That asymmetry is the problem — not the metrics, which are
+# good ones. A city is worth looking at because you can build it for any checkout in
+# half a minute, and hanging two of its colours off a full test run means those two are
+# either stale, absent, or the reason nobody builds the city at all.
+#
+# The before/after comparison made it worse: with no test run at the base ref, the
+# "before" side came from a crap-per-file.tsv COMMITTED on the default branch, so the
+# number a reviewer read was a file somebody remembered to refresh. A metric whose
+# accuracy depends on a habit is not a measurement.
+#
+# compute_crap.py, its readers in build_heatmap.py and render_codecity.py, and the
+# baseline plumbing all still work and are all still here; this one line is the switch.
+# The options stay in the COLOR dropdown, marked unavailable, so the city says what it is
+# not showing instead of quietly offering nine colours where there were twelve.
+# echo "[3/7] CRAP + coverage (JaCoCo report, if there is one)..."
+# python3 compute_crap.py
+#
+# Not commented out: the output of the step that is. build_heatmap.py and
+# render_codecity.py decide whether this city HAS coverage by whether this file is on
+# disk, so a copy left by an earlier run of an earlier version of this script would go on
+# colouring the plate with numbers nothing in this run produced — which is the precise
+# failure mode that got the walk replaced twenty lines above. Turning a step off has to
+# turn its output off too.
+rm -f "$HEATMAP_OUT/crap-per-file.tsv"
 
 # Optional accurate bug signal (see the header comment above for why this is opt-in):
 # crawl the analysed repo's own GitHub bug labels into bug_issues.txt before the walk

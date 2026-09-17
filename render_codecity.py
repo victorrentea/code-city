@@ -979,6 +979,12 @@ html = """<!doctype html>
     text-underline-offset: 2px;
   }
   .metricNote a:hover { color: #1e3a8a; text-decoration: underline solid; }
+  /* An unavailable metric is not an error and must not read as one: no red, no icon,
+     no border. It is the same caption in the same place, in the grey the city already
+     uses for a building it could not measure (UNMEASURED_COLOR, #9aa0a6) — so the note
+     and the plate it just turned grey are visibly saying the same thing. Italic is what
+     separates "here is what this means" from "here is why there is nothing to see". */
+  .metricNote.unavailable { color: #9aa0a6; font-style: italic; }
   .controls .filterCount { min-width: 0; text-align: left; }
   /* Greyed out, not hidden: the row keeps its shape when you land on a metric
      (size, committers, instability…) that has no meaningful per-KLOC form. */
@@ -1842,25 +1848,35 @@ if (!HAS_COCHANGE) {
   if (opt) opt.remove();
 }
 // CRAP and coverage need a JaCoCo report, which needs the repo's tests to have been RUN
-// — everything else in this city is read off the sources and the git log alone. Most
-// runs will not have one, and an option that colours every building "not measured" is
-// worse than no option, so the three of them go the same way the co-change one does.
+// — everything else in this city is read off the sources and the git log alone. The
+// pipeline no longer even tries (generate.sh step [3] is switched off and says why), so
+// on every city built today this branch is the one that runs.
+//
+// These four used to be REMOVED from the dropdown, the way the co-change option still
+// is. That was wrong for a reason the co-change case does not have: coverage is the
+// metric people come to a tool like this already looking for, and a list that simply
+// does not contain it answers "this tool cannot measure coverage" — which is false, and
+// unfalsifiable from the page. Absence explains nothing. So the options stay, they stay
+// selectable, and selecting one says in the note under the knob what is missing and why.
+// The city then paints itself entirely "not measured" grey, which is the truthful
+// picture of a metric with no data behind it.
 const CRAP_METRICS = ["crap_max", "crap_load", "coverage", "coverage_acceptance"];
 const HAS_CRAP = FILES.some(f => f.coverage !== undefined);
 if (!HAS_CRAP) {
   for (const key of CRAP_METRICS) {
     const opt = document.querySelector(`#colorMetric option[value="${key}"]`);
-    if (opt) opt.remove();
+    if (opt) opt.dataset.unavailable = "1";
   }
 }
 // The acceptance report is a second, independent ask: a project can measure coverage
 // without ever running a browser suite, and then this one metric would offer itself and
-// paint the entire city "not measured". Gated on its own data, not on the group's.
+// paint the entire city "not measured". Gated on its own data, not on the group's — a
+// city WITH coverage and without an acceptance run marks this one alone.
 const HAS_ACCEPTANCE = FILES.some(f => f.coverage_acceptance !== undefined
                                     && f.coverage_acceptance !== null);
 if (!HAS_ACCEPTANCE) {
   const opt = document.querySelector('#colorMetric option[value="coverage_acceptance"]');
-  if (opt) opt.remove();
+  if (opt) opt.dataset.unavailable = "1";
 }
 // ...and where the report IS there, it is what the city opens on. The colour used to
 // start on total commits: true, permanent, and about nobody's afternoon -- a city
@@ -5647,6 +5663,12 @@ const METRIC_NOTES = {
           href: "https://martinfowler.com/bliki/TestPyramid.html"},
 };
 
+// What an option marked `data-unavailable` says instead of what it means. One sentence,
+// and it has to carry two facts: that the colour on screen is not this metric, and what
+// would have to happen for it to be. "No data" alone reads as a bug in the tool.
+const UNAVAILABLE_NOTE =
+  "unavailable \u2014 needs a test run; this city is built from sources and git alone";
+
 // `/kloc` turns a count into a density, which is a different sentence about the same
 // metric, so the note says so rather than going quietly stale.
 function syncMetricNotes() {
@@ -5656,6 +5678,16 @@ function syncMetricNotes() {
     const knob = METRIC_KNOBS[i];
     const entry = METRIC_NOTES[knob.select.value];
     el.textContent = "";
+    // The class is rewritten every pass, not toggled on the way in and off the way out:
+    // this runs on every metric change, and a modifier left behind by the previous
+    // selection is the kind of stale state that only shows up two dropdowns later.
+    el.className = "metricNote spanAll";
+    const chosen = knob.select.selectedOptions[0];
+    if (chosen && chosen.dataset.unavailable) {
+      el.classList.add("unavailable");
+      el.textContent = UNAVAILABLE_NOTE;
+      continue;             // the metric's own meaning is beside the point when it is absent
+    }
     if (!entry) continue;
     const perKloc = knob.kloc && knob.kloc.checked && !knob.kloc.disabled;
     const text = perKloc ? entry.note + " — per KLOC" : entry.note;
