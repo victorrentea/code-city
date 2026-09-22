@@ -1619,9 +1619,9 @@ html = """<!doctype html>
     <span class="howto-line">&#9874; How to build for your own repo</span>
     <span class="howto-url">__TOOL_REPO__</span>
   </button>
-  <p class="cityorigin">Not an original idea: the software city is
-    <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>,
-    by Richard Wettel (USI Lugano, 2008), re-implemented here over other metrics.</p>
+  <p class="cityorigin">Original
+    <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>
+    idea by Richard Wettel (USI Lugano, 2008).</p>
 </div>
 <section class="howto" id="howto" hidden>
   <div class="howto-card" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">

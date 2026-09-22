@@ -204,7 +204,7 @@ class RenderCodecityTest(unittest.TestCase):
             # here are shot to look like Wettel's; a reader who has never seen the original
             # would otherwise have no way to know there is one.
             self.assertIn('class="cityorigin"', html)
-            self.assertIn("Not an original idea", html)
+            self.assertIn("idea by Richard Wettel (USI Lugano, 2008)", html)
             self.assertIn('href="https://wettel.github.io/codecity.html"', html)
             self.assertIn("Richard Wettel", html)
             self.assertIn("const BUILD_CMD =", html)
