@@ -1298,13 +1298,17 @@ html = """<!doctype html>
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.3);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  /* Drill-down breadcrumb: the path from the whole repo to the package now in view. */
+  /* Drill-down breadcrumb: the path from the whole repo to the package now in view.
+     Bottom centre, the one edge of the screen nothing else claims. It used to be parked
+     under the panel at the panel's height measured ONCE, on load — so anything that grew
+     the panel afterwards (a metric note, the change-DNA legend) slid the panel under it. */
   .breadcrumb {
     position: fixed;
-    left: 16px;
-    top: calc(16px + var(--panel-h, 132px));
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 16px;
     z-index: 3;
-    max-width: min(430px, calc(100vw - 32px));
+    max-width: min(560px, calc(100vw - 32px));
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -1333,64 +1337,37 @@ html = """<!doctype html>
   .crumb-current { color: #1f2933; cursor: default; }
   .crumb-current:hover { background: transparent; }
   .crumb-sep { color: #9aa5b5; font-size: 12px; }
-  /* The bottom-left corner holds two things now, stacked: the offer to build one of
-     these for your own repo, and under it the credit for whose idea a code city is in
-     the first place. The corner is what is fixed to the viewport; the button inside it
-     is laid out normally, so the credit cannot drift away from it. */
+  /* The bottom-left corner: where the generators live, and whose idea a code city is.
+     ONE quiet card, as wide as the panel above it so the two share both edges, and
+     without a shadow — it is a footnote to the city, not a control floating over it.
+     It used to be a raised button opening a page-sized recipe; the recipe is the
+     README's job, and a link to it is all the page has to carry. */
   .corner {
     position: fixed;
     left: 16px;
     bottom: 16px;
     z-index: 3;
+    width: min(326px, calc(100vw - 32px));
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    max-width: min(42ch, 38vw);
-  }
-  .howto-toggle {
-    border: 1px solid #c2cad6;
-    border-radius: 8px;
-    background: #ffffff;
-    color: #1e3a8a;
-    font-size: 12px;
-    font-weight: 650;
-    padding: 7px 11px;
-    cursor: pointer;
-    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
-    transition: background 120ms ease, color 120ms ease;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 3px;
-    text-align: left;
-  }
-  /* The URL rides permanently under the label: these pages are shown on recorded
-     video, where a reader can only retype what is actually on screen. */
-  .howto-url {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
-    font-weight: 600;
-    color: #475569;
-    letter-spacing: 0.01em;
-  }
-  .howto-toggle:hover { background: #1e3a8a; color: #fff; }
-  .howto-toggle:hover .howto-url { color: #dbeafe; }
-  /* A city of buildings and districts is Richard Wettel's idea, not this repo's, and a
-     reader who has never met the original has no way to tell -- these plates are shot to
-     look like his. So the credit is on the page itself rather than only in the README:
-     it is where the picture is. Set below the button and quieter than it, because it is
-     a footnote to the city and not a control; the translucent card is what keeps 11px
-     type readable over whatever the plate happens to be showing underneath. */
-  .cityorigin {
-    margin: 0;
-    font-size: 11px;
-    line-height: 1.4;
-    color: #475569;
+    gap: 2px;
     background: rgba(255, 255, 255, 0.82);
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 5px 9px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #475569;
   }
+  .cityrepo { color: #1e3a8a; font-weight: 650; text-decoration: none; }
+  .cityrepo:hover { text-decoration: underline; }
+  /* The URL spelled out: these pages are shown on recorded video, where a reader can
+     only retype what is actually on screen. */
+  .cityrepo-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  /* A city of buildings and districts is Richard Wettel's idea, not this repo's, and a
+     reader who has never met the original has no way to tell -- these plates are shot to
+     look like his. So the credit is on the page itself rather than only in the README. */
+  .cityorigin { margin: 0; }
   .cityorigin a { color: #1e3a8a; font-weight: 650; }
   /* First-run intro overlay: an annotated building wired to the metric selectors. */
   #intro {
@@ -1436,80 +1413,6 @@ html = """<!doctype html>
     box-shadow: 0 8px 24px rgba(15, 23, 42, 0.3);
   }
   .intro-dismiss:hover { background: #16306e; }
-  .howto {
-    position: fixed;
-    inset: 0;
-    z-index: 5;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(15, 23, 42, 0.42);
-    backdrop-filter: blur(2px);
-  }
-  .howto[hidden] { display: none; }
-  .howto-card {
-    position: relative;
-    width: min(740px, calc(100vw - 40px));
-    max-height: calc(100vh - 60px);
-    overflow: auto;
-    background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.4);
-    padding: 22px 24px 24px;
-  }
-  .howto-card h2 { margin: 0 0 4px; font-size: 18px; }
-  .howto-card h3 { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #475467; }
-  .howto-card p, .howto-card li { font-size: 13.5px; line-height: 1.5; color: #344054; }
-  .howto-card p { margin: 0 0 12px; }
-  .howto-card ol { margin: 0 0 12px; padding-left: 20px; }
-  .howto-card li { margin: 0 0 5px; }
-  .howto-close {
-    position: absolute;
-    top: 12px;
-    right: 14px;
-    border: none;
-    background: transparent;
-    font-size: 24px;
-    line-height: 1;
-    color: #98a2b3;
-    cursor: pointer;
-  }
-  .howto-close:hover { color: #1f2933; }
-  .howto-cmd { position: relative; margin: 0 0 8px; }
-  .howto-cmd pre {
-    margin: 0;
-    padding: 14px 44px 14px 16px;
-    background: #0f172a;
-    color: #e2e8f0;
-    border-radius: 8px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12.5px;
-    line-height: 1.55;
-    overflow-x: auto;
-    white-space: pre;
-  }
-  .howto-copy {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    border: 1px solid #334155;
-    background: #1e293b;
-    color: #e2e8f0;
-    border-radius: 6px;
-    font-size: 11.5px;
-    font-weight: 600;
-    padding: 5px 10px;
-    cursor: pointer;
-  }
-  .howto-copy:hover { background: #334155; }
-  .howto-note { font-size: 12px !important; color: #667085 !important; }
-  .howto code {
-    background: #eef1f5;
-    border-radius: 4px;
-    padding: 1px 5px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.92em;
-  }
 </style>
 </head>
 <body>
@@ -1642,40 +1545,12 @@ html = """<!doctype html>
 </section>
 <nav id="breadcrumb" class="breadcrumb" hidden aria-label="package scope"></nav>
 <div class="corner">
-  <button id="howtoToggle" class="howto-toggle" type="button" aria-expanded="false" aria-controls="howto">
-    <span class="howto-line">&#9874; How to build for your own repo</span>
-    <span class="howto-url">__TOOL_REPO__</span>
-  </button>
+  <a class="cityrepo" href="__TOOL_REPO__" target="_blank" rel="noopener">&#9874; Build one for your own repo:
+    <span class="cityrepo-url">__TOOL_REPO__</span></a>
   <p class="cityorigin">Original
     <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>
     idea by Richard Wettel (USI Lugano, 2008).</p>
 </div>
-<section class="howto" id="howto" hidden>
-  <div class="howto-card" role="dialog" aria-modal="true" aria-labelledby="howtoTitle">
-    <button class="howto-close" id="howtoClose" type="button" aria-label="Close">&times;</button>
-    <h2 id="howtoTitle">Build a Code City for any source folder</h2>
-    <p>This page is a self-contained snapshot of one repository. The same generators
-      turn <em>any</em> folder of Java sources into this 3-D city &mdash; a building per
-      file, grouped into districts by package. Point the pipeline at another repo and
-      open the result:</p>
-    <div class="howto-cmd">
-      <button class="howto-copy" id="howtoCopy" type="button">Copy</button>
-      <pre id="howtoPre"></pre>
-    </div>
-    <h3>What it does</h3>
-    <ol>
-      <li><code>compute_complexity.py</code> / <code>compute_fanio.py</code> &mdash; per-file
-        cognitive complexity (Sonar-style) and internal fan-in/out (tree-sitter).</li>
-      <li><code>build_heatmap.py</code> &mdash; joins git history (commits, <code>fix:</code>
-        commits) and file size into <code>codemap.tsv</code>.</li>
-      <li><code>render_codecity.py</code> &mdash; extrudes each file into a building and
-        writes this self-contained <code>codecity.html</code> (Three.js, all data inline).</li>
-    </ol>
-    <p class="howto-note">Java sources only. Re-run anytime to refresh. <code>open</code> is
-      macOS &mdash; use <code>xdg-open</code> on Linux or <code>start</code> on Windows.
-      &#8984;/Ctrl-double-click a building in the city to jump to its file in VS Code.</p>
-  </div>
-</section>
 <div id="hover"></div>
 
 <script>
@@ -1683,7 +1558,6 @@ const FILES = __FILES_JSON__;
 const PACKAGES = __PACKAGES_JSON__;   // per-package rows (same shape) for package mode
 const MODULES = __MODULES_JSON__;     // per-Maven/Gradle-module rows (same shape) for module mode
 const REPO_ABS = __REPO_ABS__;
-const BUILD_CMD = __BUILD_CMD__;
 const HAS_CHANGES = __HAS_CHANGES__;  // any file in the current git change set?
 const CHANGE_SOURCE = __CHANGE_SOURCE__;  // what that change set is a diff OF (PR / commit / working tree)
 const COMMIT_CHOICES = __COMMIT_CHOICES__;   // recent commits that touched rendered code; empty unless the diff came from history
@@ -1734,41 +1608,6 @@ let activeColorMax = 1;
 let activeColorLog = false;   // whether the active colour metric is on a log ramp
 let activeColorInvert = false;   // ...and whether its ramp runs backwards (coverage)
 
-// "Build this for your own repo" overlay: reveal the copy-pasteable recipe and let the
-// reader run the very pipeline that produced this page against any other source folder.
-(function wireHowto() {
-  const howto = document.getElementById("howto");
-  const toggle = document.getElementById("howtoToggle");
-  const close = document.getElementById("howtoClose");
-  const copy = document.getElementById("howtoCopy");
-  document.getElementById("howtoPre").textContent = BUILD_CMD;
-
-  const open = () => { howto.hidden = false; toggle.setAttribute("aria-expanded", "true"); };
-  const dismiss = () => { howto.hidden = true; toggle.setAttribute("aria-expanded", "false"); };
-  toggle.addEventListener("click", open);
-  close.addEventListener("click", dismiss);
-  howto.addEventListener("click", (e) => { if (e.target === howto) dismiss(); });
-  window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !howto.hidden) dismiss(); });
-
-  copy.addEventListener("click", () => {
-    const done = () => { copy.textContent = "Copied!"; setTimeout(() => { copy.textContent = "Copy"; }, 1400); };
-    const fallback = () => {
-      const ta = document.createElement("textarea");
-      ta.value = BUILD_CMD;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); done(); } catch (_) { /* ignore */ }
-      ta.remove();
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(BUILD_CMD).then(done).catch(fallback);
-    } else {
-      fallback();
-    }
-  });
-})();
 </script>
 <script type="module">
 import * as THREE from "three";
@@ -3112,7 +2951,7 @@ function rebuildCity() {
     scene.add(block);
     districts.push(block);
     districtByName.set(block.userData.name, block);
-    if (dna) dnaEntryOf.set(node, addDnaFloor(node, block, topMaterial, width, depth, dnaEntryOf.get(node.parent)));
+    if (dna) dnaEntryOf.set(node, addDnaFloor(node, block, width, depth, cx, cz, topY, dnaEntryOf.get(node.parent)));
 
     addDistrictRule(cx, cz, width, depth, topY, node.depth);
     addPackageLabel(node, cx, cz, topY, width, depth);
@@ -4505,14 +4344,15 @@ function showCoChangeFor(entry) {
 // Group code by the axis it changes along — by use case, not by layer — and a package is
 // one axis. Group it by layer and every feature runs through every package, so each
 // controller/service/repository floor carries the same set of stripes as its siblings.
-// That is the picture this colour draws: the floor of every package is striped with the
-// axes of change that run through it (build_heatmap.py clusters the history into them,
+// That is the picture this colour draws: every package carries a bar on the edge that faces
+// you, striped with the axes of change that run through it (build_heatmap.py clusters the history into them,
 // see change_axes.py), each stripe as wide as that axis's share of the package's commits.
 // One colour per floor: the package follows the history. A rainbow: it cuts across it.
 //
-// On the FLOOR rather than the buildings: a set of stripes per package is one reading
-// per district, which the eye takes in over the whole plate at once; five thousand
-// buildings in ten hues is a confetti nobody can aggregate. The buildings stay a quiet
+// A bar on the district's edge rather than the buildings: one reading per district, which
+// the eye takes in over the whole plate at once; five thousand buildings in ten hues is
+// a confetti nobody can aggregate. And a bar rather than the whole floor: a floor painted
+// edge to edge in one colour reads as the package's colour, and the finding is its MIX. The buildings stay a quiet
 // grey, and ⇧ over one lights every class on its axis, wherever in the tree they live.
 //
 // Only the top-level packages are striped at first. Their children come in as you zoom
@@ -4600,25 +4440,63 @@ function isFunnel(node) {
   return node.children.some(c => c.children && c.leaves().length >= DNA_FUNNEL_SHARE * total);
 }
 
-// Called by rebuildCity for every district, parents first. The floor is striped here and
-// the entry remembers where it sits in the tree; updateDnaFloors decides each frame which
-// of them are on screen.
-function addDnaFloor(node, block, topMaterial, width, depth, parent) {
+// Called by rebuildCity for every district, parents first. The bar is made here, flat in
+// the district's ring; updateDnaFloors decides each frame whether it shows and which of
+// the four edges it lies along.
+const _dnaFlat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+const _dnaYaw = new THREE.Quaternion();
+const _dnaUp = new THREE.Vector3(0, 1, 0);
+function addDnaFloor(node, block, width, depth, cx, cz, topY, parent) {
   const level = parent.level + (isFunnel(node.parent) ? 0 : 1);
   const shares = level > 0 ? dnaShares(node) : null;
   block.userData.dna = shares;
-  const entry = { block, topMaterial, level, parent, painted: level === 1,
-                  side: Math.min(width, depth), px: 0 };
+  const entry = { block, level, parent, painted: level === 1, bar: null, edge: "",
+                  side: Math.min(width, depth), px: 0, width, depth, cx, cz };
   if (shares) {
-    topMaterial.map = dnaTexture(shares);
-    topMaterial.color.setHex(0xffffff);
-    topMaterial.needsUpdate = true;
+    // The band of ring left inside the black rule — where the name is written too, which
+    // sits on top of the bar in its white halo.
+    const rule = districtRuleWidth(node.depth);
+    entry.rule = rule;
+    entry.band = Math.max(0, districtRing(node) - rule);
+    if (entry.band > 0 && width > 2 * rule && depth > 2 * rule) {
+      const bar = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ map: dnaTexture(shares), side: THREE.DoubleSide,
+                                      depthWrite: false }));
+      bar.position.y = topY + 0.3 * cityUnit;   // over the plate, under the name (0.6)
+      bar.renderOrder = 2;
+      bar.visible = false;                       // placed by the first updateDnaFloors
+      bar.userData.kind = "package";             // disposed by clearCity's package sweep
+      scene.add(bar);
+      entry.bar = bar;
+    }
   }
-  // Below the first level a floor starts hidden, so its parent's stripes run under it
-  // until the camera comes close enough to open the parent.
-  if (level > 1) topMaterial.visible = false;
   dnaFloors.push(entry);
   return entry;
+}
+
+// Which edge of a district faces the camera, and the yaw that makes its bar read left to
+// right from there. A bar on all four edges is four copies of one answer, and the three
+// the reader is not facing are either behind the buildings or upside down.
+function facingEdge(e) {
+  const dx = camera.position.x - e.cx, dz = camera.position.z - e.cz;
+  if (Math.abs(dz) * e.width >= Math.abs(dx) * e.depth) return dz >= 0 ? "S" : "N";
+  return dx >= 0 ? "E" : "W";
+}
+const EDGE_YAW = { S: 0, N: Math.PI, E: Math.PI / 2, W: -Math.PI / 2 };
+
+function placeDnaBar(e, edge) {
+  const bar = e.bar, inset = e.rule + e.band / 2;
+  const alongX = edge === "S" || edge === "N";
+  const length = (alongX ? e.width : e.depth) - 2 * e.rule;
+  bar.scale.set(length, e.band, 1);
+  if (edge === "S") bar.position.set(e.cx, bar.position.y, e.cz + e.depth / 2 - inset);
+  if (edge === "N") bar.position.set(e.cx, bar.position.y, e.cz - e.depth / 2 + inset);
+  if (edge === "E") bar.position.set(e.cx + e.width / 2 - inset, bar.position.y, e.cz);
+  if (edge === "W") bar.position.set(e.cx - e.width / 2 + inset, bar.position.y, e.cz);
+  _dnaYaw.setFromAxisAngle(_dnaUp, EDGE_YAW[edge]);
+  bar.quaternion.copy(_dnaYaw).multiply(_dnaFlat);
+  e.edge = edge;
 }
 
 function updateDnaFloors() {
@@ -4628,18 +4506,20 @@ function updateDnaFloors() {
   const pxPerUnitAt = H / (2 * Math.tan(camera.fov * Math.PI / 360));
   for (const e of dnaFloors) {           // parents before children, as rebuildCity made them
     e.px = e.side * pxPerUnitAt / camera.position.distanceTo(e.block.position);
-    if (e.level <= 1) continue;
-    const p = e.parent;
-    const painted = p.painted && (p.level === e.level || p.px > open);
-    if (painted !== e.painted) {
-      e.painted = painted;
-      e.topMaterial.visible = painted;
+    if (e.level > 1) {
+      const p = e.parent;
+      e.painted = p.painted && (p.level === e.level || p.px > open);
     }
+    if (!e.bar) continue;
+    e.bar.visible = e.painted;
+    if (!e.painted) continue;
+    const edge = facingEdge(e);
+    if (edge !== e.edge) placeDnaBar(e, edge);
   }
 }
 
 // ⇧ over a building, while the colour is change DNA: every class on the same axis takes
-// that axis's colour, wherever in the tree it lives. That is the set the floor stripes
+// that axis's colour, wherever in the tree it lives. That is the set the edge bars
 // only summarise — and a set scattered over four districts is the layered package
 // structure, read off one hover.
 function showAxisFor(entry) {
@@ -5884,7 +5764,7 @@ const METRIC_NOTES = {
           href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
   cochange_out: {note: "how often it changes with another package",
           href: "https://en.wikipedia.org/wiki/Logical_coupling"},
-  change_dna: {note: "which axes of change run through each package (floor stripes); \u21e7 over a class lights its axis",
+  change_dna: {note: "which axes of change run through each package (the bar on its near edge); \u21e7 over a class lights its axis",
           href: "https://www.jimmybogard.com/vertical-slice-architecture/"},
   crap_max: {note: "its worst method: complexity no test ran",
           href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
@@ -6121,7 +6001,7 @@ window.addEventListener("blur", () => { pointerIsDown = false; isDragging = fals
 window.addEventListener("dblclick", onDoubleClick);
 window.addEventListener("click", onSceneClick);
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !introEl && document.getElementById("howto").hidden) scopeUp();
+  if (e.key === "Escape" && !introEl) scopeUp();
 });
 breadcrumbEl.addEventListener("click", (e) => {
   const crumb = e.target.closest(".crumb");
@@ -6129,14 +6009,6 @@ breadcrumbEl.addEventListener("click", (e) => {
 });
 renderer.domElement.addEventListener("pointerdown", dismissIntro);
 window.addEventListener("wheel", dismissIntro, { passive: true });
-
-// Park the breadcrumb just under the control panel, tracking its real height.
-function positionBreadcrumb() {
-  const panel = document.querySelector(".panel");
-  if (panel) document.documentElement.style.setProperty("--panel-h", `${panel.offsetHeight + 14}px`);
-}
-positionBreadcrumb();
-window.addEventListener("resize", positionBreadcrumb);
 
 rebuildCity();
 frameCity();   // open on the whole city, not on a hard-coded viewpoint
@@ -6211,19 +6083,9 @@ FAVICON = "data:image/svg+xml," + urllib.parse.quote(
     f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">{_LOGO_SHAPES}</svg>'
 )
 
-# The recipe the in-page "Build this for your own repo" button reveals. It clones the
-# generators from GitHub rather than pointing at wherever THIS page was built from: a
-# reader who opens a published city has no such folder on their disk.
+# Where the generators live: the corner of the page links to them, and their README
+# carries the recipe for building one of these for your own repo.
 TOOL_REPO = "https://github.com/victorrentea/code-city"
-BUILD_CMD = f"""# 1. The generators (this page was made by them):
-git clone {TOOL_REPO} ~/code-city
-
-# 2. Point them at any git repo of Java sources — that's the whole configuration.
-~/code-city/generate.sh ~/workspace/your-repo
-
-# 3. Open the city (macOS `open`; Linux `xdg-open`; Windows `start`).
-open ~/workspace/your-repo/.codecity/codecity.html
-"""
 
 # Ready-made globs for the filter box's dropdown: whole packages first (the coarse
 # cut), then the CamelCase class families. The count rides INSIDE the value, because a
@@ -6244,7 +6106,6 @@ html = (html
         .replace("__MODULES_JSON__", json.dumps(mod_rows))
         .replace("__REPO_ABS__", json.dumps(str(REPO_ABS)))
         .replace("__TOOL_REPO__", TOOL_REPO)
-        .replace("__BUILD_CMD__", json.dumps(BUILD_CMD))
         .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES & ANALYZED_PATHS)
                                                 if ANALYZED_PATHS else bool(CHANGED_FILES)))
         .replace("__CHANGE_SOURCE__", json.dumps(CHANGE_SOURCE))

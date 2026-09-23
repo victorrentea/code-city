@@ -197,9 +197,11 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function applyExternalHighlight", html)
             self.assertIn('codemapLink: true, from: "city"', html)
             self.assertIn('d.from === "city"', html)             # ignore our own echoes
-            # "Build this for your own repo" recipe: button, overlay, baked-in command.
-            self.assertIn('id="howtoToggle"', html)
-            self.assertIn("Build a Code City for any source folder", html)
+            # The corner links to the generators; the recipe itself is the README's job, so
+            # no overlay and no command are baked into the page any more.
+            self.assertIn('class="cityrepo" href="https://github.com/victorrentea/code-city"', html)
+            self.assertNotIn('id="howto', html)
+            self.assertNotIn("BUILD_CMD", html)
             # ...and beneath it, in the same corner, whose idea a code city is. The plates
             # here are shot to look like Wettel's; a reader who has never seen the original
             # would otherwise have no way to know there is one.
@@ -207,12 +209,6 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("idea by Richard Wettel (USI Lugano, 2008)", html)
             self.assertIn('href="https://wettel.github.io/codecity.html"', html)
             self.assertIn("Richard Wettel", html)
-            self.assertIn("const BUILD_CMD =", html)
-            # The recipe clones the generators from GitHub: whoever opens a published
-            # city has no local checkout of them to point at.
-            self.assertIn("git clone https://github.com/victorrentea/code-city", html)
-            self.assertIn("/code-city/generate.sh ~/workspace/your-repo", html)
-            self.assertNotIn('SCRIPTS="', html)   # ...not a path from the machine that built it
             # First-run intro: an annotated hero building wired to the metric selectors,
             # with AREA drawn on the roof (top face), not the base.
             self.assertIn("function buildIntro", html)

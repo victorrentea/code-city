@@ -530,22 +530,25 @@ it apart (tf-idf, layer words like `Service` or `Impl` excluded — naming an ax
 layer would name exactly what this view exists to see past). Groups under three classes,
 and classes that only ever changed alone, are in no axis.
 
-**The colour.** Pick `change DNA` on `COLOR`. Every package **floor** is striped with the
-axes that run through it, each stripe as wide as that axis's share of the package's
-commits, always in the same order so two sibling floors compare stripe by stripe. One
+**The colour.** Pick `change DNA` on `COLOR`. Every package gets a **bar** in its ring, on
+the edge that faces the camera (it follows you round an orbit), striped with the axes that
+run through it — each stripe as wide as that axis's share of the package's commits, always
+in the same order so two sibling bars compare stripe by stripe. One
 colour: the package follows the history. A rainbow, with the same stripes in its
 siblings: it cuts across it. The buildings go quiet grey, and **Shift over one** lights
 every class on its axis wherever it lives — the set the stripes only summarise.
 
-On the floors rather than the buildings because one reading per district is what the eye
-aggregates over a whole plate; five thousand buildings in ten hues is confetti. Ten hues,
+A bar rather than the buildings because one reading per district is what the eye aggregates
+over a whole plate — five thousand buildings in ten hues is confetti — and rather than the
+whole floor because a floor painted edge to edge reads as the package's colour, when the
+finding is its mix. Ten hues,
 biggest axes first; the rest pool into one grey stripe.
 
 **Only the top level, until you zoom in.** Stripes on stripes at every depth say nothing,
 so only the first level of packages that actually branches is striped — `org/` and
 `org/springframework/` are funnels, and so is PetClinic's `victor/`, which holds all but
-two classes of the repo. A package's children take over its floor once it fills 45% of
-the screen, so zooming into `rest/` shows `rest/dto/` and `rest/error/` with their own.
+two classes of the repo. A package's children get their own bars once it fills 45% of
+the screen, so zooming into `rest/` shows `rest/dto/` and `rest/error/` with theirs.
 
 ## CRAP and coverage — the two metrics that need the tests to have run
 
