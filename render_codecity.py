@@ -823,7 +823,7 @@ COCHANGE = _cochange_adjacency()
 # together (see change_axes.py). Stamped onto the class row as a bare index — a path per
 # class is the page weight the adjacency packing above exists to avoid — with the names
 # carried once, beside it. A city built before axes existed simply has none, and the
-# "change DNA" colour takes itself out of the dropdown.
+# "cohesion" colour takes itself out of the dropdown.
 def _change_axes():
     members = TSV.with_name("change-axes.tsv")
     names = TSV.with_name("change-axis-names.tsv")
@@ -1011,6 +1011,10 @@ html = """<!doctype html>
      and the plate it just turned grey are visibly saying the same thing. Italic is what
      separates "here is what this means" from "here is why there is nothing to see". */
   .metricNote.unavailable { color: #9aa0a6; font-style: italic; }
+  /* A cohesion legend name lights its classes while hovered; the hover state is the
+     only hint that it does anything, so it looks like the note's own links do. */
+  .metricNote .axisName { white-space: nowrap; margin-right: 10px; cursor: default; }
+  .metricNote .axisName:hover { color: #1e3a8a; text-decoration: underline solid; }
   .controls .filterCount { min-width: 0; text-align: left; }
   /* Greyed out, not hidden: the row keeps its shape when you land on a metric
      (size, committers, instability…) that has no meaningful per-KLOC form. */
@@ -1424,7 +1428,7 @@ html = """<!doctype html>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
     &nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span>
-  <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (change DNA colour)<br>
+  <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
 </aside>
@@ -1481,7 +1485,7 @@ html = """<!doctype html>
       <option value="fan_in">incoming coupling</option>
       <option value="fan_out">outgoing coupling</option>
       <option value="cochange_out">cross-package co-change</option>
-      <option value="change_dna">change DNA &mdash; axes of change</option>
+      <option value="change_dna">cohesion &mdash; axes of change</option>
       <option value="crap_max">CRAP &mdash; worst method</option>
       <option value="crap_load">CRAP load</option>
       <option value="coverage">line coverage % (all tests)</option>
@@ -4308,6 +4312,9 @@ function clearCrimeScene() {
 
 function showCoChangeFor(entry) {
   if (entry && dnaOn()) { showAxisFor(entry); return; }
+  // The pointer over the panel is still a window pointermove, and it picks no building:
+  // without this, a hovered legend name would be painted and wiped in the same move.
+  if (legendAxisSlot !== null && dnaOn()) { showAxisSlot(legendAxisSlot); return; }
   if (!coChangeOn() || !entry) { clearCrimeScene(); return; }
   const path = entry.file.path;
   if (path === crimePath) return;
@@ -4340,7 +4347,7 @@ function showCoChangeFor(entry) {
   }
 }
 
-// ── Change DNA: the axes of change, striped on each package floor ────────────
+// ── Cohesion (change DNA): the axes of change, striped on each package floor ────────────
 // Group code by the axis it changes along — by use case, not by layer — and a package is
 // one axis. Group it by layer and every feature runs through every package, so each
 // controller/service/repository floor carries the same set of stripes as its siblings.
@@ -4518,22 +4525,44 @@ function updateDnaFloors() {
   }
 }
 
-// ⇧ over a building, while the colour is change DNA: every class on the same axis takes
+// ⇧ over a building, while the colour is cohesion: every class on the same axis takes
 // that axis's colour, wherever in the tree it lives. That is the set the edge bars
 // only summarise — and a set scattered over four districts is the layered package
 // structure, read off one hover.
 function showAxisFor(entry) {
   const axis = entry.file.axis;
-  const key = axis === undefined ? "axis-none:" + entry.file.path : "axis:" + axis;
+  // Past the palette an axis has no hue of its own, so its classes borrow the subject's.
+  const hex = axis === undefined || axisSlot(axis) >= AXIS_PALETTE.length
+    ? CRIME_SUBJECT : AXIS_PALETTE[axis];
+  paintAxis(axis === undefined ? "axis-none:" + entry.file.path : "axis:" + axis, hex,
+            b => b === entry || (axis !== undefined && b.file.axis === axis));
+}
+
+// The same question asked from the legend instead of from a building: hover "Visit 15"
+// and the fifteen classes behind that name light up. A name alone says what the history
+// grouped; the buildings say where the group actually lives. The pooled last slot lights
+// every class of every smaller axis, in the subject's blue — grey on grey would show nothing.
+function showAxisSlot(slot) {
+  paintAxis("slot:" + slot, slot < AXIS_PALETTE.length ? AXIS_PALETTE[slot] : CRIME_SUBJECT,
+            b => b.file.axis !== undefined && axisSlot(b.file.axis) === slot);
+}
+
+let legendAxisSlot = null;   // the legend name under the pointer, if any
+
+// Opaque as well as coloured: with CHANGES on "highlight changed" every unchanged class
+// is half transparent, and an axis hue at 50% over a pale plate reads as no hue at all.
+function paintAxis(key, hex, member) {
   if (key === crimePath) return;
   clearCrimeScene();
   crimePath = key;
   for (const skin of beforeSkins) skin.visible = false;
-  // Past the palette an axis has no hue of its own, so its classes borrow the subject's.
-  const hex = axis === undefined || axisSlot(axis) >= AXIS_PALETTE.length
-    ? CRIME_SUBJECT : AXIS_PALETTE[axis];
   for (const b of buildings) {
-    if (b === entry || (axis !== undefined && b.file.axis === axis)) b.mesh.material.color.setHex(hex);
+    if (!member(b)) continue;
+    const m = b.mesh.material;
+    m.color.setHex(hex);
+    m.transparent = false;
+    m.opacity = 1;
+    m.depthWrite = true;
   }
 }
 
@@ -4551,10 +4580,30 @@ function dnaLegendHtml() {
   for (let slot = 0; slot < slots; slot++) {
     const files = slot < AXIS_PALETTE.length ? CHANGE_AXES[slot].files
       : CHANGE_AXES.slice(AXIS_PALETTE.length).reduce((n, a) => n + a.files, 0);
-    items.push(`<span style="white-space:nowrap;margin-right:10px">${axisChip(slot)}` +
+    items.push(`<span class="axisName" data-axis-slot="${slot}">${axisChip(slot)}` +
       `${escapeXml(axisName(slot))} <span class="perkloc">${files}</span></span>`);
   }
   return `<div style="margin-top:4px;line-height:1.6">${items.join(" ")}</div>`;
+}
+
+// One pair of listeners on the note, not one per name: syncMetricNotes rewrites the
+// legend on every metric change, and listeners hung on the names would go with it.
+// mouseout also fires when the pointer crosses from the name onto its own chip, so only a
+// move that really leaves the name puts the city's colours back.
+{
+  const note = document.getElementById("colorNote");
+  note.addEventListener("mouseover", e => {
+    const name = e.target.closest("[data-axis-slot]");
+    if (!name || !dnaOn()) return;
+    legendAxisSlot = Number(name.dataset.axisSlot);
+    showAxisSlot(legendAxisSlot);
+  });
+  note.addEventListener("mouseout", e => {
+    const name = e.target.closest("[data-axis-slot]");
+    if (!name || name.contains(e.relatedTarget)) return;
+    legendAxisSlot = null;
+    clearCrimeScene();
+  });
 }
 
 // ── Package-name labels (two switchable styles) ──────────────────────────────
@@ -5764,7 +5813,7 @@ const METRIC_NOTES = {
           href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
   cochange_out: {note: "how often it changes with another package",
           href: "https://en.wikipedia.org/wiki/Logical_coupling"},
-  change_dna: {note: "which axes of change run through each package (the bar on its near edge); \u21e7 over a class lights its axis",
+  change_dna: {note: "which axes of change run through each package (the bar on its near edge); \u21e7 over a class lights its axis, and so does hovering a name below",
           href: "https://www.jimmybogard.com/vertical-slice-architecture/"},
   crap_max: {note: "its worst method: complexity no test ran",
           href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
