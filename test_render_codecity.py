@@ -393,6 +393,39 @@ class RenderCodecityTest(unittest.TestCase):
             for src, targets in packages.items():
                 self.assertNotIn(src, targets, "a package must not pipe to itself")
 
+    def test_change_dna_stripes_the_floors_with_the_axes_of_change(self):
+        """The axes build_heatmap clustered the history into travel as an index on each
+        class row plus one list of names — and a city without them offers no DNA."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for src in (SCRIPT_DIR / "testdata").iterdir():
+                shutil.copy(src, tmp)
+            with open(SAMPLE_TSV) as f:
+                next(f)
+                paths = [line.split("\t", 1)[0] for line in f][:3]
+            (Path(tmp) / "change-axes.tsv").write_text(
+                "path\taxis\n" + "".join(f"{p}\t0\n" for p in paths))
+            (Path(tmp) / "change-axis-names.tsv").write_text("axis\tname\tfiles\n0\tOwner\t3\n")
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(Path(tmp) / "codemap.tsv")],
+                           check=True, cwd=SCRIPT_DIR, env=env)
+            html = (Path(tmp) / "codecity.html").read_text()
+            self.assertIn('<option value="change_dna">', html)
+            self.assertIn('const CHANGE_AXES = [{"name": "Owner", "files": 3}];', html)
+            files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html).group(1))
+            self.assertEqual(sum(1 for f in files if f.get("axis") == 0), len(paths))
+            # Only the first level that branches is striped; deeper floors wait for zoom.
+            self.assertIn("function isFunnel", html)
+            self.assertIn("updateDnaFloors();", html)
+
+            # Without the files, the page carries no axes and takes the option away.
+            os.remove(Path(tmp) / "change-axes.tsv")
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(Path(tmp) / "codemap.tsv")],
+                           check=True, cwd=SCRIPT_DIR, env=env)
+            html = (Path(tmp) / "codecity.html").read_text()
+            self.assertIn("const CHANGE_AXES = [];", html)
+            self.assertIn('option[value="change_dna"]', html)
+
     def test_cochange_crime_scene(self):
         """Change coupling: a colour metric for how far outside its own package a
         building's commits reach, and a hover overlay naming who it reaches to."""
@@ -413,7 +446,7 @@ class RenderCodecityTest(unittest.TestCase):
             # so it arms itself when the metric is picked and answers on Shift+hover.
             self.assertNotIn("cochangePartners", html)
             self.assertIn('colorMetricKey() === "cochange_out"', html)
-            self.assertIn("const crimeHover = coChangeOn() && hit", html)
+            self.assertIn("const crimeHover = (coChangeOn() || dnaOn()) && hit", html)
             self.assertIn("function onOverlayKey", html)
             self.assertIn("navKeyHeld && !event.metaKey", html)
             # ...and while it is answering, Shift is not also previewing a drill-in.

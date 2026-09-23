@@ -818,6 +818,32 @@ def _cochange_adjacency():
 COCHANGE = _cochange_adjacency()
 
 
+# ── Axes of change ───────────────────────────────────────────────────────────
+# build_heatmap.py's change-axes.tsv: which group of classes the history keeps changing
+# together (see change_axes.py). Stamped onto the class row as a bare index — a path per
+# class is the page weight the adjacency packing above exists to avoid — with the names
+# carried once, beside it. A city built before axes existed simply has none, and the
+# "change DNA" colour takes itself out of the dropdown.
+def _change_axes():
+    members = TSV.with_name("change-axes.tsv")
+    names = TSV.with_name("change-axis-names.tsv")
+    if not members.exists() or not names.exists():
+        return []
+    with names.open() as f:
+        axes = [{"name": r["name"], "files": int(r["files"] or 0)}
+                for r in csv.DictReader(f, delimiter="\t")]
+    by_path = {r["path"]: r for r in rows}
+    with members.open() as f:
+        for r in csv.DictReader(f, delimiter="\t"):
+            row = by_path.get((r.get("path") or "").lstrip("./"))
+            if row is not None:
+                row["axis"] = int(r["axis"])
+    return axes
+
+
+CHANGE_AXES = _change_axes()
+
+
 # An adjacency keyed by path is mostly the SAME path written over and over: on Spring,
 # `spring-core/src/main/java/org/springframework/...` appears in the coupling map about
 # ten times per file, and the two maps together were 5.8 MB of an 8.7 MB page — which is
@@ -1495,7 +1521,7 @@ html = """<!doctype html>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
     &nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span>
-  <b>&#8679; over a building</b>: what changes with it (needs the co-change colour)<br>
+  <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (change DNA colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   Cmd/Ctrl-double-click opens a file in VS Code
 </aside>
@@ -1552,6 +1578,7 @@ html = """<!doctype html>
       <option value="fan_in">incoming coupling</option>
       <option value="fan_out">outgoing coupling</option>
       <option value="cochange_out">cross-package co-change</option>
+      <option value="change_dna">change DNA &mdash; axes of change</option>
       <option value="crap_max">CRAP &mdash; worst method</option>
       <option value="crap_load">CRAP load</option>
       <option value="coverage">line coverage % (all tests)</option>
@@ -1697,6 +1724,9 @@ function edgeLine(value) { return Array.isArray(value) ? value[1] : 0; }
 // Change coupling per view: { unit: { peer: [shared commits, severity 0..1] } }. Cross-
 // package pairs only. Severity is how far apart the two live — see build_heatmap.py.
 const COCHANGE = inflateAdjacency(__COCHANGE_JSON__);
+// The axes of change: groups of classes the history keeps changing together, biggest
+// first ({name, files}). A class row carries its group as `axis`, an index into this.
+const CHANGE_AXES = __AXES_JSON__;
 
 // The active COLOR metric's p95 scale max, mirrored out of rebuildCity so the
 // hover tooltip's colour-scale marker can place this building on the ramp.
@@ -1845,6 +1875,13 @@ if (!HAS_COUPLING) {
 const HAS_COCHANGE = Object.values(COCHANGE || {}).some(adj => Object.keys(adj).length);
 if (!HAS_COCHANGE) {
   const opt = document.querySelector('#colorMetric option[value="cochange_out"]');
+  if (opt) opt.remove();
+}
+// ...and the axes it is clustered into: none on a page from before they existed, and none
+// on a history too thin to group (every class changed alone).
+const HAS_AXES = CHANGE_AXES.length > 0;
+if (!HAS_AXES) {
+  const opt = document.querySelector('#colorMetric option[value="change_dna"]');
   if (opt) opt.remove();
 }
 // CRAP and coverage need a JaCoCo report, which needs the repo's tests to have been RUN
@@ -3035,6 +3072,9 @@ function rebuildCity() {
     .paddingInner(districtStreet)
     .round(true);
   const root = layout(buildHierarchy(areaMetric));
+  const dna = dnaOn();
+  dnaFloors = [];
+  const dnaEntryOf = new Map([[root, { level: 0, painted: false }]]);
 
   // Each package becomes a terraced platform: the deeper it is nested, the higher
   // it rises, so a parent package (e.g. victor) visibly contains its children
@@ -3072,6 +3112,7 @@ function rebuildCity() {
     scene.add(block);
     districts.push(block);
     districtByName.set(block.userData.name, block);
+    if (dna) dnaEntryOf.set(node, addDnaFloor(node, block, topMaterial, width, depth, dnaEntryOf.get(node.parent)));
 
     addDistrictRule(cx, cz, width, depth, topY, node.depth);
     addPackageLabel(node, cx, cz, topY, width, depth);
@@ -3112,7 +3153,7 @@ function rebuildCity() {
     const cz = leaf.y0 + (leaf.y1 - leaf.y0) / 2 - cityD / 2;
     const geometry = new THREE.BoxGeometry(width, height, depth);
     const material = new THREE.MeshStandardMaterial({
-      color: isMeasured(file, colorMetric) ? colorFor(colorValue, maxColor) : UNMEASURED_COLOR,
+      color: dna ? DNA_BUILDING : isMeasured(file, colorMetric) ? colorFor(colorValue, maxColor) : UNMEASURED_COLOR,
       roughness: 0.58,
       metalness: 0.06,
     });
@@ -4427,6 +4468,7 @@ function clearCrimeScene() {
 }
 
 function showCoChangeFor(entry) {
+  if (entry && dnaOn()) { showAxisFor(entry); return; }
   if (!coChangeOn() || !entry) { clearCrimeScene(); return; }
   const path = entry.file.path;
   if (path === crimePath) return;
@@ -4457,6 +4499,182 @@ function showCoChangeFor(entry) {
       m.color.copy(grayFor(b.colorValue, b.maxColor));
     }
   }
+}
+
+// ── Change DNA: the axes of change, striped on each package floor ────────────
+// Group code by the axis it changes along — by use case, not by layer — and a package is
+// one axis. Group it by layer and every feature runs through every package, so each
+// controller/service/repository floor carries the same set of stripes as its siblings.
+// That is the picture this colour draws: the floor of every package is striped with the
+// axes of change that run through it (build_heatmap.py clusters the history into them,
+// see change_axes.py), each stripe as wide as that axis's share of the package's commits.
+// One colour per floor: the package follows the history. A rainbow: it cuts across it.
+//
+// On the FLOOR rather than the buildings: a set of stripes per package is one reading
+// per district, which the eye takes in over the whole plate at once; five thousand
+// buildings in ten hues is a confetti nobody can aggregate. The buildings stay a quiet
+// grey, and ⇧ over one lights every class on its axis, wherever in the tree they live.
+//
+// Only the top-level packages are striped at first. Their children come in as you zoom
+// into them — a district opens once it fills a good part of the screen — because a floor
+// striped at every depth at once is stripes on stripes, and the question a whole city
+// answers is about its first cut, not its leaves. Top-level means the first level that
+// actually BRANCHES: org/ and org/springframework/ are one child each, and a floor that
+// is (all but) covered by its only child has nothing to say of its own — see isFunnel.
+const AXIS_PALETTE = [0x4e79a7, 0xf28e2b, 0xe15759, 0x59a14f, 0xb07aa1,
+                      0xedc948, 0x76b7b2, 0xff9da7, 0x9c755f, 0x8cd17d];
+// Every axis past the palette pools into one stripe: real, but too small to get its own
+// hue, and ten is already about the most hues a reader can keep apart.
+const AXIS_OTHER = 0xb4b9c1;
+const DNA_BUILDING = new THREE.Color(0xdfe3e8);
+// A district shows its children's stripes once its narrower side covers this share of
+// the viewport's shorter side.
+const DNA_OPEN_SHARE = 0.45;
+let dnaFloors = [];
+
+function dnaOn() { return HAS_AXES && colorMetricKey() === "change_dna" && couplingViewName() === "classes"; }
+const axisSlot = axis => Math.min(axis, AXIS_PALETTE.length);
+const axisHex = slot => slot < AXIS_PALETTE.length ? AXIS_PALETTE[slot] : AXIS_OTHER;
+const axisCss = slot => "#" + axisHex(slot).toString(16).padStart(6, "0");
+function axisName(slot) {
+  return slot < AXIS_PALETTE.length ? CHANGE_AXES[slot].name
+    : `${CHANGE_AXES.length - AXIS_PALETTE.length} smaller axes`;
+}
+
+// Each axis's share of the district, weighted by commits: a class touched forty times
+// along an axis says more about what this package is for than one touched twice. Classes
+// in no axis (they only ever changed alone) are left out rather than drawn as a grey
+// stripe — the question is which axes cross the package, not how quiet it is.
+function dnaShares(node) {
+  const weight = new Map();
+  let total = 0;
+  for (const leaf of node.leaves()) {
+    const file = leaf.data.file;
+    if (!file || file.axis === undefined) continue;
+    const slot = axisSlot(file.axis);
+    const w = Math.max(1, Number(file.commits) || 0);
+    weight.set(slot, (weight.get(slot) || 0) + w);
+    total += w;
+  }
+  if (!total) return null;
+  // Always in axis order, never by size: the same axis then sits in the same place on
+  // every floor, and two sibling floors can be compared stripe by stripe.
+  return [...weight.entries()].sort((a, b) => a[0] - b[0])
+    .map(([slot, w]) => ({ slot, share: w / total }));
+}
+
+const _dnaTexCache = new Map();   // kept across rebuilds: a handful of distinct barcodes
+function dnaTexture(shares) {
+  const key = shares.map(s => `${s.slot}:${s.share.toFixed(3)}`).join(",");
+  const hit = _dnaTexCache.get(key);
+  if (hit) return hit;
+  const W = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = 4;
+  const ctx = canvas.getContext("2d");
+  let x = 0;
+  shares.forEach((s, i) => {
+    const w = i === shares.length - 1 ? W - x : Math.round(s.share * W);
+    ctx.fillStyle = axisCss(s.slot);
+    ctx.fillRect(x, 0, w, 4);
+    x += w;
+  });
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;   // a stripe edge is a boundary, not a gradient
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
+  _dnaTexCache.set(key, tex);
+  return tex;
+}
+
+// A package that is nearly all ONE child package is not a level of its own: its floor is
+// that child's floor with a rim. "Nearly", because a real tree is rarely clean — PetClinic's
+// victor/ shares the root with a two-class ro/, and a strict "only child" rule made the
+// whole plate the top level and every real package a grandchild.
+const DNA_FUNNEL_SHARE = 0.85;
+function isFunnel(node) {
+  if (!node.children) return false;
+  const total = node.leaves().length;
+  return node.children.some(c => c.children && c.leaves().length >= DNA_FUNNEL_SHARE * total);
+}
+
+// Called by rebuildCity for every district, parents first. The floor is striped here and
+// the entry remembers where it sits in the tree; updateDnaFloors decides each frame which
+// of them are on screen.
+function addDnaFloor(node, block, topMaterial, width, depth, parent) {
+  const level = parent.level + (isFunnel(node.parent) ? 0 : 1);
+  const shares = level > 0 ? dnaShares(node) : null;
+  block.userData.dna = shares;
+  const entry = { block, topMaterial, level, parent, painted: level === 1,
+                  side: Math.min(width, depth), px: 0 };
+  if (shares) {
+    topMaterial.map = dnaTexture(shares);
+    topMaterial.color.setHex(0xffffff);
+    topMaterial.needsUpdate = true;
+  }
+  // Below the first level a floor starts hidden, so its parent's stripes run under it
+  // until the camera comes close enough to open the parent.
+  if (level > 1) topMaterial.visible = false;
+  dnaFloors.push(entry);
+  return entry;
+}
+
+function updateDnaFloors() {
+  if (!dnaFloors.length) return;
+  const H = window.innerHeight;
+  const open = DNA_OPEN_SHARE * Math.min(window.innerWidth, H);
+  const pxPerUnitAt = H / (2 * Math.tan(camera.fov * Math.PI / 360));
+  for (const e of dnaFloors) {           // parents before children, as rebuildCity made them
+    e.px = e.side * pxPerUnitAt / camera.position.distanceTo(e.block.position);
+    if (e.level <= 1) continue;
+    const p = e.parent;
+    const painted = p.painted && (p.level === e.level || p.px > open);
+    if (painted !== e.painted) {
+      e.painted = painted;
+      e.topMaterial.visible = painted;
+    }
+  }
+}
+
+// ⇧ over a building, while the colour is change DNA: every class on the same axis takes
+// that axis's colour, wherever in the tree it lives. That is the set the floor stripes
+// only summarise — and a set scattered over four districts is the layered package
+// structure, read off one hover.
+function showAxisFor(entry) {
+  const axis = entry.file.axis;
+  const key = axis === undefined ? "axis-none:" + entry.file.path : "axis:" + axis;
+  if (key === crimePath) return;
+  clearCrimeScene();
+  crimePath = key;
+  for (const skin of beforeSkins) skin.visible = false;
+  // Past the palette an axis has no hue of its own, so its classes borrow the subject's.
+  const hex = axis === undefined || axisSlot(axis) >= AXIS_PALETTE.length
+    ? CRIME_SUBJECT : AXIS_PALETTE[axis];
+  for (const b of buildings) {
+    if (b === entry || (axis !== undefined && b.file.axis === axis)) b.mesh.material.color.setHex(hex);
+  }
+}
+
+function axisChip(slot) {
+  return `<span style="display:inline-block;width:.8em;height:.8em;border-radius:2px;` +
+    `vertical-align:-1px;margin-right:4px;background:${axisCss(slot)}"></span>`;
+}
+
+// The legend under the COLOR knob: which hue is which axis. Named after the word that
+// most sets its classes apart (see change_axes.name_axis), with its size, because an
+// axis of three classes and one of three hundred are not the same finding.
+function dnaLegendHtml() {
+  const slots = Math.min(CHANGE_AXES.length, AXIS_PALETTE.length + 1);
+  const items = [];
+  for (let slot = 0; slot < slots; slot++) {
+    const files = slot < AXIS_PALETTE.length ? CHANGE_AXES[slot].files
+      : CHANGE_AXES.slice(AXIS_PALETTE.length).reduce((n, a) => n + a.files, 0);
+    items.push(`<span style="white-space:nowrap;margin-right:10px">${axisChip(slot)}` +
+      `${escapeXml(axisName(slot))} <span class="perkloc">${files}</span></span>`);
+  }
+  return `<div style="margin-top:4px;line-height:1.6">${items.join(" ")}</div>`;
 }
 
 // ── Package-name labels (two switchable styles) ──────────────────────────────
@@ -4781,6 +4999,12 @@ function formatHover(file) {
     label += wireNote(p.key);
     items.push(`<li class="${on ? "on" : ""}"><span>${label}</span>${marksFor(file, p.key, p.sub)}</li>`);
   }
+  if (dnaOn()) {
+    const axis = file.axis === undefined ? "none &mdash; it only ever changed alone"
+      : `${axisChip(axisSlot(file.axis))}<b>${escapeXml(CHANGE_AXES[file.axis].name)}</b>` +
+        ` <span class="perkloc">(${CHANGE_AXES[file.axis].files} classes)</span>`;
+    items.push(`<li class="on"><span>axis of change: ${axis}</span></li>`);
+  }
   // Identity header (class / folder / package) on top, metrics list below.
   return hoverHeaderForFile(file) + `<ul class="props">${items.join("")}</ul>`;
 }
@@ -4803,8 +5027,15 @@ function formatDistrictHover(district) {
   const pkg = district.userData.name || "";
   const shortName = pkg.includes(".") ? pkg.slice(pkg.lastIndexOf(".") + 1) : pkg;
   const count = district.userData.fileCount.toLocaleString();
+  let dna = "";
+  if (dnaOn() && district.userData.dna) {
+    // Biggest first here, unlike the stripes: a list is read top-down for what matters.
+    dna = [...district.userData.dna].sort((a, b) => b.share - a.share).slice(0, 6)
+      .map(s => `<li class="on"><span>${axisChip(s.slot)}${escapeXml(axisName(s.slot))}: ` +
+                `<b>${Math.round(s.share * 100)}%</b></span></li>`).join("");
+  }
   return identityHeader(shortName, "", pkg) +
-    `<ul class="props"><li><span>Java files: <b>${count}</b></span></li></ul>`;
+    `<ul class="props"><li><span>Java files: <b>${count}</b></span></li>${dna}</ul>`;
 }
 
 let lastPointerEvent = null;   // the most recent hover, replayed when the checkbox flips
@@ -4869,7 +5100,7 @@ function onPointerMove(event, replayed) {
     : null);
   // Shift over a BUILDING, while the colour metric is co-change, asks the other
   // question: not "what does this depend on" but "what changes when this changes".
-  const crimeHover = coChangeOn() && hit && hit.object.userData.file &&
+  const crimeHover = (coChangeOn() || dnaOn()) && hit && hit.object.userData.file &&
     navKeyHeld && !event.metaKey && !event.ctrlKey && !roadKeyHeld;
   showCoChangeFor(crimeHover ? buildingByPath.get(hit.object.userData.file.path) : null);
   let tooltipObj = null;
@@ -5653,6 +5884,8 @@ const METRIC_NOTES = {
           href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
   cochange_out: {note: "how often it changes with another package",
           href: "https://en.wikipedia.org/wiki/Logical_coupling"},
+  change_dna: {note: "which axes of change run through each package (floor stripes); \u21e7 over a class lights its axis",
+          href: "https://www.jimmybogard.com/vertical-slice-architecture/"},
   crap_max: {note: "its worst method: complexity no test ran",
           href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
   crap_load: {note: "how much complexity no test ran",
@@ -5701,6 +5934,9 @@ function syncMetricNotes() {
     a.rel = "noopener";
     a.textContent = text + " \u2197";
     el.appendChild(a);
+    if (knob === METRIC_KNOBS[2] && knob.select.value === "change_dna" && HAS_AXES) {
+      el.insertAdjacentHTML("beforeend", dnaLegendHtml());
+    }
   }
 }
 
@@ -5952,6 +6188,7 @@ function animate() {
   updateStreetFlow();
   syncUndersideView();
   updateFloorLabelFacing();       // keep flat package names turned toward the viewer (never upside down)
+  updateDnaFloors();              // open a package's children's stripes once it is zoomed into
   renderer.render(scene, camera);
   updateLabelVisibility();        // resolve which class labels are non-overlapping from this angle
   labelRenderer.render(scene, camera);
@@ -6014,6 +6251,7 @@ html = (html
         .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES))
         .replace("__BEFORE_JSON__", json.dumps(BEFORE_FILES))
         .replace("__COUPLING_JSON__", json.dumps(_pack_adjacency(COUPLING)))
-        .replace("__COCHANGE_JSON__", json.dumps(_pack_adjacency(COCHANGE))))
+        .replace("__COCHANGE_JSON__", json.dumps(_pack_adjacency(COCHANGE)))
+        .replace("__AXES_JSON__", json.dumps(CHANGE_AXES)))
 OUT.write_text(html)
 print(f"wrote {OUT} ({OUT.stat().st_size / 1024:.1f} KB)")

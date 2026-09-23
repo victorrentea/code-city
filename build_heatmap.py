@@ -17,6 +17,7 @@ import subprocess
 import sys
 from collections import defaultdict
 
+import change_axes
 import repo_files
 
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -222,6 +223,10 @@ _COCHANGE_LEVELS = (
 cochange_escape = {lv: defaultdict(float) for lv, _u, _s, _sep in _COCHANGE_LEVELS}
 cochange_seen = {lv: defaultdict(int) for lv, _u, _s, _sep in _COCHANGE_LEVELS}
 cochange_pairs = {lv: defaultdict(int) for lv, _u, _s, _sep in _COCHANGE_LEVELS}
+# The same commits, kept whole for the axes of change (change_axes.py): pairs cannot be
+# clustered after the fact once same-package pairs have been thrown away, and those are
+# exactly the ones that say a package holds together.
+axis_commits = []
 
 
 def _record_cochange(touched):
@@ -297,6 +302,8 @@ def flush_commit():
     touched = [fp for fp in file_lines if fp and _counts_toward_diagram(fp)]
     if touched and len(touched) <= COCHANGE_MAX_FILES:
         _record_cochange(touched)
+        if len(touched) > 1:
+            axis_commits.append(touched)
     # ...and to each distinct Maven/Gradle module it touched.
     for mod in {_module(fp) for fp in file_lines if fp and _counts_toward_diagram(fp)}:
         commits_per_module[mod].add(sha)
@@ -638,3 +645,22 @@ with open(OUT_FILE_COCH, "w") as f:
                 _coch_written += 1
 
 print(f"wrote {_coch_written} co-change edges to {OUT_FILE_COCH}", file=sys.stderr)
+
+# ── Axes of change ───────────────────────────────────────────────────────────
+# The classes the history keeps changing together, clustered into groups (see
+# change_axes.py), for the "change DNA" colour: each package floor is striped with the
+# axes that run through it. Two files rather than one, because a name is per axis and a
+# membership is per class, and neither shape fits in the other's columns.
+OUT_FILE_AXES = os.path.join(OUT_DIR, "change-axes.tsv")
+OUT_FILE_AXIS_NAMES = os.path.join(OUT_DIR, "change-axis-names.tsv")
+axis_of, axes = change_axes.change_axes(axis_commits, _live["classes"], COCHANGE_MIN_SHARED)
+with open(OUT_FILE_AXES, "w") as f:
+    f.write("path\taxis\n")
+    for path in sorted(axis_of):
+        f.write(f"{path}\t{axis_of[path]}\n")
+with open(OUT_FILE_AXIS_NAMES, "w") as f:
+    f.write("axis\tname\tfiles\n")
+    for i, (name, files) in enumerate(axes):
+        f.write(f"{i}\t{name}\t{files}\n")
+print(f"wrote {len(axes)} axes of change over {len(axis_of)} classes to {OUT_FILE_AXES}",
+      file=sys.stderr)

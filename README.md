@@ -70,7 +70,7 @@ unsetting `HEATMAP_OPEN_IN`.
 | 1 | `compute_complexity.py` | `complexity-per-{class,file}.tsv` |
 | 2 | `compute_fanio.py` | `fanio-per-file.tsv` + `coupling-edges.tsv` (`source`, `target`, `weight`, and the `line` in the source where the coupling first appears outside the imports) |
 | 3 | `compute_crap.py` | `crap-per-file.tsv` — CRAP and line coverage. **Switched off**, see [below](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run) |
-| 4 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) |
+| 4 | `build_heatmap.py` | `codemap.tsv` (joins git history + file size + steps 1–2) + `cochange-edges.tsv` (who changes with whom, from the same history walk) + `change-axes.tsv` / `change-axis-names.tsv` (the same history clustered into axes of change, see [Change DNA](#change-dna--the-axes-a-package-is-cut-along)) |
 | 5 | `render_heatmap.py` | `codemap.html` |
 | 6 | `render_codecity.py` | `codecity.html` |
 
@@ -510,6 +510,42 @@ coupling edges, capped at `HEATMAP_COCHANGE_TOP` (20) partners per building and
 `HEATMAP_COCHANGE_MIN_SHARED` (2) shared commits. Severity travels *in the file* rather than
 being recomputed in the browser: the distance model is the single source of truth for how bad a
 jump is, and a second copy of that curve in JS would be a second answer.
+
+## Change DNA — the axes a package is cut along
+
+Group code by the axis it changes along — by use case, not by layer — and every package is
+one axis. Group it by layer and every feature runs through every package: a change to
+*visits* touches the controller, the service and the repository, and so does a change to
+*owners*. The co-change colour above says **how often** a class leaves its package. This
+one says **what the packages would be made of** if the history had drawn them.
+
+**The axes.** `build_heatmap.py` keeps the commits it already walks (the same ones the
+co-change metric counts: ≤ `HEATMAP_COCHANGE_MAX_FILES` files, pairs seen ≥
+`HEATMAP_COCHANGE_MIN_SHARED` times) and `change_axes.py` clusters the classes into groups
+that keep landing in the same commits — Louvain modularity over a graph where each commit
+adds `1/(n-1)` to each of its `n` files' pairs, so a 25-file commit says much less about
+any one pair than a 2-file one. Hand-rolled rather than imported: the pipeline installs
+nothing but tree-sitter. An axis is named after the word in its class names that most sets
+it apart (tf-idf, layer words like `Service` or `Impl` excluded — naming an axis after a
+layer would name exactly what this view exists to see past). Groups under three classes,
+and classes that only ever changed alone, are in no axis.
+
+**The colour.** Pick `change DNA` on `COLOR`. Every package **floor** is striped with the
+axes that run through it, each stripe as wide as that axis's share of the package's
+commits, always in the same order so two sibling floors compare stripe by stripe. One
+colour: the package follows the history. A rainbow, with the same stripes in its
+siblings: it cuts across it. The buildings go quiet grey, and **Shift over one** lights
+every class on its axis wherever it lives — the set the stripes only summarise.
+
+On the floors rather than the buildings because one reading per district is what the eye
+aggregates over a whole plate; five thousand buildings in ten hues is confetti. Ten hues,
+biggest axes first; the rest pool into one grey stripe.
+
+**Only the top level, until you zoom in.** Stripes on stripes at every depth say nothing,
+so only the first level of packages that actually branches is striped — `org/` and
+`org/springframework/` are funnels, and so is PetClinic's `victor/`, which holds all but
+two classes of the repo. A package's children take over its floor once it fills 45% of
+the screen, so zooming into `rest/` shows `rest/dto/` and `rest/error/` with their own.
 
 ## CRAP and coverage — the two metrics that need the tests to have run
 
