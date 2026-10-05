@@ -358,7 +358,7 @@ class RenderCodecityTest(unittest.TestCase):
             # turning on the page whose whole point is that it turns.
             self.assertIn("function roadSink", html)
             self.assertIn("function sinkMesh", html)
-            self.assertIn("sinkMesh(sinks[kind].road, roadMaterial[kind], 0)", html)
+            self.assertIn("fresh ? addedRoadMaterial : look(roadMaterial[kind]), 0)", html)
 
             coupling = adjacency(html, "COUPLING")
             classes = coupling["classes"]
@@ -621,6 +621,41 @@ class RenderCodecityTest(unittest.TestCase):
                 path("Service"): [path("Customer")],   # the one reference Service took on
             })                                         # ...and not Order, nor the renamed Store
             self.assertEqual(added["packages"], {})    # one package: nothing crosses a boundary
+
+    def test_the_new_coupling_runs_the_roads_alt_draws(self):
+        """The diff's new edges, standing or under ⌥, are laid by the ONE router ⌥ uses —
+        so a new road runs the trail ⌥ would draw for it, not a look-alike a block off.
+        Under ⌥ the hovered bundle carries its own new roads in the diff's yellow, on
+        top, and fades every old road of it; a mutual pair the diff added half of is two
+        roads of two ages, never one purple one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=SCRIPT_DIR, env=env,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+            # One router: a single sweep call site, inside layBundle, which both callers use.
+            self.assertIn("function layBundle(entry, bundle, sinks, deck, widen)", html)
+            self.assertEqual(2, html.count("roadSweep("), "one definition, one call site")
+            self.assertIn("layBundle(entry, bundle, sinks, deck, ADDED_WIDEN_HOVER)", html)
+            self.assertIn("layBundle(from, bundle, sinks, deck, ADDED_WIDEN_STANDING)", html)
+            # Under ⌥: new edges get kinds of their own, so they never share a trunk with
+            # old ones, and the old ones fade only when there is something new to see.
+            self.assertIn('const ADDED_KIND = { out: "outAdded", in: "inAdded" };', html)
+            self.assertIn("kind: fresh ? ADDED_KIND[kind] : kind", html)
+            self.assertIn("const fade = bundle.some(b => isAddedKind(b.kind));", html)
+            self.assertIn("function fadedTwin", html)
+            self.assertIn("other !== undefined && !fresh && !otherFresh", html)
+            self.assertIn(".coupling-label.added", html)
+            self.assertIn("function wireNote", html)
+            self.assertIn("new` : \"\"", html)
+            # Standing: the two coupling colours, and instability, which is both at once.
+            self.assertIn('key !== "fan_in" && key !== "fan_out" && key !== "instability"', html)
+            # ...and the help box names the yellow road only while there is one.
+            self.assertIn('<span id="addedRoadsHint" hidden>', html)
+            self.assertIn("function syncAddedRoadsHint", html)
 
     def test_a_road_can_be_followed_into_the_source(self):
         """⌘/Ctrl-click a road and land on the line that couples the two classes — and

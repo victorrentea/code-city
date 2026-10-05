@@ -310,18 +310,32 @@ talking about what you found — or reach for the trackpad to orbit around it �
 a third hand you do not have.
 
 **The coupling the diff introduced is drawn without asking.** With COLOR on incoming or
-outgoing coupling and a change set on screen, the colour raises a question ⌥ can only answer
-one building at a time, mixed in with every old edge: *which of these did this change add?*
-So every edge the diff introduced stands as a road of its own — pale yellow, small black arrows (the INCREASED card's)
-running the way the dependency points, from the class that took it on to the one it now
-leans on. "New" is measured, not guessed: an edge lives in the text of its source file, so
-only the changed files are re-read at the diff's base (`compute_fanio.references` on the old
-blob, with renames followed so a moved class is not a new dependency of everything that
-imports it), and what they did not reference there is new. Per view, too: a package road is
-new only if no class of one package used any class of the other before. It is the one
-standing layer in the city, and it can be because it is a diff's worth of edges, not a
-city's — past `ADDED_ROAD_MAX` (60) it is not drawn at all, and it steps aside while a
-hovered bundle is up.
+outgoing coupling (or instability, which is both at once) and a change set on screen, the
+colour raises a question ⌥ can only answer one building at a time, mixed in with every old
+edge: *which of these did this change add?* So every edge the diff introduced stands as a
+road of its own — pale yellow, small black arrows (the INCREASED card's) running the way the
+dependency points, from the class that took it on to the one it now leans on. "New" is
+measured, not guessed: an edge lives in the text of its source file, so only the changed
+files are re-read at the diff's base (`compute_fanio.references` on the old blob, with
+renames followed so a moved class is not a new dependency of everything that imports it), and
+what they did not reference there is new. Per view, too: a package road is new only if no
+class of one package used any class of the other before. It is the one standing layer in the
+city, and it can be because it is a diff's worth of edges, not a city's — past
+`ADDED_ROAD_MAX` (60) it is not drawn at all, and it steps aside while a hovered bundle is
+up.
+
+Those roads are routed by the very code that routes a ⌥ bundle — `layBundle`, one sweep from
+the class that took the dependency on, bundled into trunks the same way — so a new road runs
+the trail ⌥ would draw for it. It had a copy of the routing of its own once, one road per
+edge and no trunks, so wherever ⌥ shared a trunk the two drawings of the same edge did not
+match. And **⌥ tells the same story one building at a time**: hold it over a class the diff
+coupled and its whole bundle comes up, every road it had before *faded* to `ROAD_FADED` of
+its strength and the roads this diff laid in the same yellow, on the top deck, their peers'
+name tags yellow too — the tooltip counts them ("19 roads, 2 new"). Left at full strength,
+one new road on a domain class with a dozen old ones is a yellow thread in a red-and-blue
+weave; dropped, the bundle would lie about what the class sits on. A pair the diff coupled
+one way and that always depended on it the other is two roads of two ages, not one purple
+one.
 
 What makes the bundle readable:
 

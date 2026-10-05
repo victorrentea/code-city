@@ -1374,6 +1374,10 @@ html = """<!doctype html>
   .coupling-label.out  { background: rgba(29, 78, 216, 0.94); }
   .coupling-label.in   { background: rgba(185, 28, 28, 0.94); }
   .coupling-label.both { background: rgba(126, 34, 206, 0.94); }
+  /* ...a road this diff added: the new road's own pale yellow, in the arrows' near-black;
+     and while one is up, every other name on the bundle steps back with its road. */
+  .coupling-label.added { background: rgba(253, 230, 138, 0.97); color: #0f172a; text-shadow: none; }
+  .coupling-label.faded { opacity: 0.55; }
   .coupling-label.subject {   /* the one you asked about: on no road, so on no side */
     background: rgba(12, 32, 96, 0.96);
     box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.9), 0 6px 18px rgba(15, 23, 42, 0.4);
@@ -1519,6 +1523,7 @@ html = """<!doctype html>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
+    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;yellow road, black arrows: a dependency this diff added; under &#8997; the rest fade<br></span>
     &nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
@@ -3379,6 +3384,38 @@ for (const kind of ROAD_KINDS) {
   roadMaterial[kind] = new THREE.MeshBasicMaterial({
     color: ROAD_PALE[kind], side: THREE.DoubleSide });
 }
+// ...and the same two directions once more, for the edges the change set INTRODUCED: a
+// road this diff added is still a road out or a road in, it just wears the diff's own look
+// (see "The coupling the change set introduced"). A kind of its own rather than a flag on
+// the road, because a kind is what bundles: new and old must never share a trunk, or one
+// stretch of tarmac would have to be both colours at once.
+const ADDED_KIND = { out: "outAdded", in: "inAdded" };
+const ALL_ROAD_KINDS = [...ROAD_KINDS, ADDED_KIND.out, ADDED_KIND.in];
+function isAddedKind(kind) { return kind === ADDED_KIND.out || kind === ADDED_KIND.in; }
+function baseKind(kind) {
+  return kind === ADDED_KIND.out ? "out" : kind === ADDED_KIND.in ? "in" : kind;
+}
+
+// With the diff's new edges in a hovered bundle, every OLD road of it is drawn at this
+// share of its usual opacity: still there — the bundle has to tell the whole truth about
+// what the class sits on — but stepped back, so the few roads this change laid are the
+// ones the eye lands on. Not at full strength: on a domain class with a dozen incoming
+// roads, one new road is a yellow thread in a red-and-blue weave, found only by someone
+// who already knows where it is. 0.3 was tried first, and on the white plate the old
+// roads came out faint enough to miss; 0.4 keeps them readable and still clearly behind.
+const ROAD_FADED = 0.4;
+const _fadedTwins = new Map();
+function fadedTwin(material) {
+  let twin = _fadedTwins.get(material);
+  if (!twin) {
+    twin = material.clone();          // shares the map, so the faded traffic flows too
+    twin.transparent = true;
+    twin.opacity = material.opacity * ROAD_FADED;
+    twin.depthWrite = false;
+    _fadedTwins.set(material, twin);
+  }
+  return twin;
+}
 
 // ── The traffic ──────────────────────────────────────────────────────────────
 // A static band says two files are coupled; it does not say WHICH WAY the dependency
@@ -4135,8 +4172,11 @@ function showStreetsFor(entry) {
   const mutual = new Set();
   const homePackage = entry.file.district || "";
   const outsideOnly = interPkgOnly();
+  // Which of these edges the change set INTRODUCED, as "src → dst" — the same answer the
+  // standing layer draws, asked of this one building. Empty with no diff on screen.
+  const isNew = (src, dst) => addedEdgeKeys().has(src + "\\n" + dst);
   for (const [kind, peers] of [["out", outgoing], ["in", incoming]]) {
-    let n = 0, kept = 0;
+    let n = 0, kept = 0, added = 0;
     for (const [peerPath, value] of Object.entries(peers)) {
       if (peerPath === path) continue;
       if (n >= ROAD_CAP) { n++; continue; }
@@ -4149,11 +4189,17 @@ function showStreetsFor(entry) {
       // architecture. Dropped here, before routing, so the sweep never pays for them; the
       // tooltip still counts them as reachable, because they are.
       if (outsideOnly && packageOfPath(peerPath) === homePackage) continue;
+      const fresh = kind === "out" ? isNew(path, peerPath) : isNew(peerPath, path);
       // A pair that depends on both ways gets ONE road, in its own colour, rather than two
       // the reader has to notice are the same two classes. The tooltip still counts it on
       // both of its lines — it really is an edge each way.
+      //
+      // ...unless the diff added either half of it. Then the two directions are two facts
+      // of different ages — "they always used me, and now I use them too" — and a single
+      // purple road would have to be new and old at once, so each half keeps its own.
       const other = kind === "out" ? incoming[peerPath] : outgoing[peerPath];
-      if (other !== undefined) {
+      const otherFresh = kind === "out" ? isNew(peerPath, path) : isNew(path, peerPath);
+      if (other !== undefined && !fresh && !otherFresh) {
         kept++;
         if (mutual.has(peerPath)) continue;
         mutual.add(peerPath);
@@ -4172,6 +4218,7 @@ function showStreetsFor(entry) {
       // end — which is exactly the fact. Dropping it silently makes the bundle under-report
       // what the building is tied to, and that is the one thing it must never do.
       kept++;
+      if (fresh) added++;
       // Where a ⌘-click on this road lands, and the asymmetry is the whole point of it.
       // OUT: my own file, at the line where I first name them — the injection point, as a
       // rule, which is what "why does this depend on that" is actually asking. IN: THEIR
@@ -4180,12 +4227,13 @@ function showStreetsFor(entry) {
       // number serves both readings. A peer with no building on the plate still has a
       // file on disk, so an inbound road to a filtered-out class stays followable.
       const line = edgeLine(value);
-      bundle.push({ kind, weight, peer: buildingByPath.get(peerPath) || null,
+      bundle.push({ kind: fresh ? ADDED_KIND[kind] : kind, weight,
+                    peer: buildingByPath.get(peerPath) || null,
                     jump: line ? { path: kind === "out" ? path : peerPath, line } : null });
     }
     // What the tooltip needs to admit a truncation instead of quietly drawing 80 of 200 —
     // or, with the filter on, 2 of 14.
-    wireStatus[kind] = { drawn: Math.min(kept, ROAD_CAP), reachable: n };
+    wireStatus[kind] = { drawn: Math.min(kept, ROAD_CAP), reachable: n, added };
   }
   if (!bundle.length) return;
   if (bundle.length > ROAD_DRAW_MAX) {          // a wash of tarmac answers nothing
@@ -4195,7 +4243,65 @@ function showStreetsFor(entry) {
     return;
   }
   streetFlowFrozen = bundle.length > ROAD_FLOW_MAX;
+  // The new roads are what this bundle is about the moment it has any, so everything
+  // else in it steps back (ROAD_FADED). With none, nothing is faded: a bundle that is
+  // all old road is just the ⌥ reading it always was.
+  const fade = bundle.some(b => isAddedKind(b.kind));
 
+  const sinks = {};
+  for (const kind of ALL_ROAD_KINDS) {
+    sinks[kind] = { road: roadSink(), lane: roadSink(),
+                    gate: roadSink(), gateSide: roadSink() };
+  }
+  // One elevation for the whole network, per direction — not per road: a road that dips to
+  // its own two endpoints' floors is a road that ducks under whatever it crosses. The
+  // diff's own roads fly highest, so where a new road and an old one share a corridor the
+  // new one is the one on top, and the faded deck under it never shows through.
+  const grid = ensureRoadGrid();
+  const floorTop = grid ? grid.floorTop : entry.baseY;
+  const deck = { out: floorTop + ROAD_LIFT * cityUnit,
+                 in: floorTop + (ROAD_LIFT + ROAD_DECK) * cityUnit,
+                 both: floorTop + (ROAD_LIFT + 2 * ROAD_DECK) * cityUnit,
+                 [ADDED_KIND.out]: floorTop + (ROAD_LIFT + 3 * ROAD_DECK) * cityUnit,
+                 [ADDED_KIND.in]: floorTop + (ROAD_LIFT + 4 * ROAD_DECK) * cityUnit };
+
+  // Every polyline this bundle actually puts down, kept so the package gates can be
+  // placed on the tarmac as drawn rather than on the route as planned — the two differ by
+  // the lateral offset, and a gate half a road-width off its own road reads as litter.
+  const laid = layBundle(entry, bundle, sinks, deck, ADDED_WIDEN_HOVER);
+
+  addPackageGates(laid, entry, sinks, deck);
+
+  const group = new THREE.Group();
+  for (const kind of ALL_ROAD_KINDS) {
+    const fresh = isAddedKind(kind);
+    const look = material => (fade && !fresh ? fadedTwin(material) : material);
+    const roadway = sinkMesh(sinks[kind].road,
+                             fresh ? addedRoadMaterial : look(roadMaterial[kind]), 0);
+    // Quad i of this geometry is triangles 2i and 2i+1, so a raycast's faceIndex >> 1 is
+    // the index into the owner table the sink filled as it was built.
+    if (roadway) roadway.userData.roadOwners = sinks[kind].road.owner;
+    for (const mesh of [roadway,
+                        sinkMesh(sinks[kind].lane, fresh ? addedArrowMaterial : look(flowMaterial[kind]), 1),
+                        sinkMesh(sinks[kind].gate, look(gateMaterial[kind]), 2),
+                        sinkMesh(sinks[kind].gateSide, look(gateSideMaterial[kind]), 2)]) {
+      if (mesh) group.add(mesh);
+    }
+  }
+  if (!group.children.length) return;
+  scene.add(group);
+  streetGroup = group;
+  nameTheBundle(entry, bundle, fade);
+}
+
+// Route one building's bundle and lay it into `sinks` (one { road, lane } per kind it
+// uses), at `deck[kind]`. Returns every polyline it put down. The ONE router and the one
+// road-layer in the city: the ⌥ hover comes through here, and so does the standing layer
+// of the diff's new roads, which is what makes a new road run the very trail ⌥ would show
+// for it — the same sweep, the same bundling, the same corners — rather than a look-alike
+// that disagrees with it by a block. `widen` is how much wider than a hovered road of the
+// same weight a road of the diff's is drawn (see ADDED_WIDEN_*).
+function layBundle(entry, bundle, sinks, deck, widen) {
   const grid = ensureRoadGrid();
   let sweep = null;
   if (grid) {
@@ -4215,34 +4321,22 @@ function showStreetsFor(entry) {
     sweep = roadSweep(entry, grid, wanted);
   }
 
-  const sinks = {};
-  for (const kind of ROAD_KINDS) {
-    sinks[kind] = { road: roadSink(), lane: roadSink(),
-                    gate: roadSink(), gateSide: roadSink() };
-  }
-  // One elevation for the whole network, per direction — not per road: a road that dips to
-  // its own two endpoints' floors is a road that ducks under whatever it crosses.
-  const floorTop = grid ? grid.floorTop : entry.baseY;
-  const deck = { out: floorTop + ROAD_LIFT * cityUnit,
-                 in: floorTop + (ROAD_LIFT + ROAD_DECK) * cityUnit,
-                 both: floorTop + (ROAD_LIFT + 2 * ROAD_DECK) * cityUnit };
   // Out and back sit either side of their shared centreline; a both-ways road has no
-  // counterpart to keep clear of, so it takes the middle.
+  // counterpart to keep clear of, so it takes the middle. A new road keeps its direction's
+  // side, so new-out and new-in between the same pair never land on the same tarmac.
   const SIDE = { out: 1, in: -1, both: 0 };
-
-  // Every polyline this bundle actually puts down, kept so the package gates can be
-  // placed on the tarmac as drawn rather than on the route as planned — the two differ by
-  // the lateral offset, and a gate half a road-width off its own road reads as litter.
   const laid = [];
 
   // One lateral sign per direction, so a trunk carrying traffic out and one carrying it in
   // can share a corridor without ever sharing a segment.
   const draw = (points, weight, kind, jump) => {
     if (points.length < 2) return;
-    const width = roadWidth(weight);
+    const fresh = isAddedKind(kind);
+    const width = fresh ? Math.min(widen * roadWidth(weight), ROAD_MAX_W * cityUnit)
+                        : roadWidth(weight);
     let path = orthogonalize(points);
-    path = offsetPath(path, SIDE[kind] * (width / 2 + ROAD_GAP * cityUnit / 2));
-    if (kind === "in") path.reverse();
+    path = offsetPath(path, SIDE[baseKind(kind)] * (width / 2 + ROAD_GAP * cityUnit / 2));
+    if (baseKind(kind) === "in") path.reverse();
     laid.push({ path, width, kind });
     if (kind === "both") {
       // Both halves run from their own far end IN to the middle, so the traffic on them
@@ -4255,10 +4349,14 @@ function showStreetsFor(entry) {
       }
       return;
     }
-    addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump);
+    // The diff's roads carry its small black arrows instead of wedges: denser, and on a
+    // wider share of the lane, the same as they stand when no key is held.
+    if (fresh) addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump,
+                       ADDED_SPACING, ADDED_LANE);
+    else addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump);
   };
 
-  for (const kind of ROAD_KINDS) {
+  for (const kind of ALL_ROAD_KINDS) {
     const side = bundle.filter(b => b.kind === kind);
     if (!side.length) continue;
     // Each peer's own end of the tree, and the anchor its stub runs to.
@@ -4319,26 +4417,7 @@ function showStreetsFor(entry) {
       draw([from, to], weight, kind, item.jump);
     }
   }
-
-  addPackageGates(laid, entry, sinks, deck);
-
-  const group = new THREE.Group();
-  for (const kind of ROAD_KINDS) {
-    const roadway = sinkMesh(sinks[kind].road, roadMaterial[kind], 0);
-    // Quad i of this geometry is triangles 2i and 2i+1, so a raycast's faceIndex >> 1 is
-    // the index into the owner table the sink filled as it was built.
-    if (roadway) roadway.userData.roadOwners = sinks[kind].road.owner;
-    for (const mesh of [roadway,
-                        sinkMesh(sinks[kind].lane, flowMaterial[kind], 1),
-                        sinkMesh(sinks[kind].gate, gateMaterial[kind], 2),
-                        sinkMesh(sinks[kind].gateSide, gateSideMaterial[kind], 2)]) {
-      if (mesh) group.add(mesh);
-    }
-  }
-  if (!group.children.length) return;
-  scene.add(group);
-  streetGroup = group;
-  nameTheBundle(entry, bundle);
+  return laid;
 }
 
 // ── Naming the bundle ───────────────────────────────────────────────────────
@@ -4347,16 +4426,23 @@ function showStreetsFor(entry) {
 // and nothing else: the question is "which classes", so a road arriving at an unnamed block
 // is a road that answers half of it — and a name belonging to some third class that happens
 // to be tall is worse than no name at all.
-function nameTheBundle(entry, bundle) {
+//
+// A peer on a road the diff added is named first, so a pair that is old one way and new
+// the other carries the new road's name tag; with `fade`, every other peer's tag steps
+// back with its road.
+function nameTheBundle(entry, bundle, fade) {
   const named = new Set();
-  for (const item of [{ peer: entry, kind: "subject" }, ...bundle]) {
+  const added = bundle.filter(b => isAddedKind(b.kind));
+  const rest = bundle.filter(b => !isAddedKind(b.kind));
+  for (const item of [{ peer: entry, kind: "subject" }, ...added, ...rest]) {
     const peer = item.peer;
     if (!peer || named.has(peer.file.path)) continue;
     named.add(peer.file.path);
     const div = document.createElement("div");
     // Each name wears the colour of the road it is on, so "which of these depends on
     // which" is answered by the labels alone once the roads are behind a tower.
-    div.className = "coupling-label " + item.kind;
+    div.className = "coupling-label " + (isAddedKind(item.kind) ? "added"
+      : item.kind + (fade && item.kind !== "subject" ? " faded" : ""));
     div.textContent = peer.file.name;
     const label = new CSS2DObject(div);
     label.position.set(peer.mesh.position.x, peer.roofY + LABEL_STEM, peer.mesh.position.z);
@@ -4367,10 +4453,9 @@ function nameTheBundle(entry, bundle) {
 }
 
 // ── The coupling the change set introduced ──────────────────────────────────
-// With COLOR on incoming or outgoing coupling and a diff on screen, the question the
-// colour raises is "and which of these did THIS change add?" — and ⌥ answers it one
-// building at a time, mixing the new edges in with every old one. So the new ones are
-// simply there: a road for every edge the diff introduced, standing, no key held.
+// With COLOR on a coupling metric and a diff on screen, the question the colour raises is
+// "and which of these did THIS change add?" So the new ones are simply there: a road for
+// every edge the diff introduced, standing, no key held.
 //
 // The one exception to "hold a key, do not tick a box", and a deliberate one: the set is
 // a diff's worth of edges, not a city's — a handful on a normal PR — so it is a reading,
@@ -4379,16 +4464,31 @@ function nameTheBundle(entry, bundle) {
 // bundle: a change that adds two hundred dependencies is a finding the colour already
 // shows, and two hundred roads would hide it.
 //
-// Its own look, so it is never mistaken for a hovered bundle: a pale yellow road (fresh
+// Its own look, so it is never mistaken for an old road: a pale yellow road (fresh
 // tarmac, the one colour the city spends nowhere else) and small BLACK arrows on it, running
 // the way the dependency points — out of the class that took on the dependency, into the
-// one it now depends on. In both colour modes, because it is the same edge: the one
-// building's new fan-out is the other's new fan-in, and the arrows say which is which.
+// one it now depends on. The same look in every coupling colour, because it is the same
+// edge: one building's new fan-out is the other's new fan-in, and the arrows say which is
+// which. And the same look under ⌥: hold it over a building and its whole bundle comes up,
+// the old roads faded and its new ones in this yellow on top (see showStreetsFor) — the
+// standing layer steps aside for it, since the hovered bundle now carries its share.
+//
+// Routed by layBundle, the one router ⌥ uses, from the class that took the dependency on:
+// a standing road runs the very trail ⌥-ing that class would draw for it. It ran on a
+// separate copy of the routing once, one road per edge with no trunk, so wherever ⌥
+// shared a trunk the two drawings of the same edge did not match.
 const ADDED_ROAD_MAX = 60;
 const ADDED_ROAD_PALE = 0xfde68a;
 const ADDED_ARROW = 0x0f172a;    // MARK_INK, the change marks' near-black
 const ADDED_SPACING = 10;       // × cityUnit between two arrows — denser than the wedges
+const ADDED_LANE = 0.8;         // the share of the road the arrows ride on
 const ADDED_LIFT = 0.35;        // × cityUnit: under both hover decks, which fly over it
+// How much wider than an old road of the same weight a new one is drawn. Standing: twice,
+// because it has to read from the zoom the city opens at, where a single-reference road is
+// a hairline and its arrows are noise. Under ⌥: half again — the bundle is looked at up
+// close, and the colour and the faded roads around it already do most of the standing out.
+const ADDED_WIDEN_STANDING = 2;
+const ADDED_WIDEN_HOVER = 1.5;
 
 // An arrow, not a wedge: the hover traffic is read for a second while the key is down,
 // this is read for as long as the city is open, and an arrow says its direction from any
@@ -4419,18 +4519,53 @@ const addedArrowMaterial = new THREE.MeshBasicMaterial({
   color: ADDED_ARROW, map: addedArrowTex, transparent: true, depthWrite: false,
   side: THREE.DoubleSide,
 });
+// A new road leaving the hovered class's package gets its gate like any other, in the
+// new road's own yellow, a shade darker on the walls (see gateMaterial).
+for (const kind of [ADDED_KIND.out, ADDED_KIND.in]) {
+  gateMaterial[kind] = new THREE.MeshBasicMaterial({ color: ADDED_ROAD_PALE, side: THREE.DoubleSide });
+  gateSideMaterial[kind] = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(ADDED_ROAD_PALE).multiplyScalar(0.72), side: THREE.DoubleSide,
+  });
+}
 
 let addedGroup = null;
 const addedPeers = new Set();   // unchanged buildings at the far end of a new road: named too
 
+// Whether the edges on screen can be told new from old at all: only for the change set
+// the page opened on, which is the one the generator diffed for edges. A commit picked
+// further back in the dropdown has no such answer, so it marks none rather than the
+// opening diff's roads under a different label.
+function addedCouplingKnown() {
+  if (changeMode() === "off" || !HAS_CHANGES) return false;
+  return !(hasCommitHistory() && commitChoice !== 0);
+}
+
+// ...and whether the standing layer is up: only while the colour is asking a coupling
+// question. Incoming and outgoing are the two halves of it, and instability, Ce/(Ce+Ca),
+// is both at once — every new edge moves it at both of its ends.
 function addedCouplingOn() {
   const key = colorMetricKey();
-  if (key !== "fan_in" && key !== "fan_out") return false;
-  if (changeMode() === "off" || !HAS_CHANGES) return false;
-  // Only the change set the page opened on was diffed for edges (see the generator);
-  // a commit picked further back in the dropdown has no such answer, so it draws none
-  // rather than the opening diff's roads under a different label.
-  return !(hasCommitHistory() && commitChoice !== 0);
+  if (key !== "fan_in" && key !== "fan_out" && key !== "instability") return false;
+  return addedCouplingKnown();
+}
+
+// The current view's new edges as a set of "src\\ndst", for a hovered bundle to ask of each
+// of its roads. Built once per view: the answer is a property of the data, not of the hover.
+const _addedKeysByView = new Map();
+const _NO_ADDED = new Set();
+function addedEdgeKeys() {
+  if (!addedCouplingKnown()) return _NO_ADDED;
+  const view = couplingViewName();
+  let keys = _addedKeysByView.get(view);
+  if (!keys) {
+    keys = new Set();
+    const adjacency = (ADDED_COUPLING && ADDED_COUPLING[view]) || {};
+    for (const [src, peers] of Object.entries(adjacency)) {
+      for (const dst of peers) keys.add(src + "\\n" + dst);
+    }
+    _addedKeysByView.set(view, keys);
+  }
+  return keys;
 }
 
 function clearAddedCoupling() {
@@ -4458,52 +4593,39 @@ function addedEdges() {
   return edges;
 }
 
+// The help box names the yellow road only while there is one to see: with no diff, or a
+// diff that coupled nothing new, the line would describe a mark that is nowhere.
+function syncAddedRoadsHint() {
+  const hint = document.getElementById("addedRoadsHint");
+  if (hint) hint.hidden = !(addedCouplingKnown() && addedEdgeKeys().size);
+}
+
 // Runs once per rebuild, never per hover: one sweep per source building, which is the
 // cost a single ⌥ bundle pays, times the handful of classes a diff touches.
 function drawAddedCoupling() {
   clearAddedCoupling();
   addedPeers.clear();
+  syncAddedRoadsHint();
   if (!addedCouplingOn()) return;
   const edges = addedEdges();
   if (!edges.length || edges.length > ADDED_ROAD_MAX) return;
   const grid = ensureRoadGrid();
-  const y = (grid ? grid.floorTop : 0) + ADDED_LIFT * cityUnit;
-  const road = roadSink(), lane = roadSink();
+  const kind = ADDED_KIND.out;
+  const deck = { [kind]: (grid ? grid.floorTop : 0) + ADDED_LIFT * cityUnit };
+  const sinks = { [kind]: { road: roadSink(), lane: roadSink() } };
   const bySource = new Map();
   for (const edge of edges) {
     if (!bySource.has(edge.from)) bySource.set(edge.from, []);
-    bySource.get(edge.from).push(edge);
+    bySource.get(edge.from).push({ kind, weight: edge.weight, peer: edge.to, jump: null });
     if (!edge.to.file.changed) addedPeers.add(edge.to);
   }
-  for (const [from, out] of bySource) {
-    const sweep = grid ? roadSweep(from, grid, out.flatMap(e => roadRing(e.to, grid))) : null;
-    for (const { to, weight } of out) {
-      const state = sweep ? roadBestState(sweep, roadRing(to, grid)) : -1;
-      let points;
-      if (state >= 0) {
-        const states = [];
-        for (let s = state; s >= 0; s = sweep.prev[s]) states.push(s);
-        states.reverse();
-        points = statesToPoints(states, grid);
-        points.unshift(baseAnchor(from, points[0]));
-        points.push(baseAnchor(to, points[points.length - 1]));
-      } else {
-        // Fenced in, or no grid: a straight L, as a hovered bundle falls back to.
-        const here = baseAnchor(from, to.mesh.position), there = baseAnchor(to, from.mesh.position);
-        points = [here, new THREE.Vector3(there.x, here.y, here.z), there];
-      }
-      // Twice a hovered road's width: a hovered bundle is looked at up close, for a
-      // second; this one has to read from the zoom the city opens at, where a single-
-      // reference road is a hairline and its arrows are noise.
-      const width = Math.min(2 * roadWidth(weight), ROAD_MAX_W * cityUnit);
-      // Offset to the road's own right, so a pair the diff coupled BOTH ways gets two
-      // roads side by side with their arrows opposed, not two on the same tarmac.
-      const path = offsetPath(orthogonalize(points), width / 2 + ROAD_GAP * cityUnit / 2);
-      addRoad(road, lane, path, width, y, null, ADDED_SPACING, 0.8);
-    }
-  }
+  // Each source's new edges are its outbound bundle, routed from it exactly as ⌥ would
+  // route them. A pair the diff coupled BOTH ways is two sources' bundles, each road on
+  // its own right, so the two lie side by side with their arrows opposed.
+  for (const [from, bundle] of bySource) layBundle(from, bundle, sinks, deck, ADDED_WIDEN_STANDING);
   const group = new THREE.Group();
-  for (const mesh of [sinkMesh(road, addedRoadMaterial, 0), sinkMesh(lane, addedArrowMaterial, 1)]) {
+  for (const mesh of [sinkMesh(sinks[kind].road, addedRoadMaterial, 0),
+                      sinkMesh(sinks[kind].lane, addedArrowMaterial, 1)]) {
     if (mesh) group.add(mesh);
   }
   if (!group.children.length) return;
@@ -5193,7 +5315,9 @@ function wireNote(key) {
   const drawn = status.drawn === status.reachable
     ? `${status.drawn} road${status.drawn === 1 ? "" : "s"}`
     : `${status.drawn} of ${status.reachable} drawn`;
-  return ` <span class="perkloc">(${drawn})</span>`;
+  // ...and how many of those this diff laid: the yellow ones, counted where the number is.
+  const added = status.drawn && status.added ? `, ${status.added} new` : "";
+  return ` <span class="perkloc">(${drawn}${added})</span>`;
 }
 
 function formatDistrictHover(district) {
@@ -6355,10 +6479,13 @@ function syncUndersideView() {
 // crosses a long road and a short one at the same speed. Negative because a texture offset
 // slides the pattern the opposite way, and +v is the far end of every run.
 function updateStreetFlow() {
-  if (addedGroup) {
-    // A hovered bundle is the question being asked right now; the standing layer steps
-    // aside for it rather than crossing it road for road.
-    addedGroup.visible = !streetGroup;
+  // A hovered bundle is the question being asked right now; the standing layer steps
+  // aside for it rather than crossing it road for road — the bundle draws its own share
+  // of the new roads, in the same look.
+  if (addedGroup) addedGroup.visible = !streetGroup;
+  // The arrows move whichever of the two is carrying them, and even on a bundle too big
+  // for its wedges to flow: there are only ever a diff's worth of them.
+  if (addedGroup || streetGroup) {
     addedArrowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / ADDED_SPACING)) % 1;
   }
   if (!streetGroup || streetFlowFrozen) return;
