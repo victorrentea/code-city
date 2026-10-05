@@ -1659,11 +1659,10 @@ html = """<!doctype html>
 </section>
 <nav id="breadcrumb" class="breadcrumb" hidden aria-label="package scope"></nav>
 <div class="corner">
-  <a class="cityrepo" href="__TOOL_REPO__" target="_blank" rel="noopener">&#9874; Build one for your own repo:
-    <span class="cityrepo-url">__TOOL_REPO__</span></a>
+  <a class="cityrepo" href="__TOOL_REPO__" target="_blank" rel="noopener"><span class="cityrepo-url">__TOOL_REPO__</span></a>
   <p class="cityorigin">Original
     <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>
-    idea by Richard Wettel (USI Lugano, 2008).</p>
+    by Richard Wettel (USI Lugano, 2008).</p>
 </div>
 <div id="hover"></div>
 
