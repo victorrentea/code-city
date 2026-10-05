@@ -16,9 +16,14 @@ import subprocess
 import repo_files
 # --- vendored tree-sitter discovery (parameterized) ---
 _here = os.path.dirname(os.path.abspath(__file__))
-for _p in (os.environ.get("HEATMAP_PYLIBS"), os.path.join(_here, ".pylibs")):
-    if _p and os.path.isdir(_p):
+# A compiled binding only loads in the interpreter it was built for, so the vendored copy
+# lives under .pylibs/py<major>.<minor>; a flat .pylibs is the layout before that split.
+_tag = "py%d.%d" % sys.version_info[:2]
+for _p in (os.environ.get("HEATMAP_PYLIBS"), os.path.join(_here, ".pylibs", _tag),
+           os.path.join(_here, ".pylibs")):
+    if _p and os.path.isdir(os.path.join(_p, "tree_sitter")):
         sys.path.insert(0, _p)
+        break
 import tree_sitter_java as tsj
 from tree_sitter import Language, Parser
 

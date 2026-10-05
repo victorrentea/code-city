@@ -63,7 +63,9 @@ done
 export HEATMAP_REPO="${1:-${HEATMAP_REPO:-$(git rev-parse --show-toplevel)}}"
 export HEATMAP_REPO="$(cd "$HEATMAP_REPO" && pwd)"
 export HEATMAP_OUT="${2:-${HEATMAP_OUT:-$HEATMAP_REPO/.codecity}}"
-export HEATMAP_PYLIBS="$SCRIPT_DIR/.pylibs"
+# Per interpreter: tree-sitter's binding is compiled, and a copy vendored by one Python
+# cannot be loaded by another (3.12's broke the day Homebrew moved python3 to 3.14).
+export HEATMAP_PYLIBS="$SCRIPT_DIR/.pylibs/$(python3 -c 'import sys; print("py%d.%d" % sys.version_info[:2])')"
 # Absolute, because every step below runs from SCRIPT_DIR, not from where we were called.
 if [ -n "${CODECITY_COVERAGE:-}" ]; then
   [ -f "$CODECITY_COVERAGE" ] || { echo "--coverage: no such file: $CODECITY_COVERAGE" >&2; exit 2; }
@@ -76,7 +78,7 @@ fi
 # One-time: vendor the tree-sitter parsers the complexity pass needs.
 if [ ! -d "$HEATMAP_PYLIBS" ]; then
   echo "[0/6] vendoring tree-sitter into $HEATMAP_PYLIBS ..."
-  pip3 install -q -r "$SCRIPT_DIR/requirements.txt" --target "$HEATMAP_PYLIBS"
+  python3 -m pip install -q -r "$SCRIPT_DIR/requirements.txt" --target "$HEATMAP_PYLIBS"
 fi
 
 # A SECOND filter, on top of the one that matters. Which files are in the repo is now

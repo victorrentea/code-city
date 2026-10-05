@@ -24,7 +24,8 @@ open ~/workspace/your-repo/.codecity/codecity.html
 ```
 
 That is the whole configuration: the repo to analyse. The first run vendors the
-tree-sitter parsers into `.pylibs/` (needs `python3` + `pip3` + `git`); later runs skip it.
+tree-sitter parsers into `.pylibs/py<major>.<minor>/`, one folder per `python3` (needs
+`python3` with pip + `git`); later runs with the same interpreter skip it.
 Output lands in `REPO/.codecity/`:
 
 | File | What it is |

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,7 +40,7 @@ class RenderCodecityTest(unittest.TestCase):
             env["HEATMAP_TITLE"] = "Code City"
             subprocess.run(
                 [
-                    "python3",
+                    sys.executable,
                     str(SCRIPT_DIR / "render_codecity.py"),
                     str(SAMPLE_TSV),
                 ],
@@ -277,7 +278,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -296,7 +297,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -403,7 +404,7 @@ class RenderCodecityTest(unittest.TestCase):
             (Path(tmp) / "change-axis-names.tsv").write_text("axis\tname\tfiles\n0\tOwner\t3\n")
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(Path(tmp) / "codemap.tsv")],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(Path(tmp) / "codemap.tsv")],
                            check=True, cwd=SCRIPT_DIR, env=env)
             html = (Path(tmp) / "codecity.html").read_text()
             self.assertIn('<option value="change_dna">', html)
@@ -416,7 +417,7 @@ class RenderCodecityTest(unittest.TestCase):
 
             # Without the files, the page carries no axes and takes the option away.
             os.remove(Path(tmp) / "change-axes.tsv")
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(Path(tmp) / "codemap.tsv")],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(Path(tmp) / "codemap.tsv")],
                            check=True, cwd=SCRIPT_DIR, env=env)
             html = (Path(tmp) / "codecity.html").read_text()
             self.assertIn("const CHANGE_AXES = [];", html)
@@ -429,7 +430,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -478,7 +479,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -495,7 +496,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -541,7 +542,7 @@ class RenderCodecityTest(unittest.TestCase):
             env["HEATMAP_REPO"] = str(repo)
             env["HEATMAP_OUT"] = str(repo)
             for script in ("compute_complexity.py", "compute_fanio.py"):
-                subprocess.run(["python3", str(SCRIPT_DIR / script)],
+                subprocess.run([sys.executable, str(SCRIPT_DIR / script)],
                                check=True, cwd=str(repo), env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -598,7 +599,7 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("HEATMAP_CHANGED_BASE", None)
             env.pop("GITHUB_BASE_REF", None)
             for script in ("compute_complexity.py", "compute_fanio.py"):
-                subprocess.run(["python3", str(SCRIPT_DIR / script)], check=True, cwd=str(repo),
+                subprocess.run([sys.executable, str(SCRIPT_DIR / script)], check=True, cwd=str(repo),
                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             hdr = (
                 "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
@@ -608,7 +609,7 @@ class RenderCodecityTest(unittest.TestCase):
             tsv = repo / "codemap.tsv"
             tsv.write_text(hdr + "".join(
                 f"src/main/java/app/{n}.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n" for n in names))
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
                            check=True, cwd=str(repo), env=env, stdout=subprocess.DEVNULL)
 
             import json
@@ -632,7 +633,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -668,7 +669,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             page = html.read_text()
@@ -728,7 +729,7 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("HEATMAP_CHANGED_BASE", None)           # rely purely on auto-detection
             env.pop("GITHUB_BASE_REF", None)
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
                 check=True,
                 cwd=str(repo),
                 env=env,
@@ -796,7 +797,7 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("GITHUB_REF", None)
             env["PATH"] = "/usr/bin:/bin"                          # keep `gh` out of the picture
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
                 check=True,
                 cwd=str(repo),
                 env=env,
@@ -860,7 +861,7 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("GITHUB_BASE_REF", None)
             env["PATH"] = "/usr/bin:/bin"
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
                 check=True,
                 cwd=str(repo),
                 env=env,
@@ -922,7 +923,7 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("GITHUB_REF", None)
             env["PATH"] = "/usr/bin:/bin"
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
                 check=True,
                 cwd=str(repo),
                 env=env,
@@ -1002,7 +1003,7 @@ class RenderCodecityTest(unittest.TestCase):
             env.pop("HEATMAP_CHANGED_BASE", None)
             env.pop("GITHUB_BASE_REF", None)
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
                 check=True,
                 cwd=str(repo),
                 env=env,
@@ -1066,7 +1067,7 @@ class RenderCodecityTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
             subprocess.run(
-                ["python3", str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
@@ -1129,7 +1130,7 @@ class CrapTest(unittest.TestCase):
         env = os.environ.copy()
         env["HEATMAP_REPO"] = str(tmp)
         env["HEATMAP_OUT"] = str(out)
-        subprocess.run(["python3", str(SCRIPT_DIR / "compute_crap.py")],
+        subprocess.run([sys.executable, str(SCRIPT_DIR / "compute_crap.py")],
                        check=True, cwd=SCRIPT_DIR, env=env)
         path = Path(out) / "crap-per-file.tsv"
         if not path.exists():
@@ -1189,7 +1190,7 @@ class CrapTest(unittest.TestCase):
             env["HEATMAP_OUT"] = str(out)
             for step in ("compute_complexity.py", "compute_fanio.py", "compute_crap.py",
                          "build_heatmap.py", "render_codecity.py"):
-                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                subprocess.run([sys.executable, str(SCRIPT_DIR / step)],
                                check=True, cwd=SCRIPT_DIR, env=env)
             html = (out / "codecity.html").read_text()
             files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html, re.S).group(1))
@@ -1225,7 +1226,7 @@ class CrapTest(unittest.TestCase):
             env = os.environ.copy()
             env["HEATMAP_REPO"] = str(tmp)
             env["HEATMAP_OUT"] = str(out)
-            subprocess.run(["python3", str(SCRIPT_DIR / "compute_crap.py")],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "compute_crap.py")],
                            check=True, cwd=SCRIPT_DIR, env=env)
             # The base branch commits what it measured, where the config says to look.
             baseline = Path(tmp) / "coverage-baseline.tsv"
@@ -1240,7 +1241,7 @@ class CrapTest(unittest.TestCase):
             env["CODECITY_COVERAGE_BASELINE"] = "coverage-baseline.tsv"
             for step in ("compute_complexity.py", "compute_fanio.py", "compute_crap.py",
                          "build_heatmap.py", "render_codecity.py"):
-                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                subprocess.run([sys.executable, str(SCRIPT_DIR / step)],
                                check=True, cwd=SCRIPT_DIR, env=env)
             html = (out / "codecity.html").read_text()
             before = json.loads(re.search(r"const BEFORE = (\{.*?\});\n", html, re.S).group(1))
@@ -1266,7 +1267,7 @@ class CrapTest(unittest.TestCase):
             env["CODECITY_COVERAGE_BASELINE"] = "nothing/here.tsv"
             for step in ("compute_complexity.py", "compute_fanio.py", "compute_crap.py",
                          "build_heatmap.py", "render_codecity.py"):
-                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                subprocess.run([sys.executable, str(SCRIPT_DIR / step)],
                                check=True, cwd=SCRIPT_DIR, env=env)
             html = (out / "codecity.html").read_text()
             before = json.loads(re.search(r"const BEFORE = (\{.*?\});\n", html, re.S).group(1))
@@ -1303,7 +1304,7 @@ class CrapTest(unittest.TestCase):
             env["HEATMAP_REPO"] = str(tmp)
             env["HEATMAP_OUT"] = str(tmp)
             env["CODECITY_JACOCO_ACCEPTANCE"] = "target/site/jacoco-acceptance/jacoco.xml"
-            subprocess.run(["python3", str(SCRIPT_DIR / "compute_crap.py")],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "compute_crap.py")],
                            check=True, cwd=SCRIPT_DIR, env=env)
             with (Path(tmp) / "crap-per-file.tsv").open() as f:
                 rows = {r["file"]: r for r in csv.DictReader(
@@ -1324,7 +1325,7 @@ class CrapTest(unittest.TestCase):
             solo.write_text(SAMPLE_TSV.read_text())
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
-            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(solo)],
                            check=True, cwd=SCRIPT_DIR, env=env)
             html = (Path(tmp) / "codecity.html").read_text()
             files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html, re.S).group(1))
@@ -1359,7 +1360,7 @@ class CrapTest(unittest.TestCase):
             env["CODECITY_COVERAGE"] = str(cov)
             for step in ("compute_complexity.py", "compute_fanio.py",
                          "build_heatmap.py", "render_codecity.py"):
-                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                subprocess.run([sys.executable, str(SCRIPT_DIR / step)],
                                check=True, cwd=SCRIPT_DIR, env=env)
             with (out / "codemap-packages.tsv").open() as f:
                 pkg = next(r for r in csv.DictReader(f, delimiter="\t")
@@ -1400,7 +1401,7 @@ class RepoFilesTest(unittest.TestCase):
         env["HEATMAP_OUT"] = str(repo)
         env.pop("HEATMAP_PRUNE", None)
         for script in ("compute_complexity.py", "compute_fanio.py"):
-            subprocess.run(["python3", str(SCRIPT_DIR / script)],
+            subprocess.run([sys.executable, str(SCRIPT_DIR / script)],
                            check=True, cwd=str(repo), env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with (repo / "fanio-per-file.tsv").open() as f:
