@@ -312,7 +312,7 @@ a third hand you do not have.
 **The coupling the diff introduced is drawn without asking.** With COLOR on incoming or
 outgoing coupling and a change set on screen, the colour raises a question ⌥ can only answer
 one building at a time, mixed in with every old edge: *which of these did this change add?*
-So every edge the diff introduced stands as a road of its own — pale yellow, black chevrons
+So every edge the diff introduced stands as a road of its own — pale yellow, small black arrows (the INCREASED card's)
 running the way the dependency points, from the class that took it on to the one it now
 leans on. "New" is measured, not guessed: an edge lives in the text of its source file, so
 only the changed files are re-read at the diff's base (`compute_fanio.references` on the old

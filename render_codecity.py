@@ -4380,34 +4380,40 @@ function nameTheBundle(entry, bundle) {
 // shows, and two hundred roads would hide it.
 //
 // Its own look, so it is never mistaken for a hovered bundle: a pale yellow road (fresh
-// tarmac, the one colour the city spends nowhere else) and BLACK chevrons on it, running
+// tarmac, the one colour the city spends nowhere else) and small BLACK arrows on it, running
 // the way the dependency points — out of the class that took on the dependency, into the
 // one it now depends on. In both colour modes, because it is the same edge: the one
 // building's new fan-out is the other's new fan-in, and the arrows say which is which.
 const ADDED_ROAD_MAX = 60;
 const ADDED_ROAD_PALE = 0xfde68a;
-const ADDED_ARROW = 0x111111;
-const ADDED_SPACING = 12;       // × cityUnit between two chevrons — denser than the wedges
+const ADDED_ARROW = 0x0f172a;    // MARK_INK, the change marks' near-black
+const ADDED_SPACING = 10;       // × cityUnit between two arrows — denser than the wedges
 const ADDED_LIFT = 0.35;        // × cityUnit: under both hover decks, which fly over it
 
-// A chevron, not a wedge: the hover traffic is read for a second while the key is down,
-// this is read for as long as the city is open, and an arrowhead says its direction from
-// any one frame without having to be watched. Tip toward canvas top = +v = travel.
-function chevronTexture() {
+// An arrow, not a wedge: the hover traffic is read for a second while the key is down,
+// this is read for as long as the city is open, and an arrow says its direction from any
+// one frame without having to be watched. The SAME arrow as the INCREASED card's icon
+// (upArrowIcon: a solid head on a stem, MARK_INK), small, one every ADDED_SPACING — a
+// big chevron filling the lane read as hazard tape, not as "this way". Tip toward canvas
+// top = +v = the direction of travel.
+function arrowTexture() {
   const canvas = document.createElement("canvas");
   canvas.width = 64; canvas.height = 128;
   const ctx = canvas.getContext("2d");
   ctx.fillStyle = "#fff";
   ctx.beginPath();
-  ctx.moveTo(4, 52);  ctx.lineTo(32, 8);  ctx.lineTo(60, 52);
-  ctx.lineTo(60, 72); ctx.lineTo(32, 30); ctx.lineTo(4, 72);
+  // upArrowIcon's polygon — (0,-9) (7,-1) (2.5,-1) (2.5,9) (-2.5,9) (-2.5,-1) (-7,-1) —
+  // at 2.6 px a unit across and 2.2 along, centred on the lane.
+  const pts = [[0, -9], [7, -1], [2.5, -1], [2.5, 9], [-2.5, 9], [-2.5, -1], [-7, -1]];
+  pts.forEach(([x, y], i) => ctx[i ? "lineTo" : "moveTo"](32 + x * 2.6, 30 + y * 2.2));
   ctx.closePath();
   ctx.fill();
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
   return tex;
 }
-const addedArrowTex = chevronTexture();
+const addedArrowTex = arrowTexture();
 const addedRoadMaterial = new THREE.MeshBasicMaterial({ color: ADDED_ROAD_PALE, side: THREE.DoubleSide });
 const addedArrowMaterial = new THREE.MeshBasicMaterial({
   color: ADDED_ARROW, map: addedArrowTex, transparent: true, depthWrite: false,
