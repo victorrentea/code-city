@@ -5351,6 +5351,14 @@ const INTRO_CHANNELS = [
 ];
 const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-black, like them
 
+// A small up arrow (head + stem), centred on (cx, cy): the INCREASED card's icon, saying
+// in one glance which way the PR moved the metric.
+function upArrowIcon(cx, cy) {
+  const p = (x, y) => `${(cx + x).toFixed(1)},${(cy + y).toFixed(1)}`;
+  return `<polygon points="${[p(0, -9), p(7, -1), p(2.5, -1), p(2.5, 9), p(-2.5, 9), p(-2.5, -1), p(-7, -1)].join(" ")}" ` +
+    `fill="${MARK_INK}"/>`;
+}
+
 // The clearest change mark on screen, or null when the city carries none. A row of black
 // arrowheads standing on a roof or a wall is the one thing on a building that the three
 // metric selectors do NOT explain, so if one is up at startup the intro has to name it.
@@ -5622,6 +5630,7 @@ function buildIntro() {
       select: () => changeSelect,
       sub: "versus its previous value",
       ring: changeMark.ring,
+      upArrow: true,
     });
     anchors.changes = changeMark.anchor;
   }
@@ -5732,6 +5741,7 @@ function buildIntro() {
       `<rect x="${box.x}" y="${box.y}" width="6" height="${box.h}" rx="3" fill="${row.color}"/>` +
       `<text x="${box.x + 16}" y="${box.y + 21}" font-size="13" font-weight="700" fill="${row.color}">${row.title}</text>` +
       `<text x="${box.x + 16}" y="${box.y + 39}" font-size="12.5" fill="#344054">${escapeXml(row.sub)}</text>` +
+      (row.upArrow ? upArrowIcon(box.x + box.w - 20, box.y + box.h / 2) : '') +
       '</g>'
     );
   }
