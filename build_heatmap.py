@@ -56,6 +56,9 @@ OUT_FILE = os.path.join(OUT_DIR, "codemap.tsv")
 COMPLEXITY_FILE = os.path.join(OUT_DIR, "complexity-per-file.tsv")
 FANIO_FILE = os.path.join(OUT_DIR, "fanio-per-file.tsv")
 CRAP_FILE = os.path.join(OUT_DIR, "crap-per-file.tsv")
+# Coverage somebody else measured, handed over as JSON (coverage_input.py says the format
+# and why it is not a step of this pipeline). Unset is the normal case.
+COVERAGE_FILE = os.environ.get("CODECITY_COVERAGE", "")
 
 # load bug issue set (optional — absent for repos without a bug-issue list, e.g. when
 # fetch_bugs.py was never run because no GITHUB_TOKEN/GH_TOKEN was available)
@@ -410,8 +413,13 @@ if os.path.exists(CRAP_FILE):
                     "acc_total": int(parts[9]) if len(parts) >= 10 else 0,
                 }
     print(f"loaded CRAP/coverage for {len(crap_map)} files", file=sys.stderr)
-else:
+elif not COVERAGE_FILE:
     print(f"no {CRAP_FILE}: CRAP and coverage will be absent from this city", file=sys.stderr)
+if COVERAGE_FILE:
+    import coverage_input
+    reached = coverage_input.merge(crap_map, coverage_input.load(COVERAGE_FILE, REPO_DIR))
+    print(f"loaded line/acceptance coverage for {reached} files from {COVERAGE_FILE}",
+          file=sys.stderr)
 
 
 def _crap_cols(entry, lines):
@@ -428,6 +436,11 @@ def _crap_cols(entry, lines):
     # different statements, and only the first one is a finding about the tests.
     acceptance = (f"{100.0 * entry['acc_covered'] / entry['acc_total']:.1f}"
                   if entry.get("acc_total") else "")
+    # Coverage handed over as JSON (CODECITY_COVERAGE) comes without a CRAP score: line
+    # counts say what ran, not how complex each method is. Those cells stay blank, and the
+    # page reads blank as "not measured" — the same as for a file nobody measured at all.
+    if entry.get("crap_max") is None:
+        return [coverage, acceptance, "", "", "", "", ""]
     return [
         coverage,
         acceptance,
@@ -450,17 +463,21 @@ def _crap_sum(entries):
     measured = [e for e in entries if e]
     if not measured:
         return None
-    worst = max(measured, key=lambda e: e["crap_max"])
-    return {
+    out = {
         "cov_covered": sum(e["cov_covered"] for e in measured),
         "cov_total": sum(e["cov_total"] for e in measured),
         "acc_covered": sum(e.get("acc_covered", 0) for e in measured),
         "acc_total": sum(e.get("acc_total", 0) for e in measured),
-        "crap_max": worst["crap_max"],
-        "crap_max_method": worst["crap_max_method"],
-        "crap_load": sum(e["crap_load"] for e in measured),
-        "crappy_methods": sum(e["crappy_methods"] for e in measured),
+        "crap_max": None, "crap_max_method": "", "crap_load": None, "crappy_methods": None,
     }
+    # Only the files that carry a CRAP score have a say in it: coverage from JSON has none.
+    scored = [e for e in measured if e.get("crap_max") is not None]
+    if scored:
+        worst = max(scored, key=lambda e: e["crap_max"])
+        out.update(crap_max=worst["crap_max"], crap_max_method=worst["crap_max_method"],
+                   crap_load=sum(e["crap_load"] for e in scored),
+                   crappy_methods=sum(e["crappy_methods"] for e in scored))
+    return out
 
 rows = []
 for ap in java_files:

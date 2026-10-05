@@ -41,10 +41,13 @@ def _optional(row, key, cast=float):
         return None
 
 
-# The CRAP columns are only carried into the page when a report was actually read.
-# Nulls for every file would otherwise add ~150 KB of "null" to a 5000-class city with
-# no coverage data to show, and the inline JSON is parsed before the first frame.
-HAS_CRAP = TSV.with_name("crap-per-file.tsv").exists()
+# The CRAP columns are only carried into the page when something was actually measured:
+# a JaCoCo report (crap-per-file.tsv) or coverage handed over as JSON (CODECITY_COVERAGE,
+# see coverage_input.py). Nulls for every file would otherwise add ~150 KB of "null" to a
+# 5000-class city with no coverage data to show, and the inline JSON is parsed before the
+# first frame.
+HAS_CRAP = (TSV.with_name("crap-per-file.tsv").exists()
+            or bool(os.environ.get("CODECITY_COVERAGE")))
 
 
 def _crap_fields(row):
@@ -58,11 +61,17 @@ def _crap_fields(row):
     """
     if not HAS_CRAP:
         return {}
+    coverage = _optional(row, "coverage")
+    acceptance = _optional(row, "coverage_acceptance")
     if _optional(row, "crap_max") is None:
-        return {}
+        # Coverage from JSON carries no CRAP score. The row then has the two percentages
+        # and nothing else — and still nothing at all when neither was measured.
+        if coverage is None and acceptance is None:
+            return {}
+        return {"coverage": coverage, "coverage_acceptance": acceptance}
     return {
-        "coverage": _optional(row, "coverage"),
-        "coverage_acceptance": _optional(row, "coverage_acceptance"),
+        "coverage": coverage,
+        "coverage_acceptance": acceptance,
         "crap_max": _optional(row, "crap_max"),
         "crap_max_method": row.get("crap_max_method") or "",
         "crap_load": _optional(row, "crap_load"),
@@ -1548,6 +1557,8 @@ html = """<!doctype html>
       <option value="commits">total commits</option>
       <option value="committers">committers</option>
       <option value="fan_out">outgoing coupling</option>
+      <option value="coverage">line coverage % (all tests)</option>
+      <option value="coverage_acceptance">acceptance coverage % (end-to-end)</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="areaKloc" type="checkbox" aria-label="area per KLOC"> /kloc
@@ -1565,6 +1576,8 @@ html = """<!doctype html>
       <option value="fan_in">incoming coupling</option>
       <option value="fan_out">outgoing coupling</option>
       <option value="instability">instability Ce/(Ce+Ca)</option>
+      <option value="coverage">line coverage % (all tests)</option>
+      <option value="coverage_acceptance">acceptance coverage % (end-to-end)</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="heightKloc" type="checkbox" aria-label="height per KLOC"> /kloc
@@ -1586,7 +1599,7 @@ html = """<!doctype html>
       <option value="crap_max">CRAP &mdash; worst method</option>
       <option value="crap_load">CRAP load</option>
       <option value="coverage">line coverage % (all tests)</option>
-      <option value="coverage_acceptance">acceptance coverage % (UI)</option>
+      <option value="coverage_acceptance">acceptance coverage % (end-to-end)</option>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -1840,24 +1853,28 @@ if (!HAS_AXES) {
 // selectable, and selecting one says in the note under the knob what is missing and why.
 // The city then paints itself entirely "not measured" grey, which is the truthful
 // picture of a metric with no data behind it.
-const CRAP_METRICS = ["crap_max", "crap_load", "coverage", "coverage_acceptance"];
-const HAS_CRAP = FILES.some(f => f.coverage !== undefined);
-if (!HAS_CRAP) {
-  for (const key of CRAP_METRICS) {
-    const opt = document.querySelector(`#colorMetric option[value="${key}"]`);
-    if (opt) opt.dataset.unavailable = "1";
-  }
-}
+//
+// Three separate asks since coverage can arrive without CRAP (generate.sh --coverage: line
+// counts somebody else measured, and no method complexity to score). Each option is
+// marked on its own data, in every dropdown that offers it: a city WITH line coverage and
+// no JaCoCo report still offers coverage and greys out only CRAP.
+const CRAP_METRICS = ["crap_max", "crap_load"];
+const measuredSomewhere = key => FILES.some(f => f[key] !== undefined && f[key] !== null);
+const HAS_CRAP = measuredSomewhere("crap_max");
+const HAS_COVERAGE = measuredSomewhere("coverage");
 // The acceptance report is a second, independent ask: a project can measure coverage
 // without ever running a browser suite, and then this one metric would offer itself and
 // paint the entire city "not measured". Gated on its own data, not on the group's — a
 // city WITH coverage and without an acceptance run marks this one alone.
-const HAS_ACCEPTANCE = FILES.some(f => f.coverage_acceptance !== undefined
-                                    && f.coverage_acceptance !== null);
-if (!HAS_ACCEPTANCE) {
-  const opt = document.querySelector('#colorMetric option[value="coverage_acceptance"]');
-  if (opt) opt.dataset.unavailable = "1";
+const HAS_ACCEPTANCE = measuredSomewhere("coverage_acceptance");
+function markUnavailable(key) {
+  for (const opt of document.querySelectorAll(`select option[value="${key}"]`)) {
+    if (opt.closest("#areaMetric, #heightMetric, #colorMetric")) opt.dataset.unavailable = "1";
+  }
 }
+if (!HAS_CRAP) CRAP_METRICS.forEach(markUnavailable);
+if (!HAS_COVERAGE) markUnavailable("coverage");
+if (!HAS_ACCEPTANCE) markUnavailable("coverage_acceptance");
 // ...and where the report IS there, it is what the city opens on. The colour used to
 // start on total commits: true, permanent, and about nobody's afternoon -- a city
 // painted by its git log tells a reviewer holding a pull request nothing they can act
@@ -5202,8 +5219,9 @@ const HOVER_PROPS = [
   { key: "fan_out", label: "outgoing coupling (fan out)" },
   { key: "instability", label: "instability Ce/(Ce+Ca)" },
   { key: "cochange_out", label: "cross-package co-change" },
-  // Only in a city built with a JaCoCo report; `crap` marks the rows that go with it.
-  { key: "coverage", label: "line coverage", crap: true, fmt: pctOrUnmeasured },
+  // Only in a city built with coverage (a JaCoCo report, or --coverage JSON); `crap`
+  // marks the rows that need the report's method complexity as well.
+  { key: "coverage", label: "line coverage", coverage: true, fmt: pctOrUnmeasured },
   { key: "coverage_acceptance", label: "acceptance coverage", acceptance: true,
     fmt: pctOrUnmeasured },
   { key: "crap_max", label: "worst method CRAP", crap: true, fmt: crapOrUnmeasured,
@@ -5282,6 +5300,7 @@ function formatHover(file) {
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
     if (p.crap && !HAS_CRAP) continue;   // no report was read: the row has nothing to say
+    if (p.coverage && !HAS_COVERAGE) continue;   // ...nor any coverage, from anywhere
     if (p.acceptance && !HAS_ACCEPTANCE) continue;   // ...and its own report, separately
     const val = p.fmt ? p.fmt(file[p.key]) : fmtMetric(Number(file[p.key]) || 0);
     let label = `${p.label}: <b>${val}</b>${wasNote(file, p.key, p.fmt)}`;
@@ -6198,9 +6217,9 @@ const METRIC_NOTES = {
           href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
   crap_load: {note: "how much complexity no test ran",
           href: "https://testing.googleblog.com/2011/02/this-code-is-crap.html"},
-  coverage: {note: "how much of it any test runs",
+  coverage: {note: "lines run by any test",
           href: "https://martinfowler.com/bliki/TestCoverage.html"},
-  coverage_acceptance: {note: "how much of it the browser alone runs",
+  coverage_acceptance: {note: "lines run by end-to-end tests",
           href: "https://martinfowler.com/bliki/TestPyramid.html"},
 };
 
@@ -6209,6 +6228,11 @@ const METRIC_NOTES = {
 // would have to happen for it to be. "No data" alone reads as a bug in the tool.
 const UNAVAILABLE_NOTE =
   "unavailable \u2014 needs a test run; this city is built from sources and git alone";
+// ...except when a run WAS handed over (--coverage) and only CRAP is missing from it: line
+// counts say what ran, and CRAP also needs each method's complexity, which only a JaCoCo
+// report carries. "Needs a test run" would then be false on a city coloured by one.
+const UNAVAILABLE_CRAP_NOTE =
+  "unavailable \u2014 CRAP needs a JaCoCo report's method complexity; this city was given line coverage only";
 
 // `/kloc` turns a count into a density, which is a different sentence about the same
 // metric, so the note says so rather than going quietly stale.
@@ -6226,7 +6250,8 @@ function syncMetricNotes() {
     const chosen = knob.select.selectedOptions[0];
     if (chosen && chosen.dataset.unavailable) {
       el.classList.add("unavailable");
-      el.textContent = UNAVAILABLE_NOTE;
+      el.textContent = HAS_COVERAGE && CRAP_METRICS.includes(chosen.value)
+        ? UNAVAILABLE_CRAP_NOTE : UNAVAILABLE_NOTE;
       continue;             // the metric's own meaning is beside the point when it is absent
     }
     if (!entry) continue;
@@ -6272,13 +6297,16 @@ const PRESETS = [
     metrics: ["fan_out", "fan_in", "instability"], kloc: [false, false, false], log: false },
   { dot: "#15803d", label: "Coverage — what the tests actually run",
     metrics: ["lines", "cognitive_complexity", "coverage"], kloc: [false, false, false], log: false },
-  { dot: "#0d9488", label: "Acceptance reach — what the browser alone walks through",
+  { dot: "#0d9488", label: "Acceptance reach — what the end-to-end tests walk through",
     metrics: ["lines", "cognitive_complexity", "coverage_acceptance"],
     kloc: [false, false, false], log: false },
-// A preset is only offered when the city HAS the metrics it names. The last two need a
-// coverage report; without one their colour option was removed above, and a dot that
-// silently blanks the colour dropdown is worse than a dot that was never drawn.
-].filter((p) => document.querySelector(`#colorMetric option[value="${p.metrics[2]}"]`));
+// A preset is only offered when the city HAS the metrics it names. The last two need
+// coverage; without it their colour option is marked unavailable above, and a dot that
+// paints the whole plate "not measured" grey is worse than a dot that was never drawn.
+].filter((p) => {
+  const opt = document.querySelector(`#colorMetric option[value="${p.metrics[2]}"]`);
+  return opt && !opt.dataset.unavailable;
+});
 
 function applyPreset(preset) {
   // Clear the mutual lock-out first: the target metrics may still be greyed out by

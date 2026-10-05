@@ -59,8 +59,8 @@ unsetting `HEATMAP_OPEN_IN`.
 | `cognitive_complexity` | Sonar-style cognitive complexity (tree-sitter, summed over methods) |
 | `cochange_out` | of the commits that touched this file, the share that also reached outside its package, weighted by how far out ([Change coupling](#change-coupling--the-crime-scene)) |
 | `fan_in` / `fan_out` | how many repo files reference this file / it references (internal coupling only); `coupling-edges.tsv` holds the same relation edge by edge, weighted by reference count — what the Coupling-streets overlay draws |
-| `coverage` | line coverage %, every suite merged, from a JaCoCo report ([CRAP and coverage](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run)) |
-| `coverage_acceptance` | line coverage % reached by the **acceptance suite alone** ([two suites, two numbers](#two-suites-two-numbers)) |
+| `coverage` | line coverage %, every suite merged, from a JaCoCo report or a `--coverage` JSON ([CRAP and coverage](#crap-and-coverage--the-two-metrics-that-need-the-tests-to-have-run)) |
+| `coverage_acceptance` | line coverage % reached by the **end-to-end suites alone** ([two suites, two numbers](#two-suites-two-numbers)) |
 | `crap_max` / `crap_load` | the worst method's CRAP in this file, and the sum over its methods |
 
 ## Pipeline
@@ -696,6 +696,35 @@ the exec has to be pulled **while that JVM is still up** — a shutdown dump dep
 signal surviving a chain of wrapper processes — and the two `.exec` files then merge into
 the "all tests" report. PetClinic wires exactly this in `start-apps.ts`, its Playwright
 `globalTeardown` and three `jacoco` executions in its pom, if you want a worked example.
+
+### Coverage somebody else already measured: `--coverage`
+
+The argument above is about who *runs* the tests. It says nothing against colouring the
+city by a run that has already happened — a CI job, a review pipeline that ran every suite
+for its own reasons — and refusing that data would be throwing a measurement away to keep a
+principle it does not touch. So the city takes it as an input, the way it takes the git
+log, and runs nothing:
+
+```bash
+./generate.sh --coverage coverage.json . /tmp/city      # or CODECITY_COVERAGE=coverage.json
+```
+
+```json
+{"files": {"src/main/java/com/acme/Owner.java":
+            {"line": {"covered": 31, "total": 40}, "acceptance": {"covered": 12, "total": 40}}}}
+```
+
+Paths are relative to the repo (absolute ones inside it are accepted); `line` is every
+suite merged, `acceptance` what the end-to-end tests alone reach, and either may be left
+out. Counts rather than percentages, because packages re-divide the summed counts — a bare
+percentage is accepted and weighed as a hundred lines. `coverage_input.py` holds the rest.
+The two percentages are then offered in all three dropdowns (`lines run by any test`,
+`lines run by end-to-end tests`), and the Coverage and Acceptance-reach presets light up.
+
+Absence still is not zero. A file the JSON does not name, or names with nothing executable
+in it, is drawn in the *not measured* grey; `covered: 0` is 0% and red. CRAP stays
+unavailable — line counts say what ran, not how complex each method is — and says so in
+those words rather than claiming the city has had no test run.
 
 ### The before side: a file the base branch carries
 

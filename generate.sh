@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Build a Code City (and the 2D codemap next to it) for a folder of Java sources.
 #
-#   ./generate.sh [REPO] [OUT]
+#   ./generate.sh [--coverage FILE] [REPO] [OUT]
 #     REPO   git checkout to analyse   (default: $PWD's git toplevel)
 #     OUT    where the artifacts land  (default: REPO/.codecity)
+#     --coverage FILE  line + acceptance coverage per file that a test run elsewhere
+#            already measured, as JSON (format in coverage_input.py). Same as
+#            CODECITY_COVERAGE=FILE. Optional; without it the city has no coverage.
 #
 # Both arguments are just friendlier spellings of HEATMAP_REPO / HEATMAP_OUT, so an
 # env-var caller (the in-page "build for your own repo" recipe, CI) keeps working.
@@ -17,13 +20,15 @@
 #   render_codecity.py     -> codecity.html                     (Three.js CodeCity)
 #   render_combined.py     -> combined.html                     (2D codemap <-> 3D city, linked)
 #
-# Coverage signal: NONE, for now. Everything here is read off the sources and the git log,
+# Coverage signal: NONE of our own. Everything here is read off the sources and the git log,
 # so a city builds for any checkout in thirty seconds with nothing installed and nothing
 # run. CRAP and line coverage were the two exceptions — facts about a test RUN, needing a
 # JaCoCo report, the repo's toolchain and its database — and the exception cost more than
 # the metrics were worth: see the comment at step [3] for the argument. The pass and its
 # readers are all still here and all still work; step [3] is commented out, and the three
 # colours it fed stay in the dropdown marked unavailable rather than vanishing from it.
+# What a caller ALREADY measured is another matter: `--coverage FILE` hands it over and the
+# city reads it like the git log, running nothing — see coverage_input.py.
 #
 # Bug signal: build_heatmap.py flags a commit as bug-linked when its subject matches a
 # default heuristic (a leading "fix"/"fixed"/"fixes"/"bugfix", which covers both strict
@@ -40,6 +45,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Flags before the two positionals. Only one, and it is the env var CODECITY_COVERAGE by
+# another name, so the in-page recipe and CI can keep using whichever they already do.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --coverage) CODECITY_COVERAGE="$2"; shift 2 ;;
+    --coverage=*) CODECITY_COVERAGE="${1#--coverage=}"; shift ;;
+    --) shift; break ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+
 # Code under analysis = a whole git repo (so git paths line up with the file walk).
 # Artifacts land beside it in .codecity/ unless told otherwise — self-contained HTML,
 # so that folder can be published, zipped or thrown away without touching the sources.
@@ -47,6 +64,14 @@ export HEATMAP_REPO="${1:-${HEATMAP_REPO:-$(git rev-parse --show-toplevel)}}"
 export HEATMAP_REPO="$(cd "$HEATMAP_REPO" && pwd)"
 export HEATMAP_OUT="${2:-${HEATMAP_OUT:-$HEATMAP_REPO/.codecity}}"
 export HEATMAP_PYLIBS="$SCRIPT_DIR/.pylibs"
+# Absolute, because every step below runs from SCRIPT_DIR, not from where we were called.
+if [ -n "${CODECITY_COVERAGE:-}" ]; then
+  [ -f "$CODECITY_COVERAGE" ] || { echo "--coverage: no such file: $CODECITY_COVERAGE" >&2; exit 2; }
+  CODECITY_COVERAGE="$(cd "$(dirname "$CODECITY_COVERAGE")" && pwd)/$(basename "$CODECITY_COVERAGE")"
+  export CODECITY_COVERAGE
+else
+  unset CODECITY_COVERAGE
+fi
 
 # One-time: vendor the tree-sitter parsers the complexity pass needs.
 if [ ! -d "$HEATMAP_PYLIBS" ]; then
@@ -80,6 +105,7 @@ export HEATMAP_OPEN_IN="vscode"
 cd "$SCRIPT_DIR"
 echo "repo:  $HEATMAP_REPO"
 echo "out:   $HEATMAP_OUT"
+[ -n "${CODECITY_COVERAGE:-}" ] && echo "coverage: $CODECITY_COVERAGE"
 mkdir -p "$HEATMAP_OUT"
 
 echo "[1/7] cognitive complexity (tree-sitter)..."

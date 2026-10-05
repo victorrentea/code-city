@@ -1210,7 +1210,7 @@ class CrapTest(unittest.TestCase):
             self.assertIsNone(by_name["Untested"].get("coverage_acceptance"))
             # ...and the option removes itself rather than offering a colour that would
             # paint the whole city "not measured".
-            self.assertIn("const HAS_ACCEPTANCE = FILES.some(", html)
+            self.assertIn('const HAS_ACCEPTANCE = measuredSomewhere("coverage_acceptance")', html)
             self.assertIn("UNMEASURED_COLOR", html)
 
     def test_the_before_side_comes_from_the_baseline_the_repo_carries(self):
@@ -1329,8 +1329,58 @@ class CrapTest(unittest.TestCase):
             html = (Path(tmp) / "codecity.html").read_text()
             files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html, re.S).group(1))
             self.assertNotIn("coverage", files[0])
-            self.assertIn("const HAS_CRAP = FILES.some(", html)
-            self.assertIn("if (!HAS_CRAP) {", html)
+            self.assertIn('const HAS_CRAP = measuredSomewhere("crap_max")', html)
+            self.assertIn('if (!HAS_COVERAGE) markUnavailable("coverage");', html)
+
+    def test_coverage_handed_over_as_json_colours_the_city_without_crap(self):
+        """`generate.sh --coverage`: line and acceptance coverage a run elsewhere measured,
+        joined per file and rolled up per package from the counts. No CRAP comes with it,
+        so those two options stay unavailable while coverage is offered in all three
+        dropdowns; a file the JSON does not name is not measured, and 0 of 10 is 0%."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            out.mkdir()
+            src = self.repo(tmp)
+            (Path(tmp) / "target/site/jacoco/jacoco.xml").unlink()   # JSON only, no report
+            subprocess.run(["git", "init", "-q", str(tmp)], check=True)
+            subprocess.run(["git", "-C", str(tmp), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(tmp), "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-qm", "in"], check=True)
+            cov = Path(tmp) / "coverage.json"
+            cov.write_text(json.dumps({"files": {
+                "src/main/java/com/acme/app/Tested.java":
+                    {"line": {"covered": 9, "total": 10}, "acceptance": {"covered": 3, "total": 10}},
+                str(src / "Untested.java"): {"line": {"covered": 0, "total": 10},
+                                             "acceptance": {"covered": 0, "total": 10}},
+            }}))
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(tmp)
+            env["HEATMAP_OUT"] = str(out)
+            env["CODECITY_COVERAGE"] = str(cov)
+            for step in ("compute_complexity.py", "compute_fanio.py",
+                         "build_heatmap.py", "render_codecity.py"):
+                subprocess.run(["python3", str(SCRIPT_DIR / step)],
+                               check=True, cwd=SCRIPT_DIR, env=env)
+            with (out / "codemap-packages.tsv").open() as f:
+                pkg = next(r for r in csv.DictReader(f, delimiter="\t")
+                           if r["package"].endswith("acme.app"))
+            self.assertEqual("45.0", pkg["coverage"])          # 9 of 20, not mean(90, 0)
+            self.assertEqual("15.0", pkg["coverage_acceptance"])
+            self.assertEqual("", pkg["crap_max"])
+            html = (out / "codecity.html").read_text()
+            files = json.loads(re.search(r"const FILES = (\[.*?\]);\n", html, re.S).group(1))
+            by_name = {f["name"]: f for f in files}
+            self.assertEqual(90.0, by_name["Tested"]["coverage"])
+            self.assertEqual(30.0, by_name["Tested"]["coverage_acceptance"])
+            self.assertEqual(0.0, by_name["Untested"]["coverage"])
+            self.assertNotIn("crap_max", by_name["Tested"])
+            self.assertNotIn("coverage", by_name["Marker"])     # not named: not measured
+            for knob in ("areaMetric", "heightMetric", "colorMetric"):
+                select = re.search(rf'<select id="{knob}">(.*?)</select>', html, re.S).group(1)
+                self.assertIn('<option value="coverage">', select)
+                self.assertIn('<option value="coverage_acceptance">', select)
+            self.assertIn('coverage: {note: "lines run by any test"', html)
+            self.assertIn('coverage_acceptance: {note: "lines run by end-to-end tests"', html)
 
 
 class RepoFilesTest(unittest.TestCase):
