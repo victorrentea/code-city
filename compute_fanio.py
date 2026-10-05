@@ -101,11 +101,11 @@ PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
 IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?\s*;", re.MULTILINE)
 
 
-def load_class_map():
+def load_class_map(class_tsv=None):
     """Return dict: fqn (dot form, outer class only) -> file path. Plus per-package class list."""
     fqn_to_file = {}
     pkg_to_classes = defaultdict(list)  # 'org.springframework.x' -> [(simple_name, file), ...]
-    with open(CLASS_TSV) as f:
+    with open(class_tsv or CLASS_TSV) as f:
         next(f)
         for line in f:
             parts = line.rstrip("\n").split("\t")
@@ -135,6 +135,79 @@ def list_java_files():
     return repo_files.java_sources(REPO)
 
 
+def references(src, rel, fqn_to_file, pkg_to_classes):
+    """({target file: how many times `src` names it}, {target file: the line coupling them})
+    for ONE source file — `rel` being where it sits, so it never counts itself.
+
+    A function of the text alone, not of the file on disk: the Code City runs it again
+    on a changed file's blob at the PR's base, and the difference between the two
+    answers is the coupling the PR introduced."""
+    src = strip_comments_and_strings(src)
+    pkg_m = PACKAGE_RE.search(src)
+    pkg = pkg_m.group(1) if pkg_m else None
+
+    # Simple name -> the target file(s) it would resolve to. Imports and
+    # same-package siblings are both just candidate names to look for in the body;
+    # the single scan below decides which of them are real references, and how many.
+    candidates = defaultdict(set)
+    for imp in IMPORT_RE.findall(src):
+        # static import targets a method/field; the class is everything before the last dot
+        # but our regex already trimmed the .* wildcard; for static, the last segment is member name
+        # we don't reliably distinguish here — try the full path first, then strip last segment
+        for candidate in (imp, imp.rsplit(".", 1)[0] if "." in imp else imp):
+            tf = fqn_to_file.get(candidate)
+            if tf and tf != rel:
+                candidates[candidate.rsplit(".", 1)[-1]].add(tf)
+                break
+    if pkg and pkg in pkg_to_classes:
+        for simple, tf in pkg_to_classes[pkg]:
+            if tf != rel:
+                candidates[simple].add(tf)
+
+    # The lines the `import`s and the `package` declaration sit on. A name found on
+    # one of them is the dependency being DECLARED, not used, and it is the one place
+    # a reader learns nothing by being sent to.
+    declaration_lines = set()
+    line_starts = [0]
+    for i, ch in enumerate(src):
+        if ch == "\n":
+            line_starts.append(i + 1)
+
+    def line_of(offset):
+        return bisect.bisect_right(line_starts, offset)      # 1-based
+
+    for m in list(PACKAGE_RE.finditer(src)) + list(IMPORT_RE.finditer(src)):
+        declaration_lines.add(line_of(m.start()))
+
+    # ONE regex pass for every candidate name at once — per-name scans turn a big
+    # repo into an O(classes x filesize) crawl. A sibling that never appears scores
+    # zero and is simply not a dependency; an imported class always scores at least
+    # the one occurrence on its own import line.
+    targets = {}
+    sites = {}
+    if candidates:
+        pattern = r"\b(?:" + "|".join(re.escape(n) for n in sorted(candidates)) + r")\b"
+        hits = Counter()
+        first = {}            # candidate name -> its first line outside the declarations
+        for m in re.finditer(pattern, src):
+            name = m.group(0)
+            hits[name] += 1
+            if name not in first:
+                line = line_of(m.start())
+                if line not in declaration_lines:
+                    first[name] = line
+        for name, n in hits.items():
+            for tf in candidates[name]:
+                targets[tf] = targets.get(tf, 0) + n
+                # Two names can resolve to one file (an import plus a same-package
+                # sibling of the same simple name); the earliest of them is the site.
+                line = first.get(name)
+                if line and line < sites.get(tf, 1 << 30):
+                    sites[tf] = line
+
+    return targets, sites
+
+
 def main():
     fqn_to_file, pkg_to_classes = load_class_map()
     print(f"loaded {len(fqn_to_file)} FQN entries across {len(pkg_to_classes)} packages", file=sys.stderr)
@@ -152,71 +225,7 @@ def main():
                 src = f.read()
         except OSError:
             continue
-        src = strip_comments_and_strings(src)
-        pkg_m = PACKAGE_RE.search(src)
-        pkg = pkg_m.group(1) if pkg_m else None
-
-        # Simple name -> the target file(s) it would resolve to. Imports and
-        # same-package siblings are both just candidate names to look for in the body;
-        # the single scan below decides which of them are real references, and how many.
-        candidates = defaultdict(set)
-        for imp in IMPORT_RE.findall(src):
-            # static import targets a method/field; the class is everything before the last dot
-            # but our regex already trimmed the .* wildcard; for static, the last segment is member name
-            # we don't reliably distinguish here — try the full path first, then strip last segment
-            for candidate in (imp, imp.rsplit(".", 1)[0] if "." in imp else imp):
-                tf = fqn_to_file.get(candidate)
-                if tf and tf != rel:
-                    candidates[candidate.rsplit(".", 1)[-1]].add(tf)
-                    break
-        if pkg and pkg in pkg_to_classes:
-            for simple, tf in pkg_to_classes[pkg]:
-                if tf != rel:
-                    candidates[simple].add(tf)
-
-        # The lines the `import`s and the `package` declaration sit on. A name found on
-        # one of them is the dependency being DECLARED, not used, and it is the one place
-        # a reader learns nothing by being sent to.
-        declaration_lines = set()
-        line_starts = [0]
-        for i, ch in enumerate(src):
-            if ch == "\n":
-                line_starts.append(i + 1)
-
-        def line_of(offset):
-            return bisect.bisect_right(line_starts, offset)      # 1-based
-
-        for m in list(PACKAGE_RE.finditer(src)) + list(IMPORT_RE.finditer(src)):
-            declaration_lines.add(line_of(m.start()))
-
-        # ONE regex pass for every candidate name at once — per-name scans turn a big
-        # repo into an O(classes x filesize) crawl. A sibling that never appears scores
-        # zero and is simply not a dependency; an imported class always scores at least
-        # the one occurrence on its own import line.
-        targets = {}
-        sites = {}
-        if candidates:
-            pattern = r"\b(?:" + "|".join(re.escape(n) for n in sorted(candidates)) + r")\b"
-            hits = Counter()
-            first = {}            # candidate name -> its first line outside the declarations
-            for m in re.finditer(pattern, src):
-                name = m.group(0)
-                hits[name] += 1
-                if name not in first:
-                    line = line_of(m.start())
-                    if line not in declaration_lines:
-                        first[name] = line
-            for name, n in hits.items():
-                for tf in candidates[name]:
-                    targets[tf] = targets.get(tf, 0) + n
-                    # Two names can resolve to one file (an import plus a same-package
-                    # sibling of the same simple name); the earliest of them is the site.
-                    line = first.get(name)
-                    if line and line < sites.get(tf, 1 << 30):
-                        sites[tf] = line
-
-        fan_out[rel] = targets
-        fan_sites[rel] = sites
+        fan_out[rel], fan_sites[rel] = references(src, rel, fqn_to_file, pkg_to_classes)
 
     # reverse to fan-in
     fan_in = defaultdict(int)

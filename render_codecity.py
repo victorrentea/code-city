@@ -716,15 +716,10 @@ if MOD_TSV.exists():
 # — one at class level, often dozens once classes fold into packages — and it is
 # what a pipe's thickness is drawn from. Absent file (an older tool run) => no
 # pipes, and the checkbox simply has nothing to draw.
-def _coupling_adjacency():
-    edges_tsv = TSV.with_name("coupling-edges.tsv")
-    if not edges_tsv.exists():
-        return {"classes": {}, "packages": {}, "modules": {}}
-
-    class_paths = {r["path"] for r in rows}
-    # A file's package is its row's district; its module is the deepest module row
-    # whose directory contains it (mirrors build_heatmap's _module, whose result is
-    # what the module rows are keyed by).
+def _view_keys():
+    """(view, path -> that view's row key) for the three views. A file's package is its
+    row's district; its module is the deepest module row whose directory contains it
+    (mirrors build_heatmap's _module, whose result is what the module rows are keyed by)."""
     pkg_of = {r["path"]: r["district"] for r in rows}
     mod_dirs = sorted((r["path"] for r in mod_rows if r["path"] != "."), key=len, reverse=True)
 
@@ -735,7 +730,17 @@ def _coupling_adjacency():
                 return m
         return "."
 
-    views = {"classes": {}, "packages": {}, "modules": {}}
+    return (("classes", lambda p: p), ("packages", pkg_of.get), ("modules", mod_of))
+
+
+def _class_edges():
+    """[(source, target, weight, line)] between two rendered buildings, as the tool wrote
+    them — the class-level relation every view's adjacency is folded from."""
+    edges_tsv = TSV.with_name("coupling-edges.tsv")
+    if not edges_tsv.exists():
+        return []
+    class_paths = {r["path"] for r in rows}
+    edges = []
     with edges_tsv.open() as f:
         for row in csv.DictReader(f, delimiter="\t"):
             src = (row.get("source") or "").lstrip("./")
@@ -755,29 +760,116 @@ def _coupling_adjacency():
             # Only edges between two rendered buildings can be drawn.
             if src not in class_paths or dst not in class_paths or src == dst:
                 continue
-            for view, key in (("classes", lambda p: p),
-                              ("packages", pkg_of.get),
-                              ("modules", mod_of)):
-                a, b = key(src), key(dst)
-                # A package depending on itself is just its own internals: no pipe.
-                if a is None or b is None or a == b:
-                    continue
-                peers = views[view].setdefault(a, {})
-                # Only the class view carries a line. A package's edge is the sum of the
-                # edges of the classes under it, and "the line where package A depends on
-                # package B" is a question with a dozen answers and no way to pick one; a
-                # road there stays a road and is not clickable.
-                if view == "classes":
-                    peers[b] = [peers.get(b, [0])[0] + weight, line]
-                else:
-                    peers[b] = peers.get(b, 0) + weight
+            edges.append((src, dst, weight, line))
+    return edges
+
+
+def _coupling_adjacency(edges):
+    views = {"classes": {}, "packages": {}, "modules": {}}
+    keys = _view_keys()
+    for src, dst, weight, line in edges:
+        for view, key in keys:
+            a, b = key(src), key(dst)
+            # A package depending on itself is just its own internals: no pipe.
+            if a is None or b is None or a == b:
+                continue
+            peers = views[view].setdefault(a, {})
+            # Only the class view carries a line. A package's edge is the sum of the
+            # edges of the classes under it, and "the line where package A depends on
+            # package B" is a question with a dozen answers and no way to pick one; a
+            # road there stays a road and is not clickable.
+            if view == "classes":
+                peers[b] = [peers.get(b, [0])[0] + weight, line]
+            else:
+                peers[b] = peers.get(b, 0) + weight
     return {
         view: {k: dict(sorted(v.items())) for k, v in sorted(adj.items())}
         for view, adj in views.items()
     }
 
 
-COUPLING = _coupling_adjacency()
+CLASS_EDGES = _class_edges()
+COUPLING = _coupling_adjacency(CLASS_EDGES)
+
+
+# ── The coupling the change set INTRODUCED ───────────────────────────────────
+# fan-in / fan-out have no "before" (see above: they are whole-repo facts), but the
+# edges a change set ADDS are not — an edge lives in the text of its source file, so an
+# edge out of a file the diff never touched is exactly as old as that file is. Only the
+# changed files have to be re-read at the base ref, which is what the size/complexity
+# ghosts already do, and the difference between the two readings is the new coupling.
+#
+# Folded per view, because "new" means something different once classes fold into
+# packages: a package edge is new only if NO class of A depended on any class of B
+# before. A PR adding the fifth reference between two packages already coupled has added
+# weight to a road, not a road.
+#
+# Only for the change set the page opens on: a commit picked from the history dropdown
+# would need the tree AT that commit, which is not the tree codemap.tsv measured.
+def _renames(ref):
+    """{new path: old path} for every file the diff from `ref` to the working tree moved."""
+    out = _run_git(["diff", "-M", "--name-status", "-z", ref])
+    parts = out.split("\0")
+    renames, i = {}, 0
+    while i < len(parts) - 1:
+        status = parts[i]
+        if status.startswith(("R", "C")) and i + 2 < len(parts):
+            renames[parts[i + 2]] = parts[i + 1]
+            i += 3
+        else:
+            i += 2
+    return renames
+
+
+def _added_coupling(edges):
+    views = {"classes": {}, "packages": {}, "modules": {}}
+    ref = CHANGE_SOURCE.get("before", "")
+    class_tsv = TSV.with_name("complexity-per-class.tsv")
+    if not edges or not ref or not CHANGED_FILES or not class_tsv.exists():
+        return views
+    try:
+        import compute_fanio
+    except Exception:
+        return views
+    fqn_to_file, pkg_to_classes = compute_fanio.load_class_map(str(class_tsv))
+    class_paths = {r["path"] for r in rows}
+    changed = CHANGED_FILES & class_paths
+    renames = _renames(ref)
+    blobs = {p: _blob_at(ref, renames.get(p, p)) for p in changed}
+    born = {p for p, blob in blobs.items() if blob is None}
+    # A moved class was known by its OLD name at the base, and the files that used it
+    # named it that way. Taught to the class map, so a rename reads as the same building
+    # it always was rather than as a brand new dependency of everything that imports it.
+    for new, old in renames.items():
+        if new not in changed or blobs.get(new) is None:
+            continue
+        m = compute_fanio.PACKAGE_RE.search(blobs[new].decode("utf-8", "replace"))
+        if m:
+            simple = Path(old).stem
+            fqn_to_file.setdefault(f"{m.group(1)}.{simple}", new)
+            pkg_to_classes[m.group(1)].append((simple, new))
+    then = {(s, t) for s, t, _, _ in edges if s not in changed}
+    for path, blob in blobs.items():
+        if blob is None:
+            continue
+        targets, _ = compute_fanio.references(
+            blob.decode("utf-8", "replace"), path, fqn_to_file, pkg_to_classes)
+        # A file the diff created cannot have been depended on at the base; a hit on its
+        # name in old text is a coincidence of spelling, not a dependency.
+        then.update((path, t) for t in targets if t not in born)
+    for view, key in _view_keys():
+        before = {(key(s), key(t)) for s, t in then}
+        for s, t, _, _ in edges:
+            a, b = key(s), key(t)
+            if a is None or b is None or a == b or (a, b) in before:
+                continue
+            peers = views[view].setdefault(a, [])
+            if b not in peers:
+                peers.append(b)
+    return {view: {k: sorted(v) for k, v in sorted(adj.items())} for view, adj in views.items()}
+
+
+ADDED_COUPLING = _added_coupling(CLASS_EDGES)
 
 
 # ── Change coupling, per view ────────────────────────────────────────────────
@@ -1597,6 +1689,9 @@ function inflateAdjacency(packed) {
 // know which view it is looking at, and a page from an older generator (all bare counts)
 // keeps working with its roads simply not clickable.
 const COUPLING = inflateAdjacency(__COUPLING_JSON__);
+// The edges the change set INTRODUCED, per view: { unit: [peer...] } — see
+// _added_coupling in the generator. Small by nature (a diff's worth), so not interned.
+const ADDED_COUPLING = __ADDED_COUPLING_JSON__;
 function edgeWeight(value) { return Array.isArray(value) ? value[0] : value; }
 function edgeLine(value) { return Array.isArray(value) ? value[1] : 0; }
 // Change coupling per view: { unit: { peer: [shared commits, severity 0..1] } }. Cross-
@@ -2497,6 +2592,7 @@ function buildHierarchy(areaMetric) {
 
 function clearCity() {
   clearStreets();        // they point at meshes this rebuild is about to dispose
+  clearAddedCoupling();  // ...and so do the diff's new roads
   if (hoverHalo) hoverHalo.visible = false;   // it outlives the rebuild; its target does not
   for (const label of cityLabels) {
     label.obj.removeFromParent();
@@ -3021,6 +3117,7 @@ function rebuildCity() {
   styleForChanges();
   crimePath = null;        // fresh materials: nothing to restore, and nothing painted
   roadGrid = null;         // the blocks moved: the plate has to be re-gridded around them
+  drawAddedCoupling();     // ...which is the grid the diff's new roads are routed over
   renderer.shadowMap.needsUpdate = true;   // ...and re-shadowed, once, on the next frame
   undersideGlass = null;   // fresh district materials: let the next frame re-glass them
   refreshScopeOptions();
@@ -3139,6 +3236,9 @@ function setupChangedLabels() {
   const ordered = [...changed].sort((a, b) => rank.get(b) - rank.get(a));
   let priority = 0;
   for (const entry of ordered) makeLabel(entry, priority++, true);
+  // A new road arriving at an unnamed grey block answers half the question, so the
+  // unchanged classes the diff newly couples to are named too — after the change set.
+  for (const entry of addedPeers) makeLabel(entry, priority++, true);
 }
 
 // Candidate labels: the per-metric standouts (always) plus the tallest buildings, up to a
@@ -3817,9 +3917,9 @@ function sinkMesh(sink, material, renderOrder) {
 // PAST the corner and the outgoing one starts half a width AFTER it, which covers the corner
 // square exactly once: butt them together and every turn has a notch bitten out of it,
 // overlap them and the lane gets a bright square at each one.
-function addRoad(road, lane, points, width, y, owner) {
-  const spacing = FLOW_SPACING * cityUnit;
-  const laneWidth = width * 0.55;
+function addRoad(road, lane, points, width, y, owner, spacingUnits = FLOW_SPACING, laneShare = 0.55) {
+  const spacing = spacingUnits * cityUnit;
+  const laneWidth = width * laneShare;
   let traveled = 0;
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1], b = points[i];
@@ -4264,6 +4364,145 @@ function nameTheBundle(entry, bundle) {
     scene.add(label);
     streetLabels.push(label);
   }
+}
+
+// ── The coupling the change set introduced ──────────────────────────────────
+// With COLOR on incoming or outgoing coupling and a diff on screen, the question the
+// colour raises is "and which of these did THIS change add?" — and ⌥ answers it one
+// building at a time, mixing the new edges in with every old one. So the new ones are
+// simply there: a road for every edge the diff introduced, standing, no key held.
+//
+// The one exception to "hold a key, do not tick a box", and a deliberate one: the set is
+// a diff's worth of edges, not a city's — a handful on a normal PR — so it is a reading,
+// not a wash, and it only exists while the colour already asks the coupling question.
+// Past ADDED_ROAD_MAX it is not drawn at all, for the same reason a god class draws no
+// bundle: a change that adds two hundred dependencies is a finding the colour already
+// shows, and two hundred roads would hide it.
+//
+// Its own look, so it is never mistaken for a hovered bundle: a pale yellow road (fresh
+// tarmac, the one colour the city spends nowhere else) and BLACK chevrons on it, running
+// the way the dependency points — out of the class that took on the dependency, into the
+// one it now depends on. In both colour modes, because it is the same edge: the one
+// building's new fan-out is the other's new fan-in, and the arrows say which is which.
+const ADDED_ROAD_MAX = 60;
+const ADDED_ROAD_PALE = 0xfde68a;
+const ADDED_ARROW = 0x111111;
+const ADDED_SPACING = 12;       // × cityUnit between two chevrons — denser than the wedges
+const ADDED_LIFT = 0.35;        // × cityUnit: under both hover decks, which fly over it
+
+// A chevron, not a wedge: the hover traffic is read for a second while the key is down,
+// this is read for as long as the city is open, and an arrowhead says its direction from
+// any one frame without having to be watched. Tip toward canvas top = +v = travel.
+function chevronTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64; canvas.height = 128;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.moveTo(4, 52);  ctx.lineTo(32, 8);  ctx.lineTo(60, 52);
+  ctx.lineTo(60, 72); ctx.lineTo(32, 30); ctx.lineTo(4, 72);
+  ctx.closePath();
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+const addedArrowTex = chevronTexture();
+const addedRoadMaterial = new THREE.MeshBasicMaterial({ color: ADDED_ROAD_PALE, side: THREE.DoubleSide });
+const addedArrowMaterial = new THREE.MeshBasicMaterial({
+  color: ADDED_ARROW, map: addedArrowTex, transparent: true, depthWrite: false,
+  side: THREE.DoubleSide,
+});
+
+let addedGroup = null;
+const addedPeers = new Set();   // unchanged buildings at the far end of a new road: named too
+
+function addedCouplingOn() {
+  const key = colorMetricKey();
+  if (key !== "fan_in" && key !== "fan_out") return false;
+  if (changeMode() === "off" || !HAS_CHANGES) return false;
+  // Only the change set the page opened on was diffed for edges (see the generator);
+  // a commit picked further back in the dropdown has no such answer, so it draws none
+  // rather than the opening diff's roads under a different label.
+  return !(hasCommitHistory() && commitChoice !== 0);
+}
+
+function clearAddedCoupling() {
+  if (addedGroup) {
+    scene.remove(addedGroup);
+    addedGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+    addedGroup = null;
+  }
+}
+
+// The new edges between two buildings that are both on the plate — a road to a class
+// filtered out or drilled past would end in nothing, and ⌥ still tells that whole truth.
+function addedEdges() {
+  const adjacency = (ADDED_COUPLING && ADDED_COUPLING[couplingViewName()]) || {};
+  const weights = outgoingAdjacency();
+  const edges = [];
+  for (const [src, peers] of Object.entries(adjacency)) {
+    const from = buildingByPath.get(src);
+    if (!from) continue;
+    for (const dst of peers) {
+      const to = buildingByPath.get(dst);
+      if (to) edges.push({ from, to, weight: edgeWeight((weights[src] || {})[dst] || 1) });
+    }
+  }
+  return edges;
+}
+
+// Runs once per rebuild, never per hover: one sweep per source building, which is the
+// cost a single ⌥ bundle pays, times the handful of classes a diff touches.
+function drawAddedCoupling() {
+  clearAddedCoupling();
+  addedPeers.clear();
+  if (!addedCouplingOn()) return;
+  const edges = addedEdges();
+  if (!edges.length || edges.length > ADDED_ROAD_MAX) return;
+  const grid = ensureRoadGrid();
+  const y = (grid ? grid.floorTop : 0) + ADDED_LIFT * cityUnit;
+  const road = roadSink(), lane = roadSink();
+  const bySource = new Map();
+  for (const edge of edges) {
+    if (!bySource.has(edge.from)) bySource.set(edge.from, []);
+    bySource.get(edge.from).push(edge);
+    if (!edge.to.file.changed) addedPeers.add(edge.to);
+  }
+  for (const [from, out] of bySource) {
+    const sweep = grid ? roadSweep(from, grid, out.flatMap(e => roadRing(e.to, grid))) : null;
+    for (const { to, weight } of out) {
+      const state = sweep ? roadBestState(sweep, roadRing(to, grid)) : -1;
+      let points;
+      if (state >= 0) {
+        const states = [];
+        for (let s = state; s >= 0; s = sweep.prev[s]) states.push(s);
+        states.reverse();
+        points = statesToPoints(states, grid);
+        points.unshift(baseAnchor(from, points[0]));
+        points.push(baseAnchor(to, points[points.length - 1]));
+      } else {
+        // Fenced in, or no grid: a straight L, as a hovered bundle falls back to.
+        const here = baseAnchor(from, to.mesh.position), there = baseAnchor(to, from.mesh.position);
+        points = [here, new THREE.Vector3(there.x, here.y, here.z), there];
+      }
+      // Twice a hovered road's width: a hovered bundle is looked at up close, for a
+      // second; this one has to read from the zoom the city opens at, where a single-
+      // reference road is a hairline and its arrows are noise.
+      const width = Math.min(2 * roadWidth(weight), ROAD_MAX_W * cityUnit);
+      // Offset to the road's own right, so a pair the diff coupled BOTH ways gets two
+      // roads side by side with their arrows opposed, not two on the same tarmac.
+      const path = offsetPath(orthogonalize(points), width / 2 + ROAD_GAP * cityUnit / 2);
+      addRoad(road, lane, path, width, y, null, ADDED_SPACING, 0.8);
+    }
+  }
+  const group = new THREE.Group();
+  for (const mesh of [sinkMesh(road, addedRoadMaterial, 0), sinkMesh(lane, addedArrowMaterial, 1)]) {
+    if (mesh) group.add(mesh);
+  }
+  if (!group.children.length) return;
+  scene.add(group);
+  addedGroup = group;
 }
 
 // ── Change coupling: the crime scene ────────────────────────────────────────
@@ -6110,6 +6349,12 @@ function syncUndersideView() {
 // crosses a long road and a short one at the same speed. Negative because a texture offset
 // slides the pattern the opposite way, and +v is the far end of every run.
 function updateStreetFlow() {
+  if (addedGroup) {
+    // A hovered bundle is the question being asked right now; the standing layer steps
+    // aside for it rather than crossing it road for road.
+    addedGroup.visible = !streetGroup;
+    addedArrowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / ADDED_SPACING)) % 1;
+  }
   if (!streetGroup || streetFlowFrozen) return;
   flowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / FLOW_SPACING)) % 1;
 }
@@ -6171,6 +6416,7 @@ html = (html
         .replace("__COMMIT_CHOICES__", json.dumps(COMMIT_CHOICES))
         .replace("__BEFORE_JSON__", json.dumps(BEFORE_FILES))
         .replace("__COUPLING_JSON__", json.dumps(_pack_adjacency(COUPLING)))
+        .replace("__ADDED_COUPLING_JSON__", json.dumps(ADDED_COUPLING))
         .replace("__COCHANGE_JSON__", json.dumps(_pack_adjacency(COCHANGE)))
         .replace("__AXES_JSON__", json.dumps(CHANGE_AXES)))
 OUT.write_text(html)

@@ -557,6 +557,71 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertEqual(edges[key], 5,
                              "the field, not the import two lines above it")
 
+    def test_the_coupling_a_branch_adds_is_told_apart_from_the_coupling_it_had(self):
+        """An edge out of a file the branch never touched is as old as that file, so only
+        the changed files are re-read at the merge base — and what they did not reference
+        there is the coupling the branch introduced. A class the branch merely RENAMED is
+        the same dependency under a new name, not a new one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                subprocess.run(["git", "-C", str(repo), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            git("init", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            body = "".join(f"  int field{i};\n" for i in range(12))   # enough for -M to pair them
+            (src / "Order.java").write_text("package app;\npublic class Order {}\n")
+            (src / "Customer.java").write_text("package app;\npublic class Customer {}\n")
+            (src / "Repo.java").write_text("package app;\npublic class Repo {\n" + body + "}\n")
+            (src / "Service.java").write_text(
+                "package app;\npublic class Service {\n  Order order;\n  Repo repo;\n}\n")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            git("checkout", "-b", "feature")
+            git("mv", "src/main/java/app/Repo.java", "src/main/java/app/Store.java")
+            (src / "Store.java").write_text("package app;\npublic class Store {\n" + body + "}\n")
+            (src / "Service.java").write_text(
+                "package app;\npublic class Service {\n  Order order;\n  Store repo;\n"
+                "  Customer customer;\n}\n")
+            (src / "Invoice.java").write_text("package app;\npublic class Invoice {\n  Order order;\n}\n")
+            git("add", "-A")
+            git("commit", "-m", "feat")
+
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            env.pop("HEATMAP_CHANGED_BASE", None)
+            env.pop("GITHUB_BASE_REF", None)
+            for script in ("compute_complexity.py", "compute_fanio.py"):
+                subprocess.run(["python3", str(SCRIPT_DIR / script)], check=True, cwd=str(repo),
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
+            names = ("Order", "Customer", "Store", "Service", "Invoice")
+            tsv = repo / "codemap.tsv"
+            tsv.write_text(hdr + "".join(
+                f"src/main/java/app/{n}.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t0\t0\t1\n" for n in names))
+            subprocess.run(["python3", str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                           check=True, cwd=str(repo), env=env, stdout=subprocess.DEVNULL)
+
+            import json
+            import re
+            html = (repo / "codecity.html").read_text()
+            added = json.loads(re.search(r"const ADDED_COUPLING = (.*?);\n", html).group(1))
+            path = lambda n: f"src/main/java/app/{n}.java"
+            self.assertEqual(added["classes"], {
+                path("Invoice"): [path("Order")],      # a new class: everything it uses is new
+                path("Service"): [path("Customer")],   # the one reference Service took on
+            })                                         # ...and not Order, nor the renamed Store
+            self.assertEqual(added["packages"], {})    # one package: nothing crosses a boundary
+
     def test_a_road_can_be_followed_into_the_source(self):
         """⌘/Ctrl-click a road and land on the line that couples the two classes — and
         the asymmetry that makes it useful: an OUTBOUND road opens MY file where I first
