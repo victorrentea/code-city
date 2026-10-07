@@ -1433,7 +1433,7 @@ html = """<!doctype html>
     background: linear-gradient(to right, #e8eefc, #800020);
   }
   /* The same bar for a change: blue (it fell) -> grey (untouched) -> red (it grew). */
-  #hover .cbar.diverging { background: linear-gradient(to right, #1d4ed8, #cfd4dc 50%, #b91c1c); }
+  #hover .cbar.diverging { background: linear-gradient(to right, #1d4ed8, #b9bfc8 50%, #b91c1c); }
   #hover .props .delta-up { color: #fca5a5; font-weight: 600; }
   #hover .props .delta-down { color: #93c5fd; font-weight: 600; }
   /* The colour key under the COLOR knob, for the one metric whose colours are not a ramp. */
@@ -2666,7 +2666,9 @@ function syncColorLogCheck() {
 // every building that it did not move — an untouched class must never pick up a tint from
 // a ramp that merely starts near grey. Red is more coupling, blue is less; neither red nor
 // blue is used by the ramp's own light end, so a change is never mistaken for a low value.
-const DELTA_NEUTRAL = new THREE.Color(0xcfd4dc);
+// A shade darker than the drained grey of "highlight changed" (#dfe3e8), so a class the
+// change touched without moving its coupling still reads as touched.
+const DELTA_NEUTRAL = new THREE.Color(0xb9bfc8);
 const DELTA_UP = new THREE.Color(0xb91c1c);
 const DELTA_DOWN = new THREE.Color(0x1d4ed8);
 // Every non-zero change starts this far along its arm. A pull request moves a class's
@@ -3230,7 +3232,10 @@ function rebuildCity() {
     // floor is its label. Nesting reads from the terrace step alone.
     const leaves = node.leaves();
     const avgColor = leaves.reduce((sum, l) => sum + (Number(l.data.file[colorMetric]) || 0), 0) / leaves.length;
-    const edgeColor = colorFor(avgColor, maxColor);
+    // ...except for a change metric, where a mean is a lie both ways: one +1 among fifteen
+    // leaves would paint the whole riser at the floor's 60% red, and a +1 beside a -1 would
+    // cancel to "unchanged". The buildings carry the change; the floor stays neutral.
+    const edgeColor = DELTA_METRICS.has(colorMetric) ? DELTA_NEUTRAL.clone() : colorFor(avgColor, maxColor);
     const sideMaterial = new THREE.MeshStandardMaterial({ color: edgeColor, roughness: 0.85 });
     const topMaterial = new THREE.MeshStandardMaterial({ color: 0xe8eefc, roughness: 0.9 });
     const block = new THREE.Mesh(
