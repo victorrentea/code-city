@@ -409,9 +409,9 @@ _HISTORY = CHANGE_SOURCE.pop("history", [])
 #   size / LOC / cognitive complexity -> the file's blob at that ref, scored in memory
 #   commits / bugfixes / committers   -> the history walk, stopped at that ref
 #
-# fan-in / fan-out / instability are deliberately absent: they are whole-repo facts
-# and would need every source file re-parsed at the base ref. The page simply draws
-# no ghost while one of those drives the geometry, rather than sketching a guess.
+# fan-in / fan-out / instability are whole-repo facts, so they are not read off one blob:
+# they are added further down, once the coupling edges are known, by re-reading only the
+# changed files at the base ref (see _base_edges / _coupling_delta).
 try:
     import compute_complexity as _complexity_tool
 except Exception:                                   # tree-sitter not vendored (page still renders)
@@ -802,8 +802,8 @@ COUPLING = _coupling_adjacency(CLASS_EDGES)
 
 
 # ── The coupling the change set INTRODUCED ───────────────────────────────────
-# fan-in / fan-out have no "before" (see above: they are whole-repo facts), but the
-# edges a change set ADDS are not — an edge lives in the text of its source file, so an
+# fan-in / fan-out have no "before" in a blob (see above: they are whole-repo facts), but
+# the edges a change set ADDS are not — an edge lives in the text of its source file, so an
 # edge out of a file the diff never touched is exactly as old as that file is. Only the
 # changed files have to be re-read at the base ref, which is what the size/complexity
 # ghosts already do, and the difference between the two readings is the new coupling.
@@ -830,16 +830,22 @@ def _renames(ref):
     return renames
 
 
-def _added_coupling(edges):
-    views = {"classes": {}, "packages": {}, "modules": {}}
+def _base_edges(edges):
+    """{(source, target)} between rendered classes AS OF the change set's base ref, or None
+    when there is no base to read (no diff, no edge file, no class map).
+
+    Every edge out of a file the diff never touched is as old as that file, so it is
+    copied over as is; only the changed files are re-read at the base, the same blobs the
+    size/complexity ghosts are drawn from. Both ends must have existed at the base: a file
+    the diff created could not have been depended on, nor depend on anything, back then."""
     ref = CHANGE_SOURCE.get("before", "")
     class_tsv = TSV.with_name("complexity-per-class.tsv")
     if not edges or not ref or not CHANGED_FILES or not class_tsv.exists():
-        return views
+        return None
     try:
         import compute_fanio
     except Exception:
-        return views
+        return None
     fqn_to_file, pkg_to_classes = compute_fanio.load_class_map(str(class_tsv))
     class_paths = {r["path"] for r in rows}
     changed = CHANGED_FILES & class_paths
@@ -857,7 +863,7 @@ def _added_coupling(edges):
             simple = Path(old).stem
             fqn_to_file.setdefault(f"{m.group(1)}.{simple}", new)
             pkg_to_classes[m.group(1)].append((simple, new))
-    then = {(s, t) for s, t, _, _ in edges if s not in changed}
+    then = {(s, t) for s, t, _, _ in edges if s not in changed and t not in born}
     for path, blob in blobs.items():
         if blob is None:
             continue
@@ -865,7 +871,15 @@ def _added_coupling(edges):
             blob.decode("utf-8", "replace"), path, fqn_to_file, pkg_to_classes)
         # A file the diff created cannot have been depended on at the base; a hit on its
         # name in old text is a coincidence of spelling, not a dependency.
-        then.update((path, t) for t in targets if t not in born)
+        then.update((path, t) for t in targets
+                    if t not in born and t in class_paths and t != path)
+    return then
+
+
+def _added_coupling(edges, then):
+    views = {"classes": {}, "packages": {}, "modules": {}}
+    if then is None:
+        return views
     for view, key in _view_keys():
         before = {(key(s), key(t)) for s, t in then}
         for s, t, _, _ in edges:
@@ -878,7 +892,83 @@ def _added_coupling(edges):
     return {view: {k: sorted(v) for k, v in sorted(adj.items())} for view, adj in views.items()}
 
 
-ADDED_COUPLING = _added_coupling(CLASS_EDGES)
+BASE_EDGES = _base_edges(CLASS_EDGES)
+ADDED_COUPLING = _added_coupling(CLASS_EDGES, BASE_EDGES)
+
+
+# ── How much coupling the change set added or removed, per building ─────────
+# The same two readings of the edge list, counted instead of diffed: fan-out is how many
+# distinct buildings a building names, fan-in how many distinct buildings name it, at HEAD
+# and at the base. Their difference is what the change set did to each one's coupling —
+# and for fan-in it lands on buildings the diff never opened: the class a PR adds four
+# callers to is four dependants heavier, and nothing in its own text says so.
+#
+# Both sides are counted off the RENDERED edges (both ends a building on the plate), so a
+# delta is the movement of the very roads ⌥ draws, not of the fan_in/fan_out columns,
+# which also count references to files outside the plate. The "was" a changed class shows
+# is therefore today's column minus this delta — the same ruler on both ends. A class the
+# diff created had nothing at the base: all of its coupling is new.
+#
+# Per view, folded the way the roads are: a package's delta is how many OTHER packages it
+# took on (or let go of), not the sum of its classes' deltas — the fifth class of A that
+# starts using B adds nothing to how many packages A depends on.
+#
+# Only for the change set the page opens on, like ADDED_COUPLING: a commit picked from the
+# history dropdown would need the tree at that commit.
+def _coupling_delta(edges, then):
+    """{view: {unit: (d_fan_out, d_fan_in)}} for every unit whose coupling moved, or None
+    without a base to compare against."""
+    if then is None:
+        return None
+    head = {(s, t) for s, t, _, _ in edges}
+    deltas = {}
+    for view, key in _view_keys():
+        def counts(pairs):
+            units = {(key(s), key(t)) for s, t in pairs}
+            out, inc = {}, {}
+            for a, b in units:
+                if a is None or b is None or a == b:
+                    continue
+                out[a] = out.get(a, 0) + 1
+                inc[b] = inc.get(b, 0) + 1
+            return out, inc
+        head_out, head_in = counts(head)
+        base_out, base_in = counts(then)
+        moved = {}
+        for unit in set(head_out) | set(head_in) | set(base_out) | set(base_in):
+            d = (head_out.get(unit, 0) - base_out.get(unit, 0),
+                 head_in.get(unit, 0) - base_in.get(unit, 0))
+            if d != (0, 0):
+                moved[unit] = d
+        deltas[view] = moved
+    return deltas
+
+
+COUPLING_DELTA = _coupling_delta(CLASS_EDGES, BASE_EDGES)
+# Stamped only on the rows whose coupling moved: on Spring that is a dozen rows out of 5000,
+# and two zeros on each of the others were 150 KB of page saying nothing. The page reads a
+# missing value as a measured 0 — "unchanged" — for as long as HAS_COUPLING_DELTA says there
+# was a base to count against at all; without one the two options leave the dropdown.
+if COUPLING_DELTA is not None:
+    for _view, _rows in (("classes", rows), ("packages", pkg_rows), ("modules", mod_rows)):
+        for _r in _rows:
+            _moved = COUPLING_DELTA[_view].get(_r["path"])
+            if _moved:
+                _r["d_fan_out"], _r["d_fan_in"] = _moved
+    _by_path = {r["path"]: r for r in rows}
+    for _path, _was in BEFORE_FILES.items():
+        _row = _by_path.get(_path)
+        if _row is None:
+            continue
+        _was["fan_out"] = (_row["fan_out"] or 0) - _row.get("d_fan_out", 0)
+        _was["fan_in"] = (_row["fan_in"] or 0) - _row.get("d_fan_in", 0)
+        _tot = _was["fan_out"] + _was["fan_in"]
+        _was["instability"] = (_was["fan_out"] / _tot) if _tot else 0.0
+if COUPLING_DELTA and COUPLING_DELTA["classes"]:
+    print("coupling the change set moved (class: fan-out, fan-in):", file=sys.stderr)
+    for _path, (_d_out, _d_in) in sorted(COUPLING_DELTA["classes"].items(),
+                                         key=lambda kv: (-abs(kv[1][0]) - abs(kv[1][1]), kv[0])):
+        print(f"  {_path.rsplit('/', 1)[-1]}: out {_d_out:+d}, in {_d_in:+d}", file=sys.stderr)
 
 
 # ── Change coupling, per view ────────────────────────────────────────────────
@@ -1342,6 +1432,15 @@ html = """<!doctype html>
     border: 1px solid rgba(255, 255, 255, 0.5);
     background: linear-gradient(to right, #e8eefc, #800020);
   }
+  /* The same bar for a change: blue (it fell) -> grey (untouched) -> red (it grew). */
+  #hover .cbar.diverging { background: linear-gradient(to right, #1d4ed8, #cfd4dc 50%, #b91c1c); }
+  #hover .props .delta-up { color: #fca5a5; font-weight: 600; }
+  #hover .props .delta-down { color: #93c5fd; font-weight: 600; }
+  /* The colour key under the COLOR knob, for the one metric whose colours are not a ramp. */
+  .deltaKey { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 3px; }
+  .deltaKey span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .deltaKey i { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+                border: 1px solid rgba(15, 23, 42, 0.25); }
   #hover .cbar-mark {
     position: absolute;
     top: -2px;
@@ -1587,6 +1686,11 @@ html = """<!doctype html>
 
     <span class="knob">Color</span>
     <select id="colorMetric">
+      <optgroup label="what this change did" id="deltaGroup">
+        <option value="d_fan_out">&Delta; outgoing coupling</option>
+        <option value="d_fan_in">&Delta; incoming coupling</option>
+      </optgroup>
+      <optgroup label="what the code is">
       <option value="cognitive_complexity">cognitive complexity</option>
       <option value="commits" selected>total commits</option>
       <option value="bug_commits">bugfix commits</option>
@@ -1600,6 +1704,7 @@ html = """<!doctype html>
       <option value="crap_load">CRAP load</option>
       <option value="coverage">line coverage % (all tests)</option>
       <option value="coverage_acceptance">acceptance coverage % (end-to-end)</option>
+      </optgroup>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -1723,6 +1828,7 @@ const CHANGE_AXES = __AXES_JSON__;
 let activeColorMax = 1;
 let activeColorLog = false;   // whether the active colour metric is on a log ramp
 let activeColorInvert = false;   // ...and whether its ramp runs backwards (coverage)
+let activeColorDiverging = false;   // ...or is not a ramp at all, but a change either way of zero
 
 </script>
 <script type="module">
@@ -1887,6 +1993,31 @@ if (HAS_ACCEPTANCE) {
   const colorSel = document.getElementById("colorMetric");
   if (colorSel) colorSel.value = "coverage_acceptance";
 }
+// What the change set did to coupling, per building (see _coupling_delta in the generator):
+// how many dependencies it added minus how many it dropped (outgoing), and the same for the
+// buildings depending on it (incoming). Stamped on the rows only when the generator had a
+// base to count against; without one there is no "this change" to colour by, and the two
+// options leave the dropdown the way the co-change one does.
+const DELTA_METRICS = new Set(["d_fan_out", "d_fan_in"]);
+const HAS_COUPLING_DELTA = __HAS_COUPLING_DELTA__;   // only the rows that moved carry a value
+if (!HAS_COUPLING_DELTA) {
+  const group = document.getElementById("deltaGroup");
+  if (group) group.remove();
+}
+// ...and when the change set DID move coupling, that is what the city opens on — over
+// acceptance reach too. Every other colour here is a fact about the code as it stands, so
+// on a review it paints the same picture before and after the PR, and the reviewer has to
+// do the subtraction in their head. This one IS the subtraction: grey wherever the change
+// left a class's dependencies alone, red where it added some, blue where it cut some. It
+// lights the touched classes that took on a dependency and nothing else — the untouched
+// ones stay grey because, by construction, a class whose text did not change cannot have
+// changed what it depends on. Outgoing rather than incoming because that is the half a
+// diff ADDS, line by line, in the classes the reviewer is already reading; incoming lands
+// on classes the diff never opened, and is one option below it.
+if (HAS_COUPLING_DELTA && FILES.some(f => f.d_fan_out)) {
+  const colorSel = document.getElementById("colorMetric");
+  if (colorSel) colorSel.value = "d_fan_out";
+}
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
 // is staring at a delta and needs to know which one. The tag ("commit: a5d03cb")
@@ -2026,8 +2157,8 @@ function beforeRowFor(row) {
   return null;
 }
 
-// A metric only has a "before" if git could reconstruct it: fan-in, fan-out and
-// instability are whole-repo facts and are simply not in the snapshot.
+// A metric only has a "before" if git could reconstruct it. Coverage and CRAP only do
+// when a baseline is committed; the couplings are rebuilt from the edge list.
 function beforeValue(before, metric) {
   const v = before ? before[metric] : undefined;
   return v === undefined || v === null ? null : Number(v);
@@ -2481,6 +2612,11 @@ function percentile(values, p) {
 // by files you are no longer looking at.
 function metricMax(key) {
   if (FIXED_COLOR_MAX[key] !== undefined) return FIXED_COLOR_MAX[key];
+  // A change runs both ways from zero, and nearly every building sits ON zero — the p95
+  // of that is 0. The largest change on screen, either way, is the end of both arms.
+  if (DELTA_METRICS.has(key)) {
+    return Math.max(1, ...visibleDataset().map(f => Math.abs(Number(f[key]) || 0)));
+  }
   return percentile(visibleDataset().map(f => Number(f[key]) || 0), 0.95);
 }
 
@@ -2515,12 +2651,41 @@ function wantsLog(metric) {
 
 // The checkbox always shows the ramp the current metric resolves to.
 function syncColorLogCheck() {
-  if (colorLogCheck) colorLogCheck.checked = wantsLog(colorMetricKey());
+  if (!colorLogCheck) return;
+  // A change of +1 and one of +3 is all a pull request ever carries: no long tail for a
+  // log ramp to spread, so the box goes grey rather than offer a choice that does nothing.
+  const delta = DELTA_METRICS.has(colorMetricKey());
+  colorLogCheck.disabled = delta;
+  colorLogCheck.parentElement.classList.toggle("off", delta);
+  colorLogCheck.checked = !delta && wantsLog(colorMetricKey());
 }
 
 // Normalised colour position t in [0,1]. Shared by the buildings and the hover
 // colour-scale tick so the tick always matches the building's shade.
+// The change colours. Grey is "this change did not move it", and it is the SAME grey on
+// every building that it did not move — an untouched class must never pick up a tint from
+// a ramp that merely starts near grey. Red is more coupling, blue is less; neither red nor
+// blue is used by the ramp's own light end, so a change is never mistaken for a low value.
+const DELTA_NEUTRAL = new THREE.Color(0xcfd4dc);
+const DELTA_UP = new THREE.Color(0xb91c1c);
+const DELTA_DOWN = new THREE.Color(0x1d4ed8);
+// Every non-zero change starts this far along its arm. A pull request moves a class's
+// coupling by one or two; on a plain linear arm, +1 beside a +4 would be a grey with a
+// blush, and "it changed" is the one thing this colour must never under-say. Above the
+// floor it is still linear, so +4 stays visibly darker than +1.
+const DELTA_FLOOR = 0.45;
+function deltaStrength(value, max) {
+  const v = Math.abs(Number(value) || 0);
+  if (!v) return 0;
+  return DELTA_FLOOR + (1 - DELTA_FLOOR) * Math.min(1, v / (max || 1));
+}
+
 function colorT(value, max) {
+  // Diverging: 0.5 is "unchanged", and the tick on the hover's blue-grey-red bar lands
+  // exactly where the building's own shade sits on it.
+  if (activeColorDiverging) {
+    return 0.5 + 0.5 * Math.sign(Number(value) || 0) * deltaStrength(value, max);
+  }
   const m = max || 1;
   const v = Math.max(0, Number(value) || 0);
   const t = activeColorLog
@@ -2531,6 +2696,10 @@ function colorT(value, max) {
 }
 
 function colorFor(value, max) {
+  if (activeColorDiverging) {
+    const v = Number(value) || 0;
+    return DELTA_NEUTRAL.clone().lerp(v > 0 ? DELTA_UP : DELTA_DOWN, deltaStrength(v, max));
+  }
   // Light blue (0) -> burgundy red (max): the city reads light with hot spots in red.
   return new THREE.Color(0xe8eefc).lerp(new THREE.Color(0x800020), colorT(value, max));
 }
@@ -2542,6 +2711,7 @@ function colorFor(value, max) {
 // which must not be readable as either of them.
 const UNMEASURED_COLOR = new THREE.Color(0x9aa0a6);
 function isMeasured(file, metric) {
+  if (DELTA_METRICS.has(metric)) return HAS_COUPLING_DELTA;   // absent = it did not move = 0
   const v = file[metric];
   return v !== null && v !== undefined;
 }
@@ -2550,7 +2720,9 @@ function isMeasured(file, metric) {
 // unchanged buildings in "highlight changed" mode so the change set keeps the
 // only real colour on screen.
 function grayFor(value, max) {
-  return new THREE.Color(0xdfe3e8).lerp(new THREE.Color(0x6b7280), colorT(value, max));
+  // A change colour has no "more" end to drain towards: every drained building is just grey.
+  const t = activeColorDiverging ? 0 : colorT(value, max);
+  return new THREE.Color(0xdfe3e8).lerp(new THREE.Color(0x6b7280), t);
 }
 
 // The two pieces of geometry math a building is made of, pulled out of rebuildCity so
@@ -2927,8 +3099,8 @@ function addChangeMarks(file, geo) {
   if (!before) return;                       // unchanged, added by the diff, or an aggregate view
 
   // The shade the city WOULD have given this building at the base commit. null when the
-  // colour metric has no snapshot at all (fan-in, fan-out and instability are whole-repo
-  // facts git cannot reconstruct per commit), and skipped when it comes out the same
+  // colour metric has no snapshot at all (a change metric is already the before/after,
+  // and has no "before" of its own), and skipped when it comes out the same
   // colour — a skin in the identical shade is a seam and no information.
   const wasColor = beforeValue(before, geo.colorMetric);
   let skin = wasColor === null ? null : colorFor(wasColor, geo.maxColor);
@@ -3018,6 +3190,7 @@ function rebuildCity() {
   activeColorMax = maxColor;   // remembered for the hover tooltip's colour-scale marker
   activeColorLog = wantsLog(colorMetric);   // ditto: log vs linear for the tick position
   activeColorInvert = INVERTED_METRICS.has(colorMetric);   // ...and which end is the bad end
+  activeColorDiverging = DELTA_METRICS.has(colorMetric);   // ...or whether it is a change, not a ramp
 
   // Streets narrow with depth, like a real city: boulevards between top-level
   // modules, alleys between leaf packages. A flat districtGap at every level costs
@@ -3169,6 +3342,10 @@ function styleForChanges() {
   if (changeMode() !== "highlight") return;
   for (const entry of buildings) {
     if (entry.file.changed) continue;
+    // Coloured by what the change did, a class the diff never opened can still have been
+    // moved by it — the repository four new callers now depend on. Draining it would hide
+    // the one effect of the change that the diff itself does not show.
+    if (activeColorDiverging && entry.colorValue) continue;
     const m = entry.mesh.material;
     m.color.copy(grayFor(entry.colorValue, entry.maxColor));
     m.transparent = true;
@@ -3249,7 +3426,8 @@ function setupChangedLabels() {
   const rank = new Map();
   for (const entry of changed) {
     const vol = blockVolume(entry) / (maxVolume || 1);              // 0..1 relative to the biggest touched block
-    const col = colorT(entry.colorValue, entry.maxColor);           // 0..1 position on the light→red ramp
+    const t = colorT(entry.colorValue, entry.maxColor);             // 0..1 position on the light→red ramp
+    const col = activeColorDiverging ? Math.abs(t - 0.5) * 2 : t;   // ...or distance from "unchanged"
     // "and/or": leading on EITHER axis is enough to be named early (max), and leading
     // on both breaks the tie in your favour (the quarter-weighted weaker signal).
     rank.set(entry, Math.max(vol, col) + 0.25 * Math.min(vol, col));
@@ -5216,6 +5394,10 @@ const HOVER_PROPS = [
   { key: "committers", label: "committers" },
   { key: "fan_in", label: "incoming coupling (fan in)" },
   { key: "fan_out", label: "outgoing coupling (fan out)" },
+  // What this change did to the two lines above. Shown where it moved them, or where it is
+  // the colour on screen — a grey building then says "0" instead of saying nothing.
+  { key: "d_fan_out", label: "outgoing coupling, this change", delta: true, fmt: signedDelta },
+  { key: "d_fan_in", label: "incoming coupling, this change", delta: true, fmt: signedDelta },
   { key: "instability", label: "instability Ce/(Ce+Ca)" },
   { key: "cochange_out", label: "cross-package co-change" },
   // Only in a city built with coverage (a JaCoCo report, or --coverage JSON); `crap`
@@ -5233,6 +5415,11 @@ const HOVER_PROPS = [
 // say which one a grey building is. Spelling it out costs one line and stops a reader
 // from filing an unbuilt module as untested code.
 const UNMEASURED_NOTE = '<span class="perkloc">not measured</span>';
+function signedDelta(v) {
+  const n = Number(v) || 0;
+  if (!n) return "0";
+  return `<span class="${n > 0 ? "delta-up" : "delta-down"}">${n > 0 ? "+" : "\u2212"}${Math.abs(n)}</span>`;
+}
 function pctOrUnmeasured(v) {
   return (v === null || v === undefined) ? UNMEASURED_NOTE : fmtMetric(Number(v)) + "%";
 }
@@ -5256,6 +5443,9 @@ function worstMethodNote(file) {
 //   AREA → left/right arrow · HEIGHT → up/down arrow · COLOUR → a light→red scale bar
 //   with a tick at this building's spot (value / 95th-percentile, clamped 0..1).
 function scaleNote(key) {
+  if (DELTA_METRICS.has(key)) {
+    return "colour scale: blue = fewer, grey = unchanged, red = more; darkest = the biggest change on screen";
+  }
   if (key === "coverage" || key === "coverage_acceptance") {
     return "colour scale, 0-100% and inverted: red is uncovered";
   }
@@ -5276,7 +5466,7 @@ function marksFor(file, ...keys) {
       const t = colorT(Number(file[key]) || 0, activeColorMax);
       // The tick means something different on a pinned ramp, and saying "capped at the
       // 95th pct" over a scale that is not would undo the one thing pinning it bought.
-      marks.push(`<span class="cbar" title="${scaleNote(key)}">` +
+      marks.push(`<span class="cbar${DELTA_METRICS.has(key) ? " diverging" : ""}" title="${scaleNote(key)}">` +
         `<span class="cbar-mark" style="left:${(t * 100).toFixed(1)}%"></span></span>`);
     }
   }
@@ -5298,6 +5488,7 @@ function formatHover(file) {
   const items = [];
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
+    if (p.delta && !(HAS_COUPLING_DELTA && (file[p.key] || active.has(p.key)))) continue;
     if (p.crap && !HAS_CRAP) continue;   // no report was read: the row has nothing to say
     if (p.coverage && !HAS_COVERAGE) continue;   // ...nor any coverage, from anywhere
     if (p.acceptance && !HAS_ACCEPTANCE) continue;   // ...and its own report, separately
@@ -6217,6 +6408,10 @@ const METRIC_NOTES = {
           href: "https://en.wikipedia.org/wiki/Bus_factor"},
   fan_in: {note: "how many classes depend on it",
           href: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)"},
+  d_fan_out: {note: "dependencies this change added, minus those it removed",
+          href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
+  d_fan_in: {note: "dependants this change added, minus those it removed",
+          href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
   fan_out: {note: "how many classes it depends on",
           href: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)"},
   instability: {note: "0 = only depended on, 1 = only depends",
@@ -6234,6 +6429,17 @@ const METRIC_NOTES = {
   coverage_acceptance: {note: "lines run by end-to-end tests",
           href: "https://martinfowler.com/bliki/TestPyramid.html"},
 };
+
+// The three colours a change metric uses, named. A ramp explains itself (pale is little,
+// dark is a lot); grey-red-blue does not, and "is grey zero or unmeasured?" is the first
+// question anyone asks of it.
+function deltaKeyHtml() {
+  const swatch = c => `<i style="background:#${c.getHexString()}"></i>`;
+  return `<div class="deltaKey">` +
+    `<span>${swatch(DELTA_UP)}more</span>` +
+    `<span>${swatch(DELTA_NEUTRAL)}unchanged</span>` +
+    `<span>${swatch(DELTA_DOWN)}fewer</span></div>`;
+}
 
 // What an option marked `data-unavailable` says instead of what it means. One sentence,
 // and it has to carry two facts: that the colour on screen is not this metric, and what
@@ -6281,6 +6487,9 @@ function syncMetricNotes() {
     el.appendChild(a);
     if (knob === METRIC_KNOBS[2] && knob.select.value === "change_dna" && HAS_AXES) {
       el.insertAdjacentHTML("beforeend", dnaLegendHtml());
+    }
+    if (knob === METRIC_KNOBS[2] && DELTA_METRICS.has(knob.select.value)) {
+      el.insertAdjacentHTML("beforeend", deltaKeyHtml());
     }
   }
 }
@@ -6590,6 +6799,7 @@ html = (html
         .replace("__BEFORE_JSON__", json.dumps(BEFORE_FILES))
         .replace("__COUPLING_JSON__", json.dumps(_pack_adjacency(COUPLING)))
         .replace("__ADDED_COUPLING_JSON__", json.dumps(ADDED_COUPLING))
+        .replace("__HAS_COUPLING_DELTA__", json.dumps(COUPLING_DELTA is not None))
         .replace("__COCHANGE_JSON__", json.dumps(_pack_adjacency(COCHANGE)))
         .replace("__AXES_JSON__", json.dumps(CHANGE_AXES)))
 OUT.write_text(html)

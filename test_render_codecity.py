@@ -623,6 +623,97 @@ class RenderCodecityTest(unittest.TestCase):
             })                                         # ...and not Order, nor the renamed Store
             self.assertEqual(added["packages"], {})    # one package: nothing crosses a boundary
 
+    def test_the_coupling_a_change_moved_is_counted_per_class_both_ways(self):
+        """What the change did to each class's coupling, as head minus base: fan-out moves
+        only in the files the diff opened, fan-in also lands on classes it never touched,
+        a dependency dropped counts as much as one taken on, and a class whose coupling the
+        change left alone is a measured 0 — not a missing value — so it paints neutral."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+
+            def git(*args):
+                subprocess.run(["git", "-C", str(repo), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            git("init", "-b", "main")
+            git("config", "user.email", "t@example.com")
+            git("config", "user.name", "t")
+            src = repo / "src/main/java/app"
+            src.mkdir(parents=True)
+            (src / "Order.java").write_text("package app;\npublic class Order {}\n")
+            (src / "Customer.java").write_text("package app;\npublic class Customer {}\n")
+            (src / "Repo.java").write_text("package app;\npublic class Repo {}\n")
+            (src / "Service.java").write_text(
+                "package app;\npublic class Service {\n  Order order;\n  Repo repo;\n}\n")
+            git("add", "-A")
+            git("commit", "-m", "base")
+            git("checkout", "-b", "feature")
+            # Service swaps Order for Customer: +1 -1 on its own fan-out, which nets to 0.
+            (src / "Service.java").write_text(
+                "package app;\npublic class Service {\n  Customer customer;\n  Repo repo;\n}\n")
+            (src / "Invoice.java").write_text(
+                "package app;\npublic class Invoice {\n  Customer customer;\n}\n")
+            git("add", "-A")
+            git("commit", "-m", "feat")
+
+            env = os.environ.copy()
+            env["HEATMAP_REPO"] = str(repo)
+            env["HEATMAP_OUT"] = str(repo)
+            env.pop("HEATMAP_CHANGED_BASE", None)
+            env.pop("GITHUB_BASE_REF", None)
+            for script in ("compute_complexity.py", "compute_fanio.py"):
+                subprocess.run([sys.executable, str(SCRIPT_DIR / script)], check=True, cwd=str(repo),
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            hdr = (
+                "path\tbytes\tlines\tcommits\tbug_commits\tcommits_per_kloc\tbugs_per_kloc\t"
+                "bugs_per_commit\tcognitive_complexity\tcomplexity_per_kloc\tfan_in\tfan_out\tcommitters\n"
+            )
+            # fan_in / fan_out as compute_fanio counts them at HEAD.
+            fan = {"Order": (0, 0), "Customer": (2, 0), "Repo": (1, 0),
+                   "Service": (0, 2), "Invoice": (0, 1)}
+            tsv = repo / "codemap.tsv"
+            tsv.write_text(hdr + "".join(
+                f"src/main/java/app/{n}.java\t100\t5\t1\t0\t0\t0\t0\t0\t0\t{i}\t{o}\t1\n"
+                for n, (i, o) in fan.items()))
+            subprocess.run([sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(tsv)],
+                           check=True, cwd=str(repo), env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            html = (repo / "codecity.html").read_text()
+            files = json.loads(re.search(r"const FILES = (.*?);\n", html).group(1))
+            moved = {f["name"]: (f.get("d_fan_out", 0), f.get("d_fan_in", 0)) for f in files}
+            self.assertEqual(moved, {
+                "Order": (0, -1),      # untouched by the diff, and still one dependant lighter
+                "Customer": (0, 2),    # untouched too: two new dependants
+                "Repo": (0, 0),        # nothing moved: a measured zero, painted neutral
+                "Service": (0, 0),     # touched, but one in and one out
+                "Invoice": (1, 0),     # new: everything it uses is new
+            })
+            # Only what moved carries a number; the page reads the rest as 0, not unmeasured.
+            self.assertEqual(sum("d_fan_out" in f for f in files), 3)
+            self.assertIn("const HAS_COUPLING_DELTA = true;", html)
+            before = json.loads(re.search(r"const BEFORE = (.*?);\n", html).group(1))
+            service = before["src/main/java/app/Service.java"]
+            self.assertEqual((service["fan_out"], service["fan_in"]), (2, 0))
+            self.assertNotIn("src/main/java/app/Invoice.java", before)   # nothing to have been
+            # ...and it is what the city opens on, because the change moved coupling.
+            self.assertIn('colorSel.value = "d_fan_out"', html)
+
+    def test_no_change_metric_without_a_change(self):
+        """With no diff there is nothing to subtract: no row carries a delta, and the page
+        takes the two options out of the dropdown rather than paint a grey city."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HEATMAP_OUT"] = tmp
+            subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "render_codecity.py"), str(SAMPLE_TSV)],
+                check=True, cwd=tmp, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            html = (Path(tmp) / "codecity.html").read_text()
+            files = json.loads(re.search(r"const FILES = (.*?);\n", html).group(1))
+            self.assertFalse(any("d_fan_out" in f for f in files))
+            self.assertIn("const HAS_COUPLING_DELTA = false;", html)
+
     def test_the_new_coupling_runs_the_roads_alt_draws(self):
         """The diff's new edges, standing or under ⌥, are laid by the ONE router ⌥ uses —
         so a new road runs the trail ⌥ would draw for it, not a look-alike a block off.
