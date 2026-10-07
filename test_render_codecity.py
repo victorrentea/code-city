@@ -1047,7 +1047,16 @@ class RenderCodecityTest(unittest.TestCase):
             # saying so in as many words rather than the vaguer "CHANGED" it used to.
             self.assertIn("function clearestChangeMark", html)
             self.assertIn('title: "INCREASED"', html)
-            self.assertIn('sub: "versus its previous value"', html)
+            self.assertIn('INCREASED_SUB = "versus its previous value"', html)
+            self.assertIn("sub: INCREASED_SUB,", html)
+            # Every card is as wide as the longest line any card carries: a fixed 200px let
+            # "acceptance coverage % (end-to-end)" run out through the COLOR card's edge.
+            self.assertIn("introMeasure.measureText(metricLabel(ch.select())).width + 34", html)
+            self.assertIn("introMeasure.measureText(INCREASED_SUB).width + 34 + 30", html)
+            # Each wire leaves from the panel's right edge, level with its selector, so it
+            # never strikes through what sits beside the selector (`/kloc`, `6 changed`).
+            self.assertIn("x: Math.max(rect.right + 3, panelRect.right - 1)", html)
+            self.assertNotIn("const east = { x: rect.right + 3,", html)
             # ...and it only appears when a mark is actually on screen at startup.
             self.assertIn("if (changeMark && changeSelect) {", html)
             # The leader lands on one ARROWHEAD, ringed rather than dotted so the arrow is

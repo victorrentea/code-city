@@ -5737,6 +5737,7 @@ const INTRO_CHANNELS = [
   { key: "color", color: "#9d174d", title: "COLOR", select: () => colorSelect },
 ];
 const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-black, like them
+const INCREASED_SUB = "versus its previous value";   // the INCREASED card's second line
 
 // A small up arrow (head + stem), centred on (cx, cy): the INCREASED card's icon, saying
 // in one glance which way the PR moved the metric.
@@ -5999,7 +6000,15 @@ function buildIntro() {
 
   // Where the label stack begins — needed BEFORE the channels are known, because the
   // change mark has to be picked from the marks that column can be reached from.
-  const LW = 200;
+  // As wide as the longest line any card will carry, never narrower than 200: a fixed 200
+  // let "acceptance coverage % (end-to-end)" run out through the COLOR card's right edge.
+  // Measured in the card's own type, with the left bar + padding and, for INCREASED, the
+  // up arrow beside the words counted in.
+  const introMeasure = document.createElement("canvas").getContext("2d");
+  introMeasure.font = '12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const LW = Math.ceil(Math.max(200,
+    ...INTRO_CHANNELS.map(ch => introMeasure.measureText(metricLabel(ch.select())).width + 34),
+    introMeasure.measureText(INCREASED_SUB).width + 34 + 30));
   const LH = 50;
   const lx = Math.min(heroRight + 46, W - LW - 18);
 
@@ -6015,7 +6024,7 @@ function buildIntro() {
     channels.push({
       key: "changes", color: MARK_INK, title: "INCREASED",
       select: () => changeSelect,
-      sub: "versus its previous value",
+      sub: INCREASED_SUB,
       ring: changeMark.ring,
       upArrow: true,
     });
@@ -6081,8 +6090,12 @@ function buildIntro() {
   const panel = document.querySelector(".panel");
   const panelRect = panel ? panel.getBoundingClientRect() : { right: 340 };
   const exitX = panelRect.right + 16;
+  // The wire starts on the panel's own right edge, level with its selector, not on the
+  // selector itself: what sits right of a selector in its row (`/kloc`, `lg`, `6 changed`)
+  // would otherwise be struck through by the first stretch of every wire. The selector is
+  // still named by the ring drawn round it in the same colour.
   const connector = (rect, target, color) => {
-    const east = { x: rect.right + 3, y: rect.top + rect.height / 2 };
+    const east = { x: Math.max(rect.right + 3, panelRect.right - 1), y: rect.top + rect.height / 2 };
     return [
       `<path d="M ${east.x.toFixed(1)} ${east.y.toFixed(1)} ` +
       `C ${exitX.toFixed(1)} ${east.y.toFixed(1)}, ` +
