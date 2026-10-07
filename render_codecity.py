@@ -2673,7 +2673,7 @@ const DELTA_DOWN = new THREE.Color(0x1d4ed8);
 // coupling by one or two; on a plain linear arm, +1 beside a +4 would be a grey with a
 // blush, and "it changed" is the one thing this colour must never under-say. Above the
 // floor it is still linear, so +4 stays visibly darker than +1.
-const DELTA_FLOOR = 0.45;
+const DELTA_FLOOR = 0.6;
 function deltaStrength(value, max) {
   const v = Math.abs(Number(value) || 0);
   if (!v) return 0;
