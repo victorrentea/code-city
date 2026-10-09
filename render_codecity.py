@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Render codemap.tsv to a Three.js CodeCity."""
+import base64
 import csv
 import json
 import os
@@ -1066,14 +1067,7 @@ html = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <link rel="icon" href="__FAVICON__">
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.166.1/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.166.1/examples/jsm/"
-  }
-}
-</script>
+<script type="importmap">__IMPORTMAP__</script>
 <style>
   html, body {
     width: 100%;
@@ -1838,7 +1832,7 @@ import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer
 // A plain THREE.Line is one pixel wide on every platform that matters (WebGL ignores
 // linewidth), and one pixel is not a mark on a building. Line2 draws its segments as
 // screen-space quads, so a change marker can be as thick — and as dashed — as it needs.
-import * as d3 from "https://cdn.jsdelivr.net/npm/d3@7/+esm";
+import * as d3 from "d3-hierarchy";
 
 const mount = document.getElementById("scene");
 const hover = document.getElementById("hover");
@@ -6774,6 +6768,33 @@ FAVICON = "data:image/svg+xml," + urllib.parse.quote(
     f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">{_LOGO_SHAPES}</svg>'
 )
 
+# The libraries the page runs on travel INSIDE it. They used to come from jsDelivr through
+# this import map, which made a page that is otherwise nothing but data on disk depend on a
+# network it never says it needs: offline (on a plane, behind a proxy) it drew its control
+# panel and help card — plain HTML — and then no city at all, because the one module that
+# builds the scene could not resolve `three`. So the exact files it used are vendored in
+# vendor/ (three r166 and its two addons, d3-hierarchy 3.1.2: treemap and hierarchy are the
+# only two d3 calls the page makes, so the rest of d3 was 270 KB of nothing) and mapped
+# here to data: URLs. Not to files beside the page: a page opened from disk (file://) may
+# not import a sibling module at all, and the page is copied around on its own — into a
+# review's assets, into a repo's docs — where a vendor folder would not follow it. Base64
+# costs a third on top of ~730 KB, about 1 MB a page; the import map still lets the
+# addons say `from 'three'` and get the very same instance the page does.
+_VENDOR = _here / "vendor"
+
+
+def _module_url(name):
+    return ("data:text/javascript;base64,"
+            + base64.b64encode((_VENDOR / name).read_bytes()).decode("ascii"))
+
+
+IMPORTMAP = json.dumps({"imports": {
+    "three": _module_url("three.module.min.js"),
+    "three/addons/controls/OrbitControls.js": _module_url("OrbitControls.js"),
+    "three/addons/renderers/CSS2DRenderer.js": _module_url("CSS2DRenderer.js"),
+    "d3-hierarchy": _module_url("d3-hierarchy.js"),
+}})
+
 # Where the generators live: the corner of the page links to them, and their README
 # carries the recipe for building one of these for your own repo.
 TOOL_REPO = "https://github.com/victorrentea/code-city"
@@ -6788,6 +6809,7 @@ FAMILY_OPTIONS = "".join(
 )
 
 html = (html
+        .replace("__IMPORTMAP__", IMPORTMAP)
         .replace("__CLASS_FAMILIES__", FAMILY_OPTIONS)
         .replace("__TITLE__", TITLE)
         .replace("__LOGO_SVG__", LOGO_SVG)

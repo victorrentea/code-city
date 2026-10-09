@@ -53,9 +53,12 @@ class RenderCodecityTest(unittest.TestCase):
             html = html_path.read_text()
 
             self.assertIn("<title>Code City</title>", html)
-            self.assertIn("three.module.js", html)
+            # Everything the page runs on is inside it: offline it must still draw.
+            self.assertIn('"three": "data:text/javascript;base64,', html)
             self.assertIn("OrbitControls", html)
-            self.assertIn("d3@7", html)
+            self.assertIn('from "d3-hierarchy"', html)
+            self.assertNotIn("cdn.jsdelivr.net", html)
+            self.assertNotRegex(html, r'(src|from|import)\s*=?\s*"https?://')
             self.assertIn('id="scene"', html)
             self.assertIn("__CODEMAP_3D_READY__", html)
             self.assertIn("const FILES =", html)
@@ -282,7 +285,9 @@ class RenderCodecityTest(unittest.TestCase):
                 check=True, cwd=SCRIPT_DIR, env=env,
             )
             html = (Path(tmp) / "codecity.html").read_text()
-            blocks = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", html, re.S)
+            # Not the import map: it is JSON (and now the biggest block, the vendored
+            # libraries ride in it), and node would rightly refuse to parse it as code.
+            blocks = re.findall(r"<script(?![^>]*(?:src=|importmap))[^>]*>(.*?)</script>", html, re.S)
             self.assertTrue(blocks, "the page should carry an inline script")
             module = Path(tmp) / "inline.mjs"
             module.write_text(max(blocks, key=len))
