@@ -3095,10 +3095,15 @@ function addChangeMarks(file, geo) {
   if (!before) return;                       // unchanged, added by the diff, or an aggregate view
 
   // The shade the city WOULD have given this building at the base commit. null when the
-  // colour metric has no snapshot at all (a change metric is already the before/after,
-  // and has no "before" of its own), and skipped when it comes out the same
+  // colour metric has no snapshot at all, and skipped when it comes out the same
   // colour — a skin in the identical shade is a seam and no information.
-  const wasColor = beforeValue(before, geo.colorMetric);
+  //
+  // A change metric's "before" is zero, not missing: at the base commit this change set
+  // had not added or dropped a single dependency yet. It used to count as missing, and
+  // since the city OPENS on Δ coupling whenever a PR moved any, the two-tone block never
+  // showed in the default view at all — the old part is the "unchanged" grey, the part
+  // the PR grew is the red (or blue) the change gave it.
+  const wasColor = DELTA_METRICS.has(geo.colorMetric) ? 0 : beforeValue(before, geo.colorMetric);
   let skin = wasColor === null ? null : colorFor(wasColor, geo.maxColor);
   if (skin && skin.getHex() === colorFor(geo.colorValue, geo.maxColor).getHex()) skin = null;
 

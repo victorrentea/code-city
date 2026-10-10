@@ -1129,6 +1129,9 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function addAreaMark", html)
             self.assertIn('if (changeMode() !== "highlight") return;', html)
             self.assertIn("const MARK_COLOR = 0x000000;", html)
+            # Under Δ coupling — the colour the city opens on — the part that already
+            # existed is skinned in the "unchanged" shade: a change metric was 0 at base.
+            self.assertIn("DELTA_METRICS.has(geo.colorMetric) ? 0 : beforeValue(", html)
             # Painted ON the walls and the roof, in world units — not a screen-width
             # outline hung around the block, which reads as glass in front of the city.
             self.assertNotIn("LineSegments2", html)
