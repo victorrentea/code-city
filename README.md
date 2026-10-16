@@ -311,11 +311,17 @@ talking about what you found — or reach for the trackpad to orbit around it �
 a third hand you do not have.
 
 **The coupling the diff introduced is drawn without asking.** With COLOR on incoming or
-outgoing coupling (or instability, which is both at once) and a change set on screen, the
+outgoing coupling, either of their Δ colours (which the city opens on), or instability
+(which is both at once), and a change set on screen, the
 colour raises a question ⌥ can only answer one building at a time, mixed in with every old
 edge: *which of these did this change add?* So every edge the diff introduced stands as a
-road of its own — pale yellow, small black arrows (the INCREASED card's) running the way the
-dependency points, from the class that took it on to the one it now leans on. "New" is
+road — the same blue road with the same traffic as any other road out — and every few seconds
+a ⭐ rides it, the way the dependency points, from the class that took it on to the one it
+now leans on. The road says what any road says; the star is the only thing that says *new*.
+It was a pale yellow road with black arrows first, the one colour the city spends nowhere
+else, and shown cold nobody could tell what the yellow meant: a road painted differently
+reads as a different *kind* of road, not as a recent one, while a star means "new" before
+anyone explains it — and moving along the road, it ties itself to that road and its direction. "New" is
 measured, not guessed: an edge lives in the text of its source file, so only the changed
 files are re-read at the diff's base (`compute_fanio.references` on the old blob, with
 renames followed so a moved class is not a new dependency of everything that imports it), and
@@ -331,9 +337,9 @@ the trail ⌥ would draw for it. It had a copy of the routing of its own once, o
 edge and no trunks, so wherever ⌥ shared a trunk the two drawings of the same edge did not
 match. And **⌥ tells the same story one building at a time**: hold it over a class the diff
 coupled and its whole bundle comes up, every road it had before *faded* to `ROAD_FADED` of
-its strength and the roads this diff laid in the same yellow, on the top deck, their peers'
-name tags yellow too — the tooltip counts them ("19 roads, 2 new"). Left at full strength,
-one new road on a domain class with a dozen old ones is a yellow thread in a red-and-blue
+its strength and the roads this diff laid at full strength with their stars, on the top deck,
+their peers' name tags starred too — the tooltip counts them ("19 roads, 2 new"). Left at full
+strength, one new road on a domain class with a dozen old ones is one more thread in a red-and-blue
 weave; dropped, the bundle would lie about what the class sits on. A pair the diff coupled
 one way and that always depended on it the other is two roads of two ages, not one purple
 one.

@@ -1476,9 +1476,8 @@ html = """<!doctype html>
   .coupling-label.out  { background: rgba(29, 78, 216, 0.94); }
   .coupling-label.in   { background: rgba(185, 28, 28, 0.94); }
   .coupling-label.both { background: rgba(126, 34, 206, 0.94); }
-  /* ...a road this diff added: the new road's own pale yellow, in the arrows' near-black;
-     and while one is up, every other name on the bundle steps back with its road. */
-  .coupling-label.added { background: rgba(253, 230, 138, 0.97); color: #0f172a; text-shadow: none; }
+  /* ...and while a road this diff added is up, every other name on the bundle steps back
+     with its road. A new road's own peer keeps its direction's colour and wears a star. */
   .coupling-label.faded { opacity: 0.55; }
   .coupling-label.subject {   /* the one you asked about: on no road, so on no side */
     background: rgba(12, 32, 96, 0.96);
@@ -1625,7 +1624,7 @@ html = """<!doctype html>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
-    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;yellow road, black arrows: a dependency this diff added; under &#8997; the rest fade<br></span>
+    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;&#11088; riding a road: a dependency this diff added; under &#8997; the rest fade<br></span>
     &nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
@@ -3598,7 +3597,7 @@ function baseKind(kind) {
 // share of its usual opacity: still there — the bundle has to tell the whole truth about
 // what the class sits on — but stepped back, so the few roads this change laid are the
 // ones the eye lands on. Not at full strength: on a domain class with a dozen incoming
-// roads, one new road is a yellow thread in a red-and-blue weave, found only by someone
+// roads, one new road is one more thread in a red-and-blue weave, found only by someone
 // who already knows where it is. 0.3 was tried first, and on the white plate the old
 // roads came out faint enough to miss; 0.4 keeps them readable and still clearly behind.
 const ROAD_FADED = 0.4;
@@ -3656,6 +3655,8 @@ for (const kind of ROAD_KINDS) flowMaterial[kind] = trafficMaterial(FLOW_BLUE[ki
 let streetGroup = null;         // the roads currently drawn (one hovered building's)
 let streetedPath = null;        // whose they are, so a pointermove inside the same roof is free
 let streetFlowFrozen = false;   // a bundle past ROAD_FLOW_MAX: drawn, but the traffic holds still
+let standingStars = [];         // the runs the standing new roads' stars ride (see "The stars")
+let bundleStars = [];           // ...and the hovered bundle's, which replace them while it is up
 const streetLabels = [];        // the names of the hovered building and everything it touches
 // How many roads the last draw actually put on screen per direction, vs how many peers
 // were there to draw: the hover tooltip says so on the coupling lines, so a capped or
@@ -3731,6 +3732,7 @@ function clearStreets() {
     streetGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     streetGroup = null;
   }
+  bundleStars = [];
   for (const label of streetLabels) {
     if (label.element && label.element.parentNode) label.element.parentNode.removeChild(label.element);
     scene.remove(label);
@@ -4474,13 +4476,12 @@ function showStreetsFor(entry) {
   for (const kind of ALL_ROAD_KINDS) {
     const fresh = isAddedKind(kind);
     const look = material => (fade && !fresh ? fadedTwin(material) : material);
-    const roadway = sinkMesh(sinks[kind].road,
-                             fresh ? addedRoadMaterial : look(roadMaterial[kind]), 0);
+    const roadway = sinkMesh(sinks[kind].road, look(roadMaterial[baseKind(kind)]), 0);
     // Quad i of this geometry is triangles 2i and 2i+1, so a raycast's faceIndex >> 1 is
     // the index into the owner table the sink filled as it was built.
     if (roadway) roadway.userData.roadOwners = sinks[kind].road.owner;
     for (const mesh of [roadway,
-                        sinkMesh(sinks[kind].lane, fresh ? addedArrowMaterial : look(flowMaterial[kind]), 1),
+                        sinkMesh(sinks[kind].lane, look(flowMaterial[baseKind(kind)]), 1),
                         sinkMesh(sinks[kind].gate, look(gateMaterial[kind]), 2),
                         sinkMesh(sinks[kind].gateSide, look(gateSideMaterial[kind]), 2)]) {
       if (mesh) group.add(mesh);
@@ -4489,6 +4490,7 @@ function showStreetsFor(entry) {
   if (!group.children.length) return;
   scene.add(group);
   streetGroup = group;
+  bundleStars = starRuns(laid, deck);
   nameTheBundle(entry, bundle, fade);
 }
 
@@ -4547,11 +4549,7 @@ function layBundle(entry, bundle, sinks, deck, widen) {
       }
       return;
     }
-    // The diff's roads carry its small black arrows instead of wedges: denser, and on a
-    // wider share of the lane, the same as they stand when no key is held.
-    if (fresh) addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump,
-                       ADDED_SPACING, ADDED_LANE);
-    else addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump);
+    addRoad(sinks[kind].road, sinks[kind].lane, path, width, deck[kind], jump);
   };
 
   for (const kind of ALL_ROAD_KINDS) {
@@ -4639,9 +4637,11 @@ function nameTheBundle(entry, bundle, fade) {
     const div = document.createElement("div");
     // Each name wears the colour of the road it is on, so "which of these depends on
     // which" is answered by the labels alone once the roads are behind a tower.
-    div.className = "coupling-label " + (isAddedKind(item.kind) ? "added"
+    // A peer at the far end of a new road wears the star its road carries.
+    const fresh = isAddedKind(item.kind);
+    div.className = "coupling-label " + (fresh ? baseKind(item.kind)
       : item.kind + (fade && item.kind !== "subject" ? " faded" : ""));
-    div.textContent = peer.file.name;
+    div.textContent = (fresh ? "\u2B50 " : "") + peer.file.name;
     const label = new CSS2DObject(div);
     label.position.set(peer.mesh.position.x, peer.roofY + LABEL_STEM, peer.mesh.position.z);
     label.center.set(0.5, 1);
@@ -4662,68 +4662,144 @@ function nameTheBundle(entry, bundle, fade) {
 // bundle: a change that adds two hundred dependencies is a finding the colour already
 // shows, and two hundred roads would hide it.
 //
-// Its own look, so it is never mistaken for an old road: a pale yellow road (fresh
-// tarmac, the one colour the city spends nowhere else) and small BLACK arrows on it, running
-// the way the dependency points — out of the class that took on the dependency, into the
-// one it now depends on. The same look in every coupling colour, because it is the same
-// edge: one building's new fan-out is the other's new fan-in, and the arrows say which is
-// which. And the same look under ⌥: hold it over a building and its whole bundle comes up,
-// the old roads faded and its new ones in this yellow on top (see showStreetsFor) — the
-// standing layer steps aside for it, since the hovered bundle now carries its share.
+// The SAME look as every other road out of that class — its direction's blue, its wedges
+// running the way the dependency points — and on top of that, every so often, a star that
+// rides the very same trail from the class that took the dependency on to the one it now
+// leans on. The star is what says "new"; the road only says what any road says.
+//
+// It wore a look of its own until October 2026: a pale yellow road with small black
+// arrows, the one colour the city spends nowhere else. Nobody read it. Shown the city cold,
+// Victor could not tell what the yellow was for until it was explained to him, and a mark
+// that has to be explained has already failed — yellow means nothing in particular, and a
+// road painted differently reads as a different KIND of road, not as a recent one. A star
+// is the one mark that already means "new" before anyone says so, and moving along the road
+// it ties itself to that road and to its direction, which a static badge would not.
+//
+// The same in every coupling colour, because it is the same edge: one building's new
+// fan-out is the other's new fan-in. And the same under ⌥: hold it over a building and its
+// whole bundle comes up, the old roads faded and its new ones at full strength with their
+// stars (see showStreetsFor) — the standing layer steps aside for it, since the hovered
+// bundle now carries its share.
 //
 // Routed by layBundle, the one router ⌥ uses, from the class that took the dependency on:
 // a standing road runs the very trail ⌥-ing that class would draw for it. It ran on a
 // separate copy of the routing once, one road per edge with no trunk, so wherever ⌥
 // shared a trunk the two drawings of the same edge did not match.
 const ADDED_ROAD_MAX = 60;
-const ADDED_ROAD_PALE = 0xfde68a;
-const ADDED_ARROW = 0x0f172a;    // MARK_INK, the change marks' near-black
-const ADDED_SPACING = 10;       // × cityUnit between two arrows — denser than the wedges
-const ADDED_LANE = 0.8;         // the share of the road the arrows ride on
 const ADDED_LIFT = 0.35;        // × cityUnit: under both hover decks, which fly over it
 // How much wider than an old road of the same weight a new one is drawn. Standing: twice,
 // because it has to read from the zoom the city opens at, where a single-reference road is
-// a hairline and its arrows are noise. Under ⌥: half again — the bundle is looked at up
-// close, and the colour and the faded roads around it already do most of the standing out.
+// a hairline. Under ⌥: half again — the bundle is looked at up close, and the stars and the
+// faded roads around it already do most of the standing out.
 const ADDED_WIDEN_STANDING = 2;
 const ADDED_WIDEN_HOVER = 1.5;
 
-// An arrow, not a wedge: the hover traffic is read for a second while the key is down,
-// this is read for as long as the city is open, and an arrow says its direction from any
-// one frame without having to be watched. The SAME arrow as the INCREASED card's icon
-// (upArrowIcon: a solid head on a stem, MARK_INK), small, one every ADDED_SPACING — a
-// big chevron filling the lane read as hazard tape, not as "this way". Tip toward canvas
-// top = +v = the direction of travel.
-function arrowTexture() {
+// A new road leaving the hovered class's package gets its gate like any other, and the
+// same gate as an old road of its direction: the star is the only thing that is new.
+for (const kind of [ADDED_KIND.out, ADDED_KIND.in]) {
+  gateMaterial[kind] = gateMaterial[baseKind(kind)];
+  gateSideMaterial[kind] = gateSideMaterial[baseKind(kind)];
+}
+
+// ── The stars ───────────────────────────────────────────────────────────────
+// "Every now and then", not a conveyor belt: one star every STAR_SPACING along a road, at
+// the traffic's own speed, so a short road between neighbours is empty most of the time and
+// lights up for a second every few. A belt of them would be a new kind of road again —
+// what is wanted is the eye catching something move, looking, and finding an ordinary road.
+//
+// A constant size on screen (sizeAttenuation off), like the name tags: the star is read at
+// the zoom the city opens at, where a road is a hairline, and up close it must not grow
+// into a blot that hides the class it is arriving at.
+//
+// ONE Points object for every star in the city — one draw call, positions rewritten each
+// frame. There are only ever a diff's worth of roads to put them on (ADDED_ROAD_MAX).
+// 150 was tried first: on PR #49's city the longest new road is ~560 units, and it carried
+// three or four stars at once, which is the belt again. At 220, one every ~4.5 s.
+const STAR_SPACING = 220;       // × cityUnit between two stars on one road
+const STAR_SIZE = 22;           // CSS px, at every zoom
+const STAR_LIFT = 1.2;          // × cityUnit above the road's own deck, so the tarmac never cuts it
+const STAR_MAX = 512;
+function starTexture() {
   const canvas = document.createElement("canvas");
-  canvas.width = 64; canvas.height = 128;
+  canvas.width = canvas.height = 64;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff";
-  ctx.beginPath();
-  // upArrowIcon's polygon — (0,-9) (7,-1) (2.5,-1) (2.5,9) (-2.5,9) (-2.5,-1) (-7,-1) —
-  // at 2.6 px a unit across and 2.2 along, centred on the lane.
-  const pts = [[0, -9], [7, -1], [2.5, -1], [2.5, 9], [-2.5, 9], [-2.5, -1], [-7, -1]];
-  pts.forEach(([x, y], i) => ctx[i ? "lineTo" : "moveTo"](32 + x * 2.6, 30 + y * 2.2));
-  ctx.closePath();
-  ctx.fill();
+  ctx.font = "52px 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("⭐", 32, 36);
   const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 4;
+  tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
-const addedArrowTex = arrowTexture();
-const addedRoadMaterial = new THREE.MeshBasicMaterial({ color: ADDED_ROAD_PALE, side: THREE.DoubleSide });
-const addedArrowMaterial = new THREE.MeshBasicMaterial({
-  color: ADDED_ARROW, map: addedArrowTex, transparent: true, depthWrite: false,
-  side: THREE.DoubleSide,
-});
-// A new road leaving the hovered class's package gets its gate like any other, in the
-// new road's own yellow, a shade darker on the walls (see gateMaterial).
-for (const kind of [ADDED_KIND.out, ADDED_KIND.in]) {
-  gateMaterial[kind] = new THREE.MeshBasicMaterial({ color: ADDED_ROAD_PALE, side: THREE.DoubleSide });
-  gateSideMaterial[kind] = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(ADDED_ROAD_PALE).multiplyScalar(0.72), side: THREE.DoubleSide,
-  });
+const starPositions = new Float32Array(STAR_MAX * 3);
+const starGeometry = new THREE.BufferGeometry();
+starGeometry.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
+const starPoints = new THREE.Points(starGeometry, new THREE.PointsMaterial({
+  map: starTexture(), size: STAR_SIZE, sizeAttenuation: false,
+  transparent: true, alphaTest: 0.05, depthWrite: false,
+}));
+starPoints.frustumCulled = false;   // the positions move every frame; the bounds never would
+starPoints.renderOrder = 3;         // over the lanes (1) and the gates (2)
+starPoints.visible = false;
+scene.add(starPoints);
+
+// Every new road a layBundle put down, as a run a star can ride: its polyline in the
+// direction of travel, how long it is, and where along the whole trail it starts. A trail is
+// several runs — a trunk, the branches off it, each peer's last stretch — and a star has to
+// cross from one to the next without a hiccup, so each run's phase is the length of the run
+// it continues (the one whose end is where this one starts). A run continuing none starts
+// at 0. Where several branches merge into one trunk (an inbound bundle) the trunk carries on
+// from one of them, and the others' stars simply arrive.
+function starRuns(laid, deck) {
+  const runs = [];
+  for (const { path, width, kind } of laid) {
+    if (!isAddedKind(kind) || path.length < 2) continue;
+    const cum = [0];
+    for (let i = 1; i < path.length; i++) {
+      cum.push(cum[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].z - path[i - 1].z));
+    }
+    runs.push({ path, cum, len: cum[cum.length - 1], kind, width, phase: 0,
+                y: deck[kind] + STAR_LIFT * cityUnit });
+  }
+  // Two runs of one trail meet within a road's width of each other: each was offset to its
+  // own side of its own centreline, so at a bend the two ends are not the same point.
+  const near = (a, b, tol) => Math.hypot(a.x - b.x, a.z - b.z) <= tol;
+  const prev = runs.map(run => runs.find(other => other !== run && other.kind === run.kind &&
+    near(other.path[other.path.length - 1], run.path[0], run.width + other.width)) || null);
+  const phaseOf = (i, seen) => {
+    if (!prev[i] || seen.has(i)) return 0;
+    seen.add(i);
+    const j = runs.indexOf(prev[i]);
+    return phaseOf(j, seen) + runs[j].len;
+  };
+  runs.forEach((run, i) => { run.phase = phaseOf(i, new Set()); });
+  return runs;
+}
+
+// Once a frame: whichever layer is on screen, every star on it, where the clock puts it.
+function updateStars() {
+  const runs = streetGroup ? bundleStars : (addedGroup ? standingStars : []);
+  const spacing = STAR_SPACING * cityUnit;
+  const travel = (performance.now() / 1000) * FLOW_SPEED * cityUnit;
+  let n = 0;
+  for (const run of runs) {
+    let s = (((travel - run.phase) % spacing) + spacing) % spacing;
+    let seg = 1;
+    for (; s < run.len && n < STAR_MAX; s += spacing) {
+      while (seg < run.path.length - 1 && run.cum[seg] < s) seg++;
+      const a = run.path[seg - 1], b = run.path[seg];
+      const span = run.cum[seg] - run.cum[seg - 1];
+      const t = span > 1e-6 ? (s - run.cum[seg - 1]) / span : 0;
+      starPositions[n * 3] = a.x + (b.x - a.x) * t;
+      starPositions[n * 3 + 1] = run.y;
+      starPositions[n * 3 + 2] = a.z + (b.z - a.z) * t;
+      n++;
+    }
+  }
+  starPoints.visible = n > 0;
+  if (!n) return;
+  starGeometry.setDrawRange(0, n);
+  starGeometry.attributes.position.needsUpdate = true;
 }
 
 let addedGroup = null;
@@ -4740,10 +4816,14 @@ function addedCouplingKnown() {
 
 // ...and whether the standing layer is up: only while the colour is asking a coupling
 // question. Incoming and outgoing are the two halves of it, and instability, Ce/(Ce+Ca),
-// is both at once — every new edge moves it at both of its ends.
+// is both at once — every new edge moves it at both of its ends. The two Δ colours most of
+// all: "what this change did to coupling" is the very question, and the city opens on it,
+// so its red buildings get their stars without anyone having to know about ⌥.
 function addedCouplingOn() {
   const key = colorMetricKey();
-  if (key !== "fan_in" && key !== "fan_out" && key !== "instability") return false;
+  if (key !== "fan_in" && key !== "fan_out" && key !== "instability" && !DELTA_METRICS.has(key)) {
+    return false;
+  }
   return addedCouplingKnown();
 }
 
@@ -4767,6 +4847,7 @@ function addedEdgeKeys() {
 }
 
 function clearAddedCoupling() {
+  standingStars = [];
   if (addedGroup) {
     scene.remove(addedGroup);
     addedGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
@@ -4791,7 +4872,7 @@ function addedEdges() {
   return edges;
 }
 
-// The help box names the yellow road only while there is one to see: with no diff, or a
+// The help box names the star only while there is one to see: with no diff, or a
 // diff that coupled nothing new, the line would describe a mark that is nowhere.
 function syncAddedRoadsHint() {
   const hint = document.getElementById("addedRoadsHint");
@@ -4811,6 +4892,7 @@ function drawAddedCoupling() {
   const kind = ADDED_KIND.out;
   const deck = { [kind]: (grid ? grid.floorTop : 0) + ADDED_LIFT * cityUnit };
   const sinks = { [kind]: { road: roadSink(), lane: roadSink() } };
+  const laid = [];
   const bySource = new Map();
   for (const edge of edges) {
     if (!bySource.has(edge.from)) bySource.set(edge.from, []);
@@ -4820,15 +4902,18 @@ function drawAddedCoupling() {
   // Each source's new edges are its outbound bundle, routed from it exactly as ⌥ would
   // route them. A pair the diff coupled BOTH ways is two sources' bundles, each road on
   // its own right, so the two lie side by side with their arrows opposed.
-  for (const [from, bundle] of bySource) layBundle(from, bundle, sinks, deck, ADDED_WIDEN_STANDING);
+  for (const [from, bundle] of bySource) {
+    laid.push(...layBundle(from, bundle, sinks, deck, ADDED_WIDEN_STANDING));
+  }
   const group = new THREE.Group();
-  for (const mesh of [sinkMesh(sinks[kind].road, addedRoadMaterial, 0),
-                      sinkMesh(sinks[kind].lane, addedArrowMaterial, 1)]) {
+  for (const mesh of [sinkMesh(sinks[kind].road, roadMaterial.out, 0),
+                      sinkMesh(sinks[kind].lane, flowMaterial.out, 1)]) {
     if (mesh) group.add(mesh);
   }
   if (!group.children.length) return;
   scene.add(group);
   addedGroup = group;
+  standingStars = starRuns(laid, deck);
 }
 
 // ── Change coupling: the crime scene ────────────────────────────────────────
@@ -5528,7 +5613,7 @@ function wireNote(key) {
   const drawn = status.drawn === status.reachable
     ? `${status.drawn} road${status.drawn === 1 ? "" : "s"}`
     : `${status.drawn} of ${status.reachable} drawn`;
-  // ...and how many of those this diff laid: the yellow ones, counted where the number is.
+  // ...and how many of those this diff laid: the starred ones, counted where the number is.
   const added = status.drawn && status.added ? `, ${status.added} new` : "";
   return ` <span class="perkloc">(${drawn}${added})</span>`;
 }
@@ -6736,12 +6821,11 @@ function updateStreetFlow() {
   // aside for it rather than crossing it road for road — the bundle draws its own share
   // of the new roads, in the same look.
   if (addedGroup) addedGroup.visible = !streetGroup;
-  // The arrows move whichever of the two is carrying them, and even on a bundle too big
+  // The stars move whichever of the two is carrying them, and even on a bundle too big
   // for its wedges to flow: there are only ever a diff's worth of them.
-  if (addedGroup || streetGroup) {
-    addedArrowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / ADDED_SPACING)) % 1;
-  }
-  if (!streetGroup || streetFlowFrozen) return;
+  updateStars();
+  // The standing roads flow like any other, so the traffic runs while they are up too.
+  if (streetGroup ? streetFlowFrozen : !addedGroup) return;
   flowTex.offset.y = -((performance.now() / 1000) * (FLOW_SPEED / FLOW_SPACING)) % 1;
 }
 

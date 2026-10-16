@@ -364,7 +364,7 @@ class RenderCodecityTest(unittest.TestCase):
             # turning on the page whose whole point is that it turns.
             self.assertIn("function roadSink", html)
             self.assertIn("function sinkMesh", html)
-            self.assertIn("fresh ? addedRoadMaterial : look(roadMaterial[kind]), 0)", html)
+            self.assertIn("sinkMesh(sinks[kind].road, look(roadMaterial[baseKind(kind)]), 0)", html)
 
             coupling = adjacency(html, "COUPLING")
             classes = coupling["classes"]
@@ -722,8 +722,8 @@ class RenderCodecityTest(unittest.TestCase):
     def test_the_new_coupling_runs_the_roads_alt_draws(self):
         """The diff's new edges, standing or under ⌥, are laid by the ONE router ⌥ uses —
         so a new road runs the trail ⌥ would draw for it, not a look-alike a block off.
-        Under ⌥ the hovered bundle carries its own new roads in the diff's yellow, on
-        top, and fades every old road of it; a mutual pair the diff added half of is two
+        Under ⌥ the hovered bundle carries its own new roads at full strength, with their
+        stars, and fades every old road of it; a mutual pair the diff added half of is two
         roads of two ages, never one purple one."""
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
@@ -745,12 +745,20 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("const fade = bundle.some(b => isAddedKind(b.kind));", html)
             self.assertIn("function fadedTwin", html)
             self.assertIn("other !== undefined && !fresh && !otherFresh", html)
-            self.assertIn(".coupling-label.added", html)
+            # "New" is a star riding the road, not a colour of its own: a new road wears its
+            # direction's look, and its peer's name tag its direction's colour plus a star.
+            self.assertNotIn(".coupling-label.added", html)
+            self.assertNotIn("ADDED_ROAD_PALE", html)
+            self.assertIn("bundleStars = starRuns(laid, deck);", html)
+            self.assertIn("standingStars = starRuns(laid, deck);", html)
+            self.assertIn("sinkMesh(sinks[kind].lane, flowMaterial.out, 1)", html)
+            self.assertIn("sizeAttenuation: false", html)
             self.assertIn("function wireNote", html)
             self.assertIn("new` : \"\"", html)
             # Standing: the two coupling colours, and instability, which is both at once.
             self.assertIn('key !== "fan_in" && key !== "fan_out" && key !== "instability"', html)
-            # ...and the help box names the yellow road only while there is one.
+            self.assertIn('key !== "instability" && !DELTA_METRICS.has(key)', html)   # ...and the Δ pair
+            # ...and the help box names the star only while there is one.
             self.assertIn('<span id="addedRoadsHint" hidden>', html)
             self.assertIn("function syncAddedRoadsHint", html)
 
