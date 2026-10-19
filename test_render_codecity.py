@@ -176,6 +176,19 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function openInEditor", html)
             self.assertIn("vscode://file", html)
             self.assertIn('window.addEventListener("dblclick", onDoubleClick)', html)
+            # Read online, a vscode:// path is the generating machine's: the click goes to
+            # the same file on GitHub at the drawn commit, or nowhere, and the help says so.
+            self.assertIn("const GITHUB_BLOB = ", html)
+            self.assertNotIn("__GITHUB_BLOB__", html)
+            self.assertIn('location.protocol === "file:"', html)
+            self.assertIn('GITHUB_BLOB + encodeURI(rel) + (line ? "#L" + line : "")', html)
+            self.assertIn('id="roadJumpHint"', html)
+            self.assertIn('id="openHint"', html)
+            self.assertIn('["roadJumpHint", "openHint"]', html)
+            # Coverage colours have a key: the ramp runs red at 0%, and grey is "not measured".
+            self.assertIn("function coverageKeyHtml", html)
+            self.assertIn("not measured</span></div>", html)
+            self.assertIn("INVERTED_METRICS.has(knob.select.value)", html)
             # Hover UI: metrics box pinned top-right, now led by a 3-line identity
             # header (class name / folder / package). The old top-center FQN banner
             # (#classTitle) is gone; its info lives in the header instead.

@@ -219,6 +219,28 @@ def _github_url():
 
 
 GITHUB_URL = _github_url()
+
+
+def _github_blob_base():
+    """`https://github.com/owner/repo/blob/<sha>/<prefix>` for the commit the city was
+    drawn from, or "" — what a click on a building opens when the page is read online.
+
+    A `vscode://file/...` link names a path on the machine that generated the page; opened
+    from GitHub Pages it either does nothing or asks the reader's VS Code for a folder they
+    do not have. The same file on github.com at the same commit is what they meant. Only
+    when that commit is on a remote branch, though: an unpushed HEAD is a 404 per click,
+    and no link is better than a broken one. `prefix` is where REPO_ABS sits in its
+    checkout, because the building paths are relative to REPO_ABS, not to the repo root."""
+    if not GITHUB_URL:
+        return ""
+    sha = _run_git(["rev-parse", "HEAD"]).strip()
+    if not sha or not _run_git(["branch", "-r", "--contains", sha]).strip():
+        return ""
+    prefix = _run_git(["rev-parse", "--show-prefix"]).strip()
+    return f"{GITHUB_URL}/blob/{sha}/{prefix}"
+
+
+GITHUB_BLOB = _github_blob_base()
 HISTORY_SCAN_LIMIT = 2000   # commits to walk back before giving up
 
 
@@ -1435,6 +1457,7 @@ html = """<!doctype html>
   .deltaKey span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
   .deltaKey i { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
                 border: 1px solid rgba(15, 23, 42, 0.25); }
+  .deltaKey i.ramp { width: 56px; }
   #hover .cbar-mark {
     position: absolute;
     top: -2px;
@@ -1625,10 +1648,10 @@ html = """<!doctype html>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
     <span id="addedRoadsHint" hidden>&nbsp;&nbsp;&#11088; riding a road: a dependency this diff added; under &#8997; the rest fade<br></span>
-    &nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span>
+    <span id="roadJumpHint">&nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
-  Cmd/Ctrl-double-click opens a file in VS Code
+  <span id="openHint">Cmd/Ctrl-double-click opens a file <span id="openWhere">in VS Code</span></span>
 </aside>
 <section class="panel">
   <h1>__LOGO_SVG__<span>__TITLE__</span><select id="viewMode" class="titleView"
@@ -1769,6 +1792,14 @@ const FILES = __FILES_JSON__;
 const PACKAGES = __PACKAGES_JSON__;   // per-package rows (same shape) for package mode
 const MODULES = __MODULES_JSON__;     // per-Maven/Gradle-module rows (same shape) for module mode
 const REPO_ABS = __REPO_ABS__;
+// The same file on github.com at the commit the city was drawn from, or "" (see
+// _github_blob_base). Used instead of VS Code when the page is not read on this machine.
+const GITHUB_BLOB = __GITHUB_BLOB__;
+// Read off this machine (GitHub Pages, any host but localhost): a vscode:// path is the
+// generating machine's, so a click goes to GitHub instead, or nowhere, and says so.
+const LOCAL_PAGE = location.protocol === "file:" ||
+  /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+const EDITOR_LINKS = LOCAL_PAGE || !!GITHUB_BLOB;
 const HAS_CHANGES = __HAS_CHANGES__;  // any file in the current git change set?
 const CHANGE_SOURCE = __CHANGE_SOURCE__;  // what that change set is a diff OF (PR / commit / working tree)
 const COMMIT_CHOICES = __COMMIT_CHOICES__;   // recent commits that touched rendered code; empty unless the diff came from history
@@ -1923,6 +1954,16 @@ if (!HAS_COUPLING) {
 if (!HAS_COUPLING) {
   const hint = document.getElementById("roadsHint");
   if (hint) hint.remove();
+}
+// Online, the two ⌘ gestures that open a file open it on GitHub, or, with no GitHub copy
+// of this commit, do nothing; a help line promising VS Code would be a lie either way.
+if (!LOCAL_PAGE) {
+  if (GITHUB_BLOB) {
+    const where = document.getElementById("openWhere");
+    if (where) where.textContent = "on GitHub";
+  } else {
+    for (const id of ["roadJumpHint", "openHint"]) document.getElementById(id)?.remove();
+  }
 }
 // Same for the history's own coupling: a repo with one commit has no co-changes, and a
 // page built before this existed has no file to read them from.
@@ -2481,7 +2522,8 @@ function applyCursor(event) {
   // While ⌘ is held over a road that names one class, the pointer says so: a trunk (which
   // names none) and a purple road (which names two) keep the orbit cursor, so "this one
   // can be followed" is answered before the click rather than by its silence afterwards.
-  if ((event.metaKey || event.ctrlKey) && !isDragging && streetGroup && pickRoadJump(event)) {
+  if ((event.metaKey || event.ctrlKey) && EDITOR_LINKS && !isDragging && streetGroup &&
+      pickRoadJump(event)) {
     cursor = "pointer";
   } else if (event.metaKey || event.ctrlKey) cursor = ROTATE_CURSOR;
   else if (isDragging) cursor = "move";
@@ -2561,6 +2603,13 @@ function pickBuilding(event) {
 }
 
 function openInEditor(rel, line) {
+  if (!LOCAL_PAGE) {
+    // A new tab: navigating this one away would throw the reader's city (and, embedded,
+    // the review page around it) away for a source file.
+    if (GITHUB_BLOB) window.open(GITHUB_BLOB + encodeURI(rel) + (line ? "#L" + line : ""),
+                                 "_blank", "noopener");
+    return;
+  }
   const abs = REPO_ABS + "/" + rel;
   window.location.href = "vscode://file" + encodeURI(abs) + (line ? ":" + line : "");
 }
@@ -2690,13 +2739,16 @@ function colorT(value, max) {
   return activeColorInvert ? 1 - clamped : clamped;
 }
 
+// The ramp's two ends, named once: the buildings and the coverage key both read them.
+const RAMP_COLD = new THREE.Color(0xe8eefc);
+const RAMP_HOT = new THREE.Color(0x800020);
 function colorFor(value, max) {
   if (activeColorDiverging) {
     const v = Number(value) || 0;
     return DELTA_NEUTRAL.clone().lerp(v > 0 ? DELTA_UP : DELTA_DOWN, deltaStrength(v, max));
   }
   // Light blue (0) -> burgundy red (max): the city reads light with hot spots in red.
-  return new THREE.Color(0xe8eefc).lerp(new THREE.Color(0x800020), colorT(value, max));
+  return RAMP_COLD.clone().lerp(RAMP_HOT, colorT(value, max));
 }
 
 // Off the ramp entirely: a building the current metric has no measurement for. Only
@@ -5925,7 +5977,7 @@ function onSceneClick(event) {
   // ⌥ may still be down — holding it to see the roads and ⌘-clicking one of them is the
   // gesture, not a two-step ritual of pin-then-click. ⌘ wins over the ⌥-click pin below,
   // which is why this is tested first.
-  if ((event.metaKey || event.ctrlKey) && !event[NAV_KEY]) {
+  if ((event.metaKey || event.ctrlKey) && !event[NAV_KEY] && EDITOR_LINKS) {
     const jump = pickRoadJump(event);
     if (jump) {
       event.preventDefault();
@@ -5951,7 +6003,7 @@ function onSceneClick(event) {
 }
 
 function onDoubleClick(event) {
-  if (!event.metaKey && !event.ctrlKey) {
+  if ((!event.metaKey && !event.ctrlKey) || !EDITOR_LINKS) {
     return;
   }
   const hit = pickBuilding(event);
@@ -6530,6 +6582,17 @@ function deltaKeyHtml() {
     `<span>${swatch(DELTA_DOWN)}fewer</span></div>`;
 }
 
+// The coverage key. Its ramp is the city's own, run backwards (red is 0%, the light end
+// 100%), which nobody guesses; and the grey of a class no test run loaded was only named
+// in the hover, so a grey building read as "a bit covered".
+function coverageKeyHtml() {
+  const hex = c => `#${c.getHexString()}`;
+  const ramp = `linear-gradient(to right, ${hex(RAMP_HOT)}, ${hex(RAMP_COLD)})`;
+  return `<div class="deltaKey">` +
+    `<span>0%<i class="ramp" style="background:${ramp}"></i>100%</span>` +
+    `<span><i style="background:${hex(UNMEASURED_COLOR)}"></i>not measured</span></div>`;
+}
+
 // What an option marked `data-unavailable` says instead of what it means. One sentence,
 // and it has to carry two facts: that the colour on screen is not this metric, and what
 // would have to happen for it to be. "No data" alone reads as a bug in the tool.
@@ -6567,13 +6630,18 @@ function syncMetricNotes() {
     // The whole sentence is the link where there is one, rather than a "?" hung off the
     // end: the sentence is already the shortest true statement about the metric, and a
     // reader who wants more has the words themselves to click. Costs one arrow of width.
-    if (!entry.href) { el.textContent = text; continue; }
-    const a = document.createElement("a");
-    a.href = entry.href;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = text + " \u2197";
-    el.appendChild(a);
+    if (!entry.href) el.textContent = text;
+    else {
+      const a = document.createElement("a");
+      a.href = entry.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = text + " \u2197";
+      el.appendChild(a);
+    }
+    if (knob === METRIC_KNOBS[2] && INVERTED_METRICS.has(knob.select.value)) {
+      el.insertAdjacentHTML("beforeend", coverageKeyHtml());
+    }
     if (knob === METRIC_KNOBS[2] && knob.select.value === "change_dna" && HAS_AXES) {
       el.insertAdjacentHTML("beforeend", dnaLegendHtml());
     }
@@ -6907,6 +6975,7 @@ html = (html
         .replace("__PACKAGES_JSON__", json.dumps(pkg_rows))
         .replace("__MODULES_JSON__", json.dumps(mod_rows))
         .replace("__REPO_ABS__", json.dumps(str(REPO_ABS)))
+        .replace("__GITHUB_BLOB__", json.dumps(GITHUB_BLOB))
         .replace("__TOOL_REPO__", TOOL_REPO)
         .replace("__HAS_CHANGES__", json.dumps(bool(CHANGED_FILES & ANALYZED_PATHS)
                                                 if ANALYZED_PATHS else bool(CHANGED_FILES)))

@@ -101,7 +101,11 @@ building. `HEATMAP_PRUNE` survives as a second filter, for the repo that commits
 
 `codecity.html` renders the same TSV as a Three.js CodeCity. Drag to pan,
 Cmd/Ctrl-drag to rotate, scroll to zoom around the mouse cursor, and Cmd/Ctrl-double-click
-a building to open its Java file in VS Code. The 2D city layout is computed in-browser
+a building to open its Java file in VS Code — or, on a page read from anywhere but this
+machine (GitHub Pages), on github.com at the commit the city was drawn from; a vscode://
+path there would name a folder on the machine that generated the page. With no pushed
+commit to point at, the gesture is off online and the help panel stops offering it. The
+2D city layout is computed in-browser
 with D3 treemap; Three.js extrudes each file tile into a building.
 
 **Prior art, and the page says so.** The software city — a building per class, a district
