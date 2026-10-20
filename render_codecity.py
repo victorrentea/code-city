@@ -971,7 +971,7 @@ COUPLING_DELTA = _coupling_delta(CLASS_EDGES, BASE_EDGES)
 # Stamped only on the rows whose coupling moved: on Spring that is a dozen rows out of 5000,
 # and two zeros on each of the others were 150 KB of page saying nothing. The page reads a
 # missing value as a measured 0 — "unchanged" — for as long as HAS_COUPLING_DELTA says there
-# was a base to count against at all; without one the two options leave the dropdown.
+# was a base to count against at all; without one the hover leaves the two rows out.
 if COUPLING_DELTA is not None:
     for _view, _rows in (("classes", rows), ("packages", pkg_rows), ("modules", mod_rows)):
         for _r in _rows:
@@ -1448,8 +1448,6 @@ html = """<!doctype html>
     border: 1px solid rgba(255, 255, 255, 0.5);
     background: linear-gradient(to right, #e8eefc, #800020);
   }
-  /* The same bar for a change: blue (it fell) -> grey (untouched) -> red (it grew). */
-  #hover .cbar.diverging { background: linear-gradient(to right, #1d4ed8, #b9bfc8 50%, #b91c1c); }
   #hover .props .delta-up { color: #fca5a5; font-weight: 600; }
   #hover .props .delta-down { color: #93c5fd; font-weight: 600; }
   /* The colour key under the COLOR knob, for the one metric whose colours are not a ramp. */
@@ -1646,8 +1644,8 @@ html = """<!doctype html>
   Cmd/Ctrl-drag to rotate<br>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
-  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin)<br>
-    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;&#11088; riding a road: a dependency this diff added; under &#8997; the rest fade<br></span>
+  <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin, Esc or click the ground to let go)<br>
+    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;&#11088; riding a road: a dependency this diff added, shown by itself on a coupling colour; under &#8997; the rest fade<br></span>
     <span id="roadJumpHint">&nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
@@ -1702,11 +1700,6 @@ html = """<!doctype html>
 
     <span class="knob">Color</span>
     <select id="colorMetric">
-      <optgroup label="what this change did" id="deltaGroup">
-        <option value="d_fan_out">&Delta; outgoing coupling</option>
-        <option value="d_fan_in">&Delta; incoming coupling</option>
-      </optgroup>
-      <optgroup label="what the code is">
       <option value="cognitive_complexity">cognitive complexity</option>
       <option value="commits" selected>total commits</option>
       <option value="bug_commits">bugfix commits</option>
@@ -1720,7 +1713,6 @@ html = """<!doctype html>
       <option value="crap_load">CRAP load</option>
       <option value="coverage">line coverage % (all tests)</option>
       <option value="coverage_acceptance">acceptance coverage % (end-to-end)</option>
-      </optgroup>
     </select>
     <label class="checkbox" title="Divide by thousands of lines, turning the count into a density.">
       <input id="colorKloc" type="checkbox" checked aria-label="colour per KLOC"> /kloc
@@ -1852,7 +1844,6 @@ const CHANGE_AXES = __AXES_JSON__;
 let activeColorMax = 1;
 let activeColorLog = false;   // whether the active colour metric is on a log ramp
 let activeColorInvert = false;   // ...and whether its ramp runs backwards (coverage)
-let activeColorDiverging = false;   // ...or is not a ramp at all, but a change either way of zero
 
 </script>
 <script type="module">
@@ -2030,27 +2021,23 @@ if (HAS_ACCEPTANCE) {
 // What the change set did to coupling, per building (see _coupling_delta in the generator):
 // how many dependencies it added minus how many it dropped (outgoing), and the same for the
 // buildings depending on it (incoming). Stamped on the rows only when the generator had a
-// base to count against; without one there is no "this change" to colour by, and the two
-// options leave the dropdown the way the co-change one does.
-const DELTA_METRICS = new Set(["d_fan_out", "d_fan_in"]);
+// base to count against, and read only by the hover, which spells the move out in numbers.
 const HAS_COUPLING_DELTA = __HAS_COUPLING_DELTA__;   // only the rows that moved carry a value
-if (!HAS_COUPLING_DELTA) {
-  const group = document.getElementById("deltaGroup");
-  if (group) group.remove();
-}
-// ...and when the change set DID move coupling, that is what the city opens on — over
-// acceptance reach too. Every other colour here is a fact about the code as it stands, so
-// on a review it paints the same picture before and after the PR, and the reviewer has to
-// do the subtraction in their head. This one IS the subtraction: grey wherever the change
-// left a class's dependencies alone, red where it added some, blue where it cut some. It
-// lights the touched classes that took on a dependency and nothing else — the untouched
-// ones stay grey because, by construction, a class whose text did not change cannot have
-// changed what it depends on. Outgoing rather than incoming because that is the half a
-// diff ADDS, line by line, in the classes the reviewer is already reading; incoming lands
-// on classes the diff never opened, and is one option below it.
-if (HAS_COUPLING_DELTA && FILES.some(f => f.d_fan_out)) {
+// A city with a change set to diff against opens on OUTGOING COUPLING — over acceptance
+// reach too. That is the half of coupling a diff ADDS, line by line, in the classes the
+// reviewer is already reading, and on this colour the change answers itself three ways at
+// once: the dependencies the diff introduced stand as roads with a star riding them (see
+// addedCouplingOn), and a class that took some on is skinned in its old shade below the
+// band where it used to end, its new shade above it (see addChangeMarks).
+//
+// It opened on a "Δ outgoing coupling" colour for a while — grey where the change left a
+// class's dependencies alone, red where it added some, blue where it cut some — with a
+// "Δ incoming coupling" beside it. Dropped (Oct 2026): it painted every building a third
+// palette nobody else on the page uses, said nothing the stars and the two-tone skin do not
+// already say, and took the plain coupling ramp's place on the one view a reviewer opens.
+if (HAS_COUPLING_DELTA) {
   const colorSel = document.getElementById("colorMetric");
-  if (colorSel) colorSel.value = "d_fan_out";
+  if (colorSel) colorSel.value = "fan_out";
 }
 // Name WHAT the highlighted delta is: the PR, the commit we walked back to, or the
 // dirty working tree. Only while a change mode is on — that is the moment the reader
@@ -2654,11 +2641,6 @@ function percentile(values, p) {
 // by files you are no longer looking at.
 function metricMax(key) {
   if (FIXED_COLOR_MAX[key] !== undefined) return FIXED_COLOR_MAX[key];
-  // A change runs both ways from zero, and nearly every building sits ON zero — the p95
-  // of that is 0. The largest change on screen, either way, is the end of both arms.
-  if (DELTA_METRICS.has(key)) {
-    return Math.max(1, ...visibleDataset().map(f => Math.abs(Number(f[key]) || 0)));
-  }
   return percentile(visibleDataset().map(f => Number(f[key]) || 0), 0.95);
 }
 
@@ -2694,42 +2676,12 @@ function wantsLog(metric) {
 // The checkbox always shows the ramp the current metric resolves to.
 function syncColorLogCheck() {
   if (!colorLogCheck) return;
-  // A change of +1 and one of +3 is all a pull request ever carries: no long tail for a
-  // log ramp to spread, so the box goes grey rather than offer a choice that does nothing.
-  const delta = DELTA_METRICS.has(colorMetricKey());
-  colorLogCheck.disabled = delta;
-  colorLogCheck.parentElement.classList.toggle("off", delta);
-  colorLogCheck.checked = !delta && wantsLog(colorMetricKey());
+  colorLogCheck.checked = wantsLog(colorMetricKey());
 }
 
 // Normalised colour position t in [0,1]. Shared by the buildings and the hover
 // colour-scale tick so the tick always matches the building's shade.
-// The change colours. Grey is "this change did not move it", and it is the SAME grey on
-// every building that it did not move — an untouched class must never pick up a tint from
-// a ramp that merely starts near grey. Red is more coupling, blue is less; neither red nor
-// blue is used by the ramp's own light end, so a change is never mistaken for a low value.
-// A shade darker than the drained grey of "highlight changed" (#dfe3e8), so a class the
-// change touched without moving its coupling still reads as touched.
-const DELTA_NEUTRAL = new THREE.Color(0xb9bfc8);
-const DELTA_UP = new THREE.Color(0xb91c1c);
-const DELTA_DOWN = new THREE.Color(0x1d4ed8);
-// Every non-zero change starts this far along its arm. A pull request moves a class's
-// coupling by one or two; on a plain linear arm, +1 beside a +4 would be a grey with a
-// blush, and "it changed" is the one thing this colour must never under-say. Above the
-// floor it is still linear, so +4 stays visibly darker than +1.
-const DELTA_FLOOR = 0.6;
-function deltaStrength(value, max) {
-  const v = Math.abs(Number(value) || 0);
-  if (!v) return 0;
-  return DELTA_FLOOR + (1 - DELTA_FLOOR) * Math.min(1, v / (max || 1));
-}
-
 function colorT(value, max) {
-  // Diverging: 0.5 is "unchanged", and the tick on the hover's blue-grey-red bar lands
-  // exactly where the building's own shade sits on it.
-  if (activeColorDiverging) {
-    return 0.5 + 0.5 * Math.sign(Number(value) || 0) * deltaStrength(value, max);
-  }
   const m = max || 1;
   const v = Math.max(0, Number(value) || 0);
   const t = activeColorLog
@@ -2743,10 +2695,6 @@ function colorT(value, max) {
 const RAMP_COLD = new THREE.Color(0xe8eefc);
 const RAMP_HOT = new THREE.Color(0x800020);
 function colorFor(value, max) {
-  if (activeColorDiverging) {
-    const v = Number(value) || 0;
-    return DELTA_NEUTRAL.clone().lerp(v > 0 ? DELTA_UP : DELTA_DOWN, deltaStrength(v, max));
-  }
   // Light blue (0) -> burgundy red (max): the city reads light with hot spots in red.
   return RAMP_COLD.clone().lerp(RAMP_HOT, colorT(value, max));
 }
@@ -2758,7 +2706,6 @@ function colorFor(value, max) {
 // which must not be readable as either of them.
 const UNMEASURED_COLOR = new THREE.Color(0x9aa0a6);
 function isMeasured(file, metric) {
-  if (DELTA_METRICS.has(metric)) return HAS_COUPLING_DELTA;   // absent = it did not move = 0
   const v = file[metric];
   return v !== null && v !== undefined;
 }
@@ -2767,8 +2714,7 @@ function isMeasured(file, metric) {
 // unchanged buildings in "highlight changed" mode so the change set keeps the
 // only real colour on screen.
 function grayFor(value, max) {
-  // A change colour has no "more" end to drain towards: every drained building is just grey.
-  const t = activeColorDiverging ? 0 : colorT(value, max);
+  const t = colorT(value, max);
   return new THREE.Color(0xdfe3e8).lerp(new THREE.Color(0x6b7280), t);
 }
 
@@ -3147,14 +3093,10 @@ function addChangeMarks(file, geo) {
 
   // The shade the city WOULD have given this building at the base commit. null when the
   // colour metric has no snapshot at all, and skipped when it comes out the same
-  // colour — a skin in the identical shade is a seam and no information.
-  //
-  // A change metric's "before" is zero, not missing: at the base commit this change set
-  // had not added or dropped a single dependency yet. It used to count as missing, and
-  // since the city OPENS on Δ coupling whenever a PR moved any, the two-tone block never
-  // showed in the default view at all — the old part is the "unchanged" grey, the part
-  // the PR grew is the red (or blue) the change gave it.
-  const wasColor = DELTA_METRICS.has(geo.colorMetric) ? 0 : beforeValue(before, geo.colorMetric);
+  // colour — a skin in the identical shade is a seam and no information. On the coupling
+  // colours the city opens on, the "before" is today's count minus what the change set
+  // added (see _coupling_delta), so a class that took on a dependency is two-tone here.
+  const wasColor = beforeValue(before, geo.colorMetric);
   let skin = wasColor === null ? null : colorFor(wasColor, geo.maxColor);
   if (skin && skin.getHex() === colorFor(geo.colorValue, geo.maxColor).getHex()) skin = null;
 
@@ -3242,7 +3184,6 @@ function rebuildCity() {
   activeColorMax = maxColor;   // remembered for the hover tooltip's colour-scale marker
   activeColorLog = wantsLog(colorMetric);   // ditto: log vs linear for the tick position
   activeColorInvert = INVERTED_METRICS.has(colorMetric);   // ...and which end is the bad end
-  activeColorDiverging = DELTA_METRICS.has(colorMetric);   // ...or whether it is a change, not a ramp
 
   // Streets narrow with depth, like a real city: boulevards between top-level
   // modules, alleys between leaf packages. A flat districtGap at every level costs
@@ -3282,10 +3223,7 @@ function rebuildCity() {
     // floor is its label. Nesting reads from the terrace step alone.
     const leaves = node.leaves();
     const avgColor = leaves.reduce((sum, l) => sum + (Number(l.data.file[colorMetric]) || 0), 0) / leaves.length;
-    // ...except for a change metric, where a mean is a lie both ways: one +1 among fifteen
-    // leaves would paint the whole riser at the floor's 60% red, and a +1 beside a -1 would
-    // cancel to "unchanged". The buildings carry the change; the floor stays neutral.
-    const edgeColor = DELTA_METRICS.has(colorMetric) ? DELTA_NEUTRAL.clone() : colorFor(avgColor, maxColor);
+    const edgeColor = colorFor(avgColor, maxColor);
     const sideMaterial = new THREE.MeshStandardMaterial({ color: edgeColor, roughness: 0.85 });
     const topMaterial = new THREE.MeshStandardMaterial({ color: 0xe8eefc, roughness: 0.9 });
     const block = new THREE.Mesh(
@@ -3397,10 +3335,6 @@ function styleForChanges() {
   if (changeMode() !== "highlight") return;
   for (const entry of buildings) {
     if (entry.file.changed) continue;
-    // Coloured by what the change did, a class the diff never opened can still have been
-    // moved by it — the repository four new callers now depend on. Draining it would hide
-    // the one effect of the change that the diff itself does not show.
-    if (activeColorDiverging && entry.colorValue) continue;
     const m = entry.mesh.material;
     m.color.copy(grayFor(entry.colorValue, entry.maxColor));
     m.transparent = true;
@@ -3481,8 +3415,7 @@ function setupChangedLabels() {
   const rank = new Map();
   for (const entry of changed) {
     const vol = blockVolume(entry) / (maxVolume || 1);              // 0..1 relative to the biggest touched block
-    const t = colorT(entry.colorValue, entry.maxColor);             // 0..1 position on the light→red ramp
-    const col = activeColorDiverging ? Math.abs(t - 0.5) * 2 : t;   // ...or distance from "unchanged"
+    const col = colorT(entry.colorValue, entry.maxColor);           // 0..1 position on the light→red ramp
     // "and/or": leading on EITHER axis is enough to be named early (max), and leading
     // on both breaks the tie in your favour (the quarter-weighted weaker signal).
     rank.set(entry, Math.max(vol, col) + 0.25 * Math.min(vol, col));
@@ -3727,6 +3660,14 @@ let roadKeyHeld = false;
 // about what you found — or reach for the trackpad to orbit around it — a held key is a
 // third hand you do not have.
 let pinnedStreetPath = null;
+// Back to no pin — and so, on a coupling colour with a change set, back to the standing
+// layer of the roads the diff added, which steps aside only while a bundle is up.
+function unpinStreets() {
+  if (pinnedStreetPath === null) return false;
+  pinnedStreetPath = null;
+  clearStreets();
+  return true;
+}
 function streetsOn() { return (roadKeyHeld || pinnedStreetPath !== null) && HAS_COUPLING; }
 function interPkgOnly() { return !!(interPkgOnlyCheck && interPkgOnlyCheck.checked); }
 
@@ -4868,14 +4809,13 @@ function addedCouplingKnown() {
 
 // ...and whether the standing layer is up: only while the colour is asking a coupling
 // question. Incoming and outgoing are the two halves of it, and instability, Ce/(Ce+Ca),
-// is both at once — every new edge moves it at both of its ends. The two Δ colours most of
-// all: "what this change did to coupling" is the very question, and the city opens on it,
-// so its red buildings get their stars without anyone having to know about ⌥.
+// is both at once — every new edge moves it at both of its ends. Outgoing most of all: a
+// city with a change set opens on it, so the dependencies the diff took on are on screen
+// before anyone has heard of ⌥. A pinned bundle (⌥-click) takes the plate over from this
+// layer, and unpinning it (⌥-click again, ⌥-click or click the ground, Esc) brings it back.
 function addedCouplingOn() {
   const key = colorMetricKey();
-  if (key !== "fan_in" && key !== "fan_out" && key !== "instability" && !DELTA_METRICS.has(key)) {
-    return false;
-  }
+  if (key !== "fan_in" && key !== "fan_out" && key !== "instability") return false;
   return addedCouplingKnown();
 }
 
@@ -5535,8 +5475,8 @@ const HOVER_PROPS = [
   { key: "committers", label: "committers" },
   { key: "fan_in", label: "incoming coupling (fan in)" },
   { key: "fan_out", label: "outgoing coupling (fan out)" },
-  // What this change did to the two lines above. Shown where it moved them, or where it is
-  // the colour on screen — a grey building then says "0" instead of saying nothing.
+  // What this change did to the two lines above. Shown only where it moved them: on a class
+  // the diff never opened, the dependants it gained are said nowhere else.
   { key: "d_fan_out", label: "outgoing coupling, this change", delta: true, fmt: signedDelta },
   { key: "d_fan_in", label: "incoming coupling, this change", delta: true, fmt: signedDelta },
   { key: "instability", label: "instability Ce/(Ce+Ca)" },
@@ -5584,9 +5524,6 @@ function worstMethodNote(file) {
 //   AREA → left/right arrow · HEIGHT → up/down arrow · COLOUR → a light→red scale bar
 //   with a tick at this building's spot (value / 95th-percentile, clamped 0..1).
 function scaleNote(key) {
-  if (DELTA_METRICS.has(key)) {
-    return "colour scale: blue = fewer, grey = unchanged, red = more; darkest = the biggest change on screen";
-  }
   if (key === "coverage" || key === "coverage_acceptance") {
     return "colour scale, 0-100% and inverted: red is uncovered";
   }
@@ -5607,7 +5544,7 @@ function marksFor(file, ...keys) {
       const t = colorT(Number(file[key]) || 0, activeColorMax);
       // The tick means something different on a pinned ramp, and saying "capped at the
       // 95th pct" over a scale that is not would undo the one thing pinning it bought.
-      marks.push(`<span class="cbar${DELTA_METRICS.has(key) ? " diverging" : ""}" title="${scaleNote(key)}">` +
+      marks.push(`<span class="cbar" title="${scaleNote(key)}">` +
         `<span class="cbar-mark" style="left:${(t * 100).toFixed(1)}%"></span></span>`);
     }
   }
@@ -5629,7 +5566,7 @@ function formatHover(file) {
   const items = [];
   for (const p of HOVER_PROPS) {
     if (p.opt && (file[p.key] === undefined || file[p.key] === null)) continue;
-    if (p.delta && !(HAS_COUPLING_DELTA && (file[p.key] || active.has(p.key)))) continue;
+    if (p.delta && !(HAS_COUPLING_DELTA && file[p.key])) continue;
     if (p.crap && !HAS_CRAP) continue;   // no report was read: the row has nothing to say
     if (p.coverage && !HAS_COVERAGE) continue;   // ...nor any coverage, from anywhere
     if (p.acceptance && !HAS_ACCEPTANCE) continue;   // ...and its own report, separately
@@ -5985,14 +5922,22 @@ function onSceneClick(event) {
       return;
     }
   }
-  // ⌥-click toggles the pin on the building's road bundle.
+  // ⌥-click toggles the pin on the building's road bundle; ⌥-click on the ground drops it.
   if (event.altKey && !event.metaKey && !event.ctrlKey && !event[NAV_KEY]) {
     const hit = pickBuilding(event);
-    if (!hit) return;
+    if (!hit) { unpinStreets(); return; }
     const path = hit.object.userData.file.path;
     pinnedStreetPath = pinnedStreetPath === path ? null : path;
     clearStreets();                                   // ...so the next call rebuilds from scratch
     showStreetsFor(pinnedStreetPath ? buildingByPath.get(pinnedStreetPath) : null);
+    return;
+  }
+  // A plain click on the ground lets go of a pin too: with the standing layer of new roads
+  // underneath, a pin is a detour from the city's default view, and the way back has to be
+  // the gesture anyone tries first rather than a second ⌥-click on the very same building.
+  if (!event[NAV_KEY] && !event.metaKey && !event.ctrlKey && pinnedStreetPath !== null
+      && !pickBuilding(event)) {
+    unpinStreets();
     return;
   }
   if (!event[NAV_KEY] || event.metaKey || event.ctrlKey || event.altKey) return;   // navigation is Shift-gated
@@ -6549,10 +6494,6 @@ const METRIC_NOTES = {
           href: "https://en.wikipedia.org/wiki/Bus_factor"},
   fan_in: {note: "how many classes depend on it",
           href: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)"},
-  d_fan_out: {note: "dependencies this change added, minus those it removed",
-          href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
-  d_fan_in: {note: "dependants this change added, minus those it removed",
-          href: "https://en.wikipedia.org/wiki/Software_package_metrics"},
   fan_out: {note: "how many classes it depends on",
           href: "https://en.wikipedia.org/wiki/Coupling_(computer_programming)"},
   instability: {note: "0 = only depended on, 1 = only depends",
@@ -6570,17 +6511,6 @@ const METRIC_NOTES = {
   coverage_acceptance: {note: "lines run by end-to-end tests",
           href: "https://martinfowler.com/bliki/TestPyramid.html"},
 };
-
-// The three colours a change metric uses, named. A ramp explains itself (pale is little,
-// dark is a lot); grey-red-blue does not, and "is grey zero or unmeasured?" is the first
-// question anyone asks of it.
-function deltaKeyHtml() {
-  const swatch = c => `<i style="background:#${c.getHexString()}"></i>`;
-  return `<div class="deltaKey">` +
-    `<span>${swatch(DELTA_UP)}more</span>` +
-    `<span>${swatch(DELTA_NEUTRAL)}unchanged</span>` +
-    `<span>${swatch(DELTA_DOWN)}fewer</span></div>`;
-}
 
 // The coverage key. Its ramp is the city's own, run backwards (red is 0%, the light end
 // 100%), which nobody guesses; and the grey of a class no test run loaded was only named
@@ -6644,9 +6574,6 @@ function syncMetricNotes() {
     }
     if (knob === METRIC_KNOBS[2] && knob.select.value === "change_dna" && HAS_AXES) {
       el.insertAdjacentHTML("beforeend", dnaLegendHtml());
-    }
-    if (knob === METRIC_KNOBS[2] && DELTA_METRICS.has(knob.select.value)) {
-      el.insertAdjacentHTML("beforeend", deltaKeyHtml());
     }
   }
 }
@@ -6835,7 +6762,8 @@ window.addEventListener("blur", () => { pointerIsDown = false; isDragging = fals
 window.addEventListener("dblclick", onDoubleClick);
 window.addEventListener("click", onSceneClick);
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !introEl) scopeUp();
+  // Esc lets go of a pinned bundle first, and only steps out of a package with none pinned.
+  if (e.key === "Escape" && !introEl && !unpinStreets()) scopeUp();
 });
 breadcrumbEl.addEventListener("click", (e) => {
   const crumb = e.target.closest(".crumb");

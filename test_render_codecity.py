@@ -703,7 +703,7 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertEqual(moved, {
                 "Order": (0, -1),      # untouched by the diff, and still one dependant lighter
                 "Customer": (0, 2),    # untouched too: two new dependants
-                "Repo": (0, 0),        # nothing moved: a measured zero, painted neutral
+                "Repo": (0, 0),        # nothing moved: a measured zero
                 "Service": (0, 0),     # touched, but one in and one out
                 "Invoice": (1, 0),     # new: everything it uses is new
             })
@@ -714,12 +714,15 @@ class RenderCodecityTest(unittest.TestCase):
             service = before["src/main/java/app/Service.java"]
             self.assertEqual((service["fan_out"], service["fan_in"]), (2, 0))
             self.assertNotIn("src/main/java/app/Invoice.java", before)   # nothing to have been
-            # ...and it is what the city opens on, because the change moved coupling.
-            self.assertIn('colorSel.value = "d_fan_out"', html)
+            # A city with a change set opens on plain outgoing coupling; the Δ colours are gone.
+            self.assertIn('colorSel.value = "fan_out"', html)
+            self.assertNotIn('value="d_fan_out"', html)
+            self.assertNotIn('value="d_fan_in"', html)
+            self.assertNotIn("DELTA_METRICS", html)
 
     def test_no_change_metric_without_a_change(self):
         """With no diff there is nothing to subtract: no row carries a delta, and the page
-        takes the two options out of the dropdown rather than paint a grey city."""
+        hover has no "this change" row to show."""
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["HEATMAP_OUT"] = tmp
@@ -770,7 +773,10 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("new` : \"\"", html)
             # Standing: the two coupling colours, and instability, which is both at once.
             self.assertIn('key !== "fan_in" && key !== "fan_out" && key !== "instability"', html)
-            self.assertIn('key !== "instability" && !DELTA_METRICS.has(key)', html)   # ...and the Δ pair
+            # A pin takes the plate over from the standing layer; Esc or a click on the ground
+            # lets go of it, and the diff's new roads come back.
+            self.assertIn("function unpinStreets()", html)
+            self.assertIn('e.key === "Escape" && !introEl && !unpinStreets()', html)
             # ...and the help box names the star only while there is one.
             self.assertIn('<span id="addedRoadsHint" hidden>', html)
             self.assertIn("function syncAddedRoadsHint", html)
@@ -1150,9 +1156,9 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("function addAreaMark", html)
             self.assertIn('if (changeMode() !== "highlight") return;', html)
             self.assertIn("const MARK_COLOR = 0x000000;", html)
-            # Under Δ coupling — the colour the city opens on — the part that already
-            # existed is skinned in the "unchanged" shade: a change metric was 0 at base.
-            self.assertIn("DELTA_METRICS.has(geo.colorMetric) ? 0 : beforeValue(", html)
+            # The part that already existed is skinned in the colour it was at the base —
+            # outgoing coupling, the colour the city opens on, included.
+            self.assertIn("const wasColor = beforeValue(before, geo.colorMetric);", html)
             # Painted ON the walls and the roof, in world units — not a screen-width
             # outline hung around the block, which reads as glass in front of the city.
             self.assertNotIn("LineSegments2", html)

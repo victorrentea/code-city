@@ -309,13 +309,14 @@ is the reading you can walk. On **hover only**, so the question stays "what does
 building touch", never a layer left switched on. (It works with the mouse parked: pressing
 or releasing the key replays the hover.)
 
-**⌥-click to pin** a bundle and it stays up, flowing, until you pin another building or
-click the same one again. Holding a key is right for a glance, but the moment you start
+**⌥-click to pin** a bundle and it stays up, flowing, until you pin another building,
+click the same one again, click the ground or press Esc (which lets go of a pin before it
+steps out of a package). Holding a key is right for a glance, but the moment you start
 talking about what you found — or reach for the trackpad to orbit around it — a held key is
 a third hand you do not have.
 
 **The coupling the diff introduced is drawn without asking.** With COLOR on incoming or
-outgoing coupling, either of their Δ colours (which the city opens on), or instability
+outgoing coupling (outgoing is what a city with a change set opens on), or instability
 (which is both at once), and a change set on screen, the
 colour raises a question ⌥ can only answer one building at a time, mixed in with every old
 edge: *which of these did this change add?* So every edge the diff introduced stands as a
@@ -332,7 +333,7 @@ renames followed so a moved class is not a new dependency of everything that imp
 what they did not reference there is new. Per view, too: a package road is new only if no
 class of one package used any class of the other before. It is the one standing layer in the
 city, and it can be because it is a diff's worth of edges, not a city's — past
-`ADDED_ROAD_MAX` (60) it is not drawn at all, and it steps aside while a hovered bundle is
+`ADDED_ROAD_MAX` (60) it is not drawn at all, and it steps aside while a hovered or pinned bundle is
 up.
 
 Those roads are routed by the very code that routes a ⌥ bundle — `layBundle`, one sweep from
