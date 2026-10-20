@@ -1683,7 +1683,7 @@ html = """<!doctype html>
     <select id="heightMetric">
       <option value="lines">lines of code (LOC)</option>
       <option value="cognitive_complexity" selected>cognitive complexity</option>
-      <option value="bug_commits">bugfix commits</option>
+      <option value="bug_commits" title="Commits whose subject starts with fix / fixed / fixes / bugfix (fix: and Fix … both count), plus Closes #N of a bug-labelled issue. Another convention, e.g. a [JIRA-123] prefix: set HEATMAP_BUG_COMMIT_REGEX.">bugfix commits (subject fix: / Fix …)</option>
       <option value="commits">total commits</option>
       <option value="committers">committers</option>
       <option value="fan_in">incoming coupling</option>
@@ -1702,7 +1702,7 @@ html = """<!doctype html>
     <select id="colorMetric">
       <option value="cognitive_complexity">cognitive complexity</option>
       <option value="commits" selected>total commits</option>
-      <option value="bug_commits">bugfix commits</option>
+      <option value="bug_commits" title="Commits whose subject starts with fix / fixed / fixes / bugfix (fix: and Fix … both count), plus Closes #N of a bug-labelled issue. Another convention, e.g. a [JIRA-123] prefix: set HEATMAP_BUG_COMMIT_REGEX.">bugfix commits (subject fix: / Fix …)</option>
       <option value="committers">committers</option>
       <option value="instability">instability Ce/(Ce+Ca)</option>
       <option value="fan_in">incoming coupling</option>
@@ -5471,7 +5471,7 @@ const HOVER_PROPS = [
   { key: "lines", label: "lines of code" },
   { key: "cognitive_complexity", label: "cognitive complexity", sub: "complexity_per_kloc" },
   { key: "commits", label: "commits", sub: "commits_per_kloc" },
-  { key: "bug_commits", label: "bugfix commits", sub: "bugs_per_kloc" },
+  { key: "bug_commits", label: "bugfix commits (subject fix: / Fix …)", sub: "bugs_per_kloc" },
   { key: "committers", label: "committers" },
   { key: "fan_in", label: "incoming coupling (fan in)" },
   { key: "fan_out", label: "outgoing coupling (fan out)" },
