@@ -1778,9 +1778,9 @@ html = """<!doctype html>
   <p class="cityorigin">Original
     <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>
     by Richard Wettel (USI Lugano, 2008).</p>
-  <p class="cityorigin">Why a city, explained in
-    <a href="https://www.youtube.com/watch?v=BOcNjR2lBus&amp;t=2582s" target="_blank" rel="noopener">the Devoxx 2026 talk</a>
-    (<a href="https://victorrentea.ro/talk/architecture-observability-devoxx-26/" target="_blank" rel="noopener">talk page</a>).</p>
+  <p class="cityorigin">Why a city:
+    <a href="https://www.youtube.com/watch?v=BOcNjR2lBus&amp;t=2582s" target="_blank" rel="noopener">the Devoxx 2026 talk</a> &middot;
+    <a href="https://victorrentea.ro/talk/architecture-observability-devoxx-26/" target="_blank" rel="noopener">its page</a></p>
 </div>
 <div id="hover"></div>
 
