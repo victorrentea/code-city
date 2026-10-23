@@ -226,6 +226,9 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn("by Richard Wettel (USI Lugano, 2008)", html)
             self.assertIn('href="https://wettel.github.io/codecity.html"', html)
             self.assertIn("Richard Wettel", html)
+            # ...and why a city at all: the recorded talk, at its city section, and its page.
+            self.assertIn('href="https://www.youtube.com/watch?v=BOcNjR2lBus&amp;t=2582s"', html)
+            self.assertIn('href="https://victorrentea.ro/talk/architecture-observability-devoxx-26/"', html)
             # First-run intro: an annotated hero building wired to the metric selectors,
             # with AREA drawn on the roof (top face), not the base.
             self.assertIn("function buildIntro", html)

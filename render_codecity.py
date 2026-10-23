@@ -1588,7 +1588,9 @@ html = """<!doctype html>
   .cityrepo-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   /* A city of buildings and districts is Richard Wettel's idea, not this repo's, and a
      reader who has never met the original has no way to tell -- these plates are shot to
-     look like his. So the credit is on the page itself rather than only in the README. */
+     look like his. So the credit is on the page itself rather than only in the README.
+     The line under it answers the next question -- why look at code as a city at all --
+     with the recorded talk that argues it, jumping straight to the city section. */
   .cityorigin { margin: 0; }
   .cityorigin a { color: #1e3a8a; font-weight: 650; }
   /* First-run intro overlay: an annotated building wired to the metric selectors. */
@@ -1776,6 +1778,9 @@ html = """<!doctype html>
   <p class="cityorigin">Original
     <a href="https://wettel.github.io/codecity.html" target="_blank" rel="noopener">CodeCity</a>
     by Richard Wettel (USI Lugano, 2008).</p>
+  <p class="cityorigin">Why a city, explained in
+    <a href="https://www.youtube.com/watch?v=BOcNjR2lBus&amp;t=2582s" target="_blank" rel="noopener">the Devoxx 2026 talk</a>
+    (<a href="https://victorrentea.ro/talk/architecture-observability-devoxx-26/" target="_blank" rel="noopener">talk page</a>).</p>
 </div>
 <div id="hover"></div>
 
