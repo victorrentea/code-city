@@ -1666,7 +1666,6 @@ html = """<!doctype html>
 
     <span class="knob">Area</span>
     <select id="areaMetric">
-      <option value="bytes">file size</option>
       <option value="lines" selected>lines of code (LOC)</option>
       <option value="cognitive_complexity">cognitive complexity</option>
       <option value="commits">total commits</option>
@@ -5461,18 +5460,10 @@ function fmtMetric(v) {
     : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function humanBytes(n) {
-  n = Number(n) || 0;
-  if (n < 1024) return n + " B";
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-  return (n / (1024 * 1024)).toFixed(1) + " MB";
-}
-
 // Every metric on its own bullet in the hover. `opt` rows only render for package/
 // module rows (which carry a `files` count); class rows skip them.
 const HOVER_PROPS = [
   { key: "files", label: "files", opt: true },
-  { key: "bytes", label: "size", fmt: humanBytes },
   { key: "lines", label: "lines of code" },
   { key: "cognitive_complexity", label: "cognitive complexity", sub: "complexity_per_kloc" },
   { key: "commits", label: "commits", sub: "commits_per_kloc" },
@@ -6486,7 +6477,6 @@ function onMetricChange() {
 // touch. Written as answers to "what am I looking at?", not as formulas: the formula is
 // in the hover card for anyone who wants it.
 const METRIC_NOTES = {
-  bytes: {note: "how many bytes of source it holds"},
   lines: {note: "lines of code in the file",
           href: "https://en.wikipedia.org/wiki/Source_lines_of_code"},
   cognitive_complexity: {note: "how hard it is to follow (Sonar's measure)",
