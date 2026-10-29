@@ -321,8 +321,8 @@ outgoing coupling (outgoing is what a city with a change set opens on), or insta
 colour raises a question ⌥ can only answer one building at a time, mixed in with every old
 edge: *which of these did this change add?* So every edge the diff introduced stands as a
 road — the same blue road with the same traffic as any other road out — and every few seconds
-a ⭐ rides it, the way the dependency points, from the class that took it on to the one it
-now leans on. The road says what any road says; the star is the only thing that says *new*.
+a 🆕 rides it, the way the dependency points, from the class that took it on to the one it
+now leans on. The road says what any road says; the 🆕 is the only thing that says *new*.
 It was a pale yellow road with black arrows first, the one colour the city spends nowhere
 else, and shown cold nobody could tell what the yellow meant: a road painted differently
 reads as a different *kind* of road, not as a recent one, while a star means "new" before
@@ -342,8 +342,8 @@ the trail ⌥ would draw for it. It had a copy of the routing of its own once, o
 edge and no trunks, so wherever ⌥ shared a trunk the two drawings of the same edge did not
 match. And **⌥ tells the same story one building at a time**: hold it over a class the diff
 coupled and its whole bundle comes up, every road it had before *faded* to `ROAD_FADED` of
-its strength and the roads this diff laid at full strength with their stars, on the top deck,
-their peers' name tags starred too — the tooltip counts them ("19 roads, 2 new"). Left at full
+its strength and the roads this diff laid at full strength with their 🆕, on the top deck,
+their peers' name tags wearing one too — the tooltip counts them ("19 roads, 2 new"). Left at full
 strength, one new road on a domain class with a dozen old ones is one more thread in a red-and-blue
 weave; dropped, the bundle would lie about what the class sits on. A pair the diff coupled
 one way and that always depended on it the other is two roads of two ages, not one purple

@@ -1500,6 +1500,7 @@ html = """<!doctype html>
   /* ...and while a road this diff added is up, every other name on the bundle steps back
      with its road. A new road's own peer keeps its direction's colour and wears a star. */
   .coupling-label.faded { opacity: 0.55; }
+  .new-mark { font-size: 1.5em; line-height: 0; vertical-align: -0.12em; }
   .coupling-label.subject {   /* the one you asked about: on no road, so on no side */
     background: rgba(12, 32, 96, 0.96);
     box-shadow: 0 0 0 2px rgba(147, 197, 253, 0.9), 0 6px 18px rgba(15, 23, 42, 0.4);
@@ -1647,7 +1648,7 @@ html = """<!doctype html>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin, Esc or click the ground to let go)<br>
-    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;&#11088; riding a road: a dependency this diff added, shown by itself on a coupling colour; under &#8997; the rest fade<br></span>
+    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;<span class="new-mark">&#x1F195;</span> riding a road: a dependency this diff added, shown by itself on a coupling colour; under &#8997; the rest fade<br></span>
     <span id="roadJumpHint">&nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
@@ -4638,7 +4639,8 @@ function nameTheBundle(entry, bundle, fade) {
     const fresh = isAddedKind(item.kind);
     div.className = "coupling-label " + (fresh ? baseKind(item.kind)
       : item.kind + (fade && item.kind !== "subject" ? " faded" : ""));
-    div.textContent = (fresh ? "\u2B50 " : "") + peer.file.name;
+    div.textContent = peer.file.name;
+    if (fresh) div.prepend(Object.assign(document.createElement("span"), { className: "new-mark", textContent: "🆕 " }));
     const label = new CSS2DObject(div);
     label.position.set(peer.mesh.position.x, peer.roofY + LABEL_STEM, peer.mesh.position.z);
     label.center.set(0.5, 1);
@@ -4713,18 +4715,20 @@ for (const kind of [ADDED_KIND.out, ADDED_KIND.in]) {
 // 150 was tried first: on PR #49's city the longest new road is ~560 units, and it carried
 // three or four stars at once, which is the belt again. At 220, one every ~4.5 s.
 const STAR_SPACING = 220;       // × cityUnit between two stars on one road
-const STAR_SIZE = 22;           // CSS px, at every zoom
+const STAR_SIZE = 60;           // CSS px, at every zoom; the 🆕 fills the top half of it
 const STAR_LIFT = 1.2;          // × cityUnit above the road's own deck, so the tarmac never cuts it
 const STAR_MAX = 512;
 function starTexture() {
   const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 64;
+  canvas.width = canvas.height = 128;
   const ctx = canvas.getContext("2d");
-  ctx.font = "52px 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
+  ctx.font = "56px 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("⭐", 32, 36);
+  // Above the point, not around it: a lower half would sink into the deck in front of it.
+  ctx.fillText("🆕", 64, 34);
   const tex = new THREE.CanvasTexture(canvas);
+  tex.flipY = false;   // a Points sprite reads its texture upside down; a star never showed it
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
