@@ -68,3 +68,8 @@ what is already there before writing a line of it.
 - Do not put personal paths, client names or credentials in this repo — it is public.
 - Do not add a `version` field to any plugin/marketplace manifest here.
 - Do not commit generated cities; `generate.sh` writes them outside the repo.
+
+## Memoria lui Claude
+
+Memoria generală (cine e Victor, cum vrea să lucrezi) e în repo-ul privat `victorrentea/assistant`.
+Într-o sesiune din cloud, atașează-l la sesiune și urmează-i `CLAUDE.md`-ul. Pe Mac se încarcă singură.
