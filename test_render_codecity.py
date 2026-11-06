@@ -811,6 +811,12 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertIn('path: kind === "out" ? path : peerPath', page)
             # ...and the line it opens at.
             self.assertIn('"vscode://file" + encodeURI(abs) + (line ? ":" + line : "")', page)
+            # ...in the editor the review page connected, through its server's bridge, and
+            # with none connected the click copies instead of launching VS Code.
+            self.assertIn('localStorage.getItem("hr-ide")', page)
+            self.assertIn('"idea://open?file=" + encodeURIComponent(abs)', page)
+            self.assertIn('fetch("/__open__?path=" + encodeURIComponent(abs)', page)
+            self.assertIn('if (ide === "none") {', page)
             # A purple road carries no jump at all.
             self.assertIn("peer: buildingByPath.get(peerPath) || null, jump: null", page)
 

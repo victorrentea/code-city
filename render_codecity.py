@@ -1652,7 +1652,7 @@ html = """<!doctype html>
     <span id="roadJumpHint">&nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
-  <span id="openHint">Cmd/Ctrl-double-click opens a file <span id="openWhere">in VS Code</span></span>
+  <span id="openHint">Cmd/Ctrl-double-click <span id="openWhere">opens a file in VS Code</span></span>
 </aside>
 <section class="panel">
   <h1>__LOGO_SVG__<span>__TITLE__</span><select id="viewMode" class="titleView"
@@ -1789,6 +1789,13 @@ const FILES = __FILES_JSON__;
 const PACKAGES = __PACKAGES_JSON__;   // per-package rows (same shape) for package mode
 const MODULES = __MODULES_JSON__;     // per-Maven/Gradle-module rows (same shape) for module mode
 const REPO_ABS = __REPO_ABS__;
+// The editor picked on the review page that serves this city, read from the origin's
+// storage (human-review's `hr-ide`): "idea", "vscode", or "none" when both its logos are red.
+// Nothing stored means no review page around the city, and the city's own VS Code link.
+const IDE_NAMES = { idea: "IntelliJ", vscode: "VS Code" };
+function pickedIde() {
+  try { return localStorage.getItem("hr-ide"); } catch (e) { return null; }
+}
 // The same file on github.com at the commit the city was drawn from, or "" (see
 // _github_blob_base). Used instead of VS Code when the page is not read on this machine.
 const GITHUB_BLOB = __GITHUB_BLOB__;
@@ -1953,10 +1960,21 @@ if (!HAS_COUPLING) {
 }
 // Online, the two ⌘ gestures that open a file open it on GitHub, or, with no GitHub copy
 // of this commit, do nothing; a help line promising VS Code would be a lie either way.
-if (!LOCAL_PAGE) {
+// Locally it names the picked editor, and follows a pick changed in the review page's tab.
+function paintOpenHint() {
+  const where = document.getElementById("openWhere");
+  if (!where) return;
+  const ide = pickedIde();
+  where.textContent = ide === "none" ? "copies a file's path (no IDE connected)"
+                                     : "opens a file in " + (IDE_NAMES[ide] || "VS Code");
+}
+if (LOCAL_PAGE) {
+  paintOpenHint();
+  window.addEventListener("storage", event => { if (event.key === "hr-ide") paintOpenHint(); });
+} else {
   if (GITHUB_BLOB) {
     const where = document.getElementById("openWhere");
-    if (where) where.textContent = "on GitHub";
+    if (where) where.textContent = "opens a file on GitHub";
   } else {
     for (const id of ["roadJumpHint", "openHint"]) document.getElementById(id)?.remove();
   }
@@ -2603,7 +2621,24 @@ function openInEditor(rel, line) {
     return;
   }
   const abs = REPO_ABS + "/" + rel;
-  window.location.href = "vscode://file" + encodeURI(abs) + (line ? ":" + line : "");
+  const ide = pickedIde();
+  if (ide === "none") {
+    navigator.clipboard?.writeText(rel + (line ? ":" + line : ""));
+    return;
+  }
+  const byScheme = () => {
+    window.location.href = ide === "idea"
+      ? "idea://open?file=" + encodeURIComponent(abs) + (line ? "&line=" + line : "")
+      : "vscode://file" + encodeURI(abs) + (line ? ":" + line : "");
+  };
+  if (!IDE_NAMES[ide] || location.protocol === "file:") {
+    byScheme();
+    return;
+  }
+  // Served by human-review: its bridge reaches the window that has the checkout, with no
+  // browser prompt. A server without that route answers 404, and the OS gets the link.
+  fetch("/__open__?path=" + encodeURIComponent(abs) + "&line=" + (line || 1) + "&ide=" + ide)
+    .then(answer => { if (!answer.ok) byScheme(); }, byScheme);
 }
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8592a3, 2.1));
@@ -4728,7 +4763,6 @@ function starTexture() {
   // Above the point, not around it: a lower half would sink into the deck in front of it.
   ctx.fillText("🆕", 64, 34);
   const tex = new THREE.CanvasTexture(canvas);
-  tex.flipY = false;   // a Points sprite reads its texture upside down; a star never showed it
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
@@ -4737,10 +4771,12 @@ const starGeometry = new THREE.BufferGeometry();
 starGeometry.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
 const starPoints = new THREE.Points(starGeometry, new THREE.PointsMaterial({
   map: starTexture(), size: STAR_SIZE, sizeAttenuation: false,
-  transparent: true, alphaTest: 0.05, depthWrite: false,
+  transparent: true, alphaTest: 0.05, depthWrite: false, depthTest: false,
 }));
 starPoints.frustumCulled = false;   // the positions move every frame; the bounds never would
-starPoints.renderOrder = 3;         // over the lanes (1) and the gates (2)
+// Over everything WebGL draws, at every zoom: from afar a road runs behind the towers, and a
+// badge the buildings can cut is a badge nobody sees. Only the HTML name tags stay above it.
+starPoints.renderOrder = 1000;
 starPoints.visible = false;
 scene.add(starPoints);
 

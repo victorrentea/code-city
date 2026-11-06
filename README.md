@@ -101,7 +101,9 @@ building. `HEATMAP_PRUNE` survives as a second filter, for the repo that commits
 
 `codecity.html` renders the same TSV as a Three.js CodeCity. Drag to pan,
 Cmd/Ctrl-drag to rotate, scroll to zoom around the mouse cursor, and Cmd/Ctrl-double-click
-a building to open its Java file in VS Code — or, on a page read from anywhere but this
+a building to open its Java file in VS Code, or in IntelliJ when that is the editor connected
+on the human-review page serving the city (with none connected the gesture copies the path)
+— or, on a page read from anywhere but this
 machine (GitHub Pages), on github.com at the commit the city was drawn from; a vscode://
 path there would name a folder on the machine that generated the page. With no pushed
 commit to point at, the gesture is off online and the help panel stops offering it. The
