@@ -3817,6 +3817,25 @@ function baseAnchor(entry, towards) {
   return new THREE.Vector3(c.x + dx * reach, entry.baseY, c.z + dz * reach);
 }
 
+// Where a road coming from ring cell `towards` goes in through the wall that cell faces:
+// straight across, square to the wall, to the same 70% of the way in. Aiming at the cell
+// from the building's centre instead (baseAnchor) came in on a slant whenever the cell sat
+// off the centre line, and orthogonalize turned the slant into an extra corner — the road
+// left the top of a block to come back down beside it (Owner ↔ Pet, 10 Nov 2026).
+function doorAnchor(entry, towards) {
+  const c = entry.mesh.position;
+  const hw = entry.width / 2, hd = entry.depth / 2;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const outX = Math.abs(towards.x - c.x) - hw, outZ = Math.abs(towards.z - c.z) - hd;
+  if (outX <= 0 && outZ <= 0) return baseAnchor(entry, towards);
+  if (outX >= outZ) {
+    return new THREE.Vector3(c.x + Math.sign(towards.x - c.x) * hw * 0.7, entry.baseY,
+                             clamp(towards.z, c.z - hd * 0.7, c.z + hd * 0.7));
+  }
+  return new THREE.Vector3(clamp(towards.x, c.x - hw * 0.7, c.x + hw * 0.7), entry.baseY,
+                           c.z + Math.sign(towards.z - c.z) * hd * 0.7);
+}
+
 // ── Routing: around the blocks, never under them ─────────────────────────────
 // The straight L between two bases is the shortest road and the wrong one — it drives
 // through whatever stands between them, and a road through a building is not a road. So
@@ -3882,21 +3901,38 @@ function ensureRoadGrid() {
 
 // The free cells hugging a building's footprint: where its roads start, and where a road
 // coming the other way is allowed to arrive.
+//
+// Side cells only, while there is one: a corner cell touches the block diagonally, so a road
+// through it has to turn again to reach a wall. And each cell carries a `bias`, under a step,
+// growing from 0 at the middle of its wall to RING_BIAS at the wall's end. Every ring cell
+// used to cost the same, so the sweep's ties went to whichever cell was pushed first — the
+// top-left CORNER — and two blocks side by side were joined by a hook over the top of the
+// gap between them instead of a straight road across it.
+const RING_BIAS = 0.6;          // steps' worth: breaks ties, never buys a detour
 function roadRing(entry, grid) {
   const p = entry.mesh.position;
   const c0 = Math.floor((p.x - entry.width / 2 - grid.x0) / grid.size) - 1;
   const c1 = Math.floor((p.x + entry.width / 2 - grid.x0) / grid.size) + 1;
   const r0 = Math.floor((p.z - entry.depth / 2 - grid.z0) / grid.size) - 1;
   const r1 = Math.floor((p.z + entry.depth / 2 - grid.z0) / grid.size) + 1;
-  const cells = [];
+  const sides = [], corners = [], sideBias = [];
+  const midC = (c0 + c1) / 2, midR = (r0 + r1) / 2;
+  const halfC = Math.max(1, (c1 - c0) / 2 - 1), halfR = Math.max(1, (r1 - r0) / 2 - 1);
   for (let r = r0; r <= r1; r++) {
     for (let c = c0; c <= c1; c++) {
       if (r !== r0 && r !== r1 && c !== c0 && c !== c1) continue;   // the ring, not the block
       if (c < 0 || r < 0 || c >= grid.cols || r >= grid.rows) continue;
       const idx = r * grid.cols + c;
-      if (grid.free[idx]) cells.push(idx);
+      if (!grid.free[idx]) continue;
+      const corner = (r === r0 || r === r1) && (c === c0 || c === c1);
+      if (corner) { corners.push(idx); continue; }
+      sides.push(idx);
+      sideBias.push(RING_BIAS * Math.min(1, (c === c0 || c === c1)
+        ? Math.abs(r - midR) / halfR : Math.abs(c - midC) / halfC));
     }
   }
+  const cells = sides.length ? sides : corners;
+  cells.bias = sides.length ? sideBias : corners.map(() => RING_BIAS);
   return cells;
 }
 
@@ -3967,13 +4003,14 @@ function roadSweep(entry, grid, wantedCells) {
     if (!wanted[cell]) { wanted[cell] = 1; remaining++; }
   }
   heapClear();
-  for (const cell of roadRing(entry, grid)) {
+  const ring = roadRing(entry, grid);
+  ring.forEach((cell, i) => {
+    const bias = ring.bias[i];
     for (let d = 0; d < 4; d++) {
       const state = cell * 4 + d;
-      if (dist[state] > 0) { dist[state] = 0; heapPush(0, state); }
+      if (dist[state] > bias) { dist[state] = bias; heapPush(bias, state); }
     }
-    if (wanted[cell] === 1) { wanted[cell] = 2; remaining--; }
-  }
+  });
   while (_heapSize && remaining > 0) {
     heapPop();
     const cost = _popCost, state = _popItem;
@@ -4033,12 +4070,13 @@ function offPlateExit(entry, grid, index, count) {
 // to the root, which is what makes them bundleable.
 function roadBestState(sweep, cells) {
   let best = -1, bestCost = Infinity;
-  for (const cell of cells) {
+  cells.forEach((cell, i) => {
+    const bias = cells.bias ? cells.bias[i] : 0;    // arrive mid-wall too, as roadRing leaves
     for (let d = 0; d < 4; d++) {
       const state = cell * 4 + d;
-      if (sweep.dist[state] < bestCost) { bestCost = sweep.dist[state]; best = state; }
+      if (sweep.dist[state] + bias < bestCost) { bestCost = sweep.dist[state] + bias; best = state; }
     }
-  }
+  });
   return isFinite(bestCost) ? best : -1;
 }
 
@@ -4138,6 +4176,27 @@ function orthogonalize(points) {
                         : new THREE.Vector3(a.x, a.y, b.z));
     }
     out.push(b);
+  }
+  return dropStraightVertices(out);
+}
+
+// A vertex in the middle of a straight run is not a corner, and offsetPath must never see
+// one: it offsets a vertex by the sum of its two segments' perpendiculars, which on a
+// straight run is the SAME perpendicular twice — that one point jumps out twice as far and
+// the two runs either side of it come out on a slant (Pet's inbound trunk, 10 Nov 2026).
+// orthogonalize makes them whenever an inserted corner lands in line with the next leg.
+function dropStraightVertices(points) {
+  const out = [];
+  for (const p of points) {
+    const a = out[out.length - 1];
+    if (a && Math.abs(p.x - a.x) < 1e-6 && Math.abs(p.z - a.z) < 1e-6) continue;
+    const b = out[out.length - 2];
+    if (b && a) {
+      const cross = (a.x - b.x) * (p.z - a.z) - (a.z - b.z) * (p.x - a.x);
+      const dot = (a.x - b.x) * (p.x - a.x) + (a.z - b.z) * (p.z - a.z);
+      if (Math.abs(cross) < 1e-6 && dot > 0) { out[out.length - 1] = p; continue; }
+    }
+    out.push(p);
   }
   return out;
 }
@@ -4641,9 +4700,9 @@ function layBundle(entry, bundle, sinks, deck, widen) {
         states.reverse();
         const points = statesToPoints(states, grid);
         if (!points.length) continue;
-        points.unshift(baseAnchor(entry, points[0]));
+        points.unshift(doorAnchor(entry, points[0]));
         const last = points[points.length - 1];
-        points.push(item.peer ? baseAnchor(item.peer, last) : item.exit.clone());
+        points.push(item.peer ? doorAnchor(item.peer, last) : item.exit.clone());
         draw(points, weight, kind);
       }
       continue;
@@ -4654,7 +4713,7 @@ function layBundle(entry, bundle, sinks, deck, widen) {
       // The trunk starts at the building it all leaves from; the branches start where the
       // trunk left them, which is already the first cell of the chain.
       const root = sweep.prev[chain.states[0]] < 0;
-      if (root && points.length) points.unshift(baseAnchor(entry, points[0]));
+      if (root && points.length) points.unshift(doorAnchor(entry, points[0]));
       // A trunk shared by several peers names none of them, so it carries no jump and a
       // ⌘-click over it does nothing. That is the honest answer: the trunk IS the stretch
       // where the bundle has not yet decided which class it is going to. Every branch past
@@ -4664,7 +4723,7 @@ function layBundle(entry, bundle, sinks, deck, widen) {
     // ...and each peer's own last stretch, from where its branch ended to its wall.
     for (const { state, weight, item } of ends) {
       const from = cellCentre(state >> 2, grid);
-      const to = item.peer ? baseAnchor(item.peer, from) : item.exit.clone();
+      const to = item.peer ? doorAnchor(item.peer, from) : item.exit.clone();
       draw([from, to], weight, kind, item.jump);
     }
   }
