@@ -322,9 +322,11 @@ outgoing coupling (outgoing is what a city with a change set opens on), or insta
 (which is both at once), and a change set on screen, the
 colour raises a question ⌥ can only answer one building at a time, mixed in with every old
 edge: *which of these did this change add?* So every edge the diff introduced stands as a
-road — the same blue road with the same traffic as any other road out — and every few seconds
-a 🆕 rides it, the way the dependency points, from the class that took it on to the one it
-now leans on. The road says what any road says; the 🆕 is the only thing that says *new*.
+road — the same blue road with the same traffic as any other road out — and a legend above
+the help box says what the blue means: with no key held, every road on the plate is one the
+diff laid. A 🆕 used to ride each of them every few seconds; on a plate of a dozen new roads
+that was a dozen moving badges, and the eye followed them instead of the city, so the stars
+are kept for ⌥, where new and old roads share the plate and something has to tell them apart.
 It was a pale yellow road with black arrows first, the one colour the city spends nowhere
 else, and shown cold nobody could tell what the yellow meant: a road painted differently
 reads as a different *kind* of road, not as a recent one, while a star means "new" before

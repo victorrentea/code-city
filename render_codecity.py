@@ -1295,8 +1295,28 @@ html = """<!doctype html>
   .filterRow .filterCount { min-width: 0; }
   .filterRow:has(#pkgFilterCount:empty) { gap: 0; }
   /* Shortcuts help, pinned bottom-right, clear of the metrics tooltip (top-right). */
-  #shortcuts {
+  /* The help box and, above it, the legend of the standing layer: one column in the
+     bottom-right corner, so the legend sits on the help box whatever its height. */
+  #cornerRight {
     position: fixed; bottom: 16px; right: 16px; z-index: 2;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+    pointer-events: none;
+  }
+  #addedLegend {
+    font-size: 12px; line-height: 1.4; color: #334155;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(140, 148, 160, 0.4);
+    border-radius: 8px; padding: 6px 10px;
+    box-shadow: 0 8px 28px rgba(15, 23, 42, 0.12);
+    backdrop-filter: blur(10px);
+    display: flex; align-items: center; gap: 8px;
+  }
+  #addedLegend[hidden] { display: none; }
+  #addedLegend .swatch {
+    width: 28px; height: 5px; border-radius: 3px; flex: none;
+    background: repeating-linear-gradient(90deg, #1d4ed8 0 6px, #93c5fd 6px 10px);
+  }
+  #shortcuts {
     max-width: 340px; text-align: right;
     font-size: 11.5px; line-height: 1.5; color: #52606d;
     background: rgba(255, 255, 255, 0.82);
@@ -1642,18 +1662,21 @@ html = """<!doctype html>
 </head>
 <body>
 <div id="scene"></div>
+<div id="cornerRight">
+<div id="addedLegend" hidden><span class="swatch"></span><span><b>blue road</b>: a dependency this diff added</span></div>
 <aside id="shortcuts" aria-label="controls help">
   Drag to pan<br>
   Cmd/Ctrl-drag to rotate<br>
   Scroll to zoom<br>
   Shift-click a floor/building to zoom in<br>
   <span id="roadsHint"><b>&#8997; over a building</b>: its coupling, as roads (&#8997;-click to pin, Esc or click the ground to let go)<br>
-    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;<span class="new-mark">&#x1F195;</span> riding a road: a dependency this diff added, shown by itself on a coupling colour; under &#8997; the rest fade<br></span>
+    <span id="addedRoadsHint" hidden>&nbsp;&nbsp;under &#8997;, <span class="new-mark">&#x1F195;</span> riding a road: a dependency this diff added; the rest fade<br></span>
     <span id="roadJumpHint">&nbsp;&nbsp;&#8984;/Ctrl-click a road: the source line that couples the two<br></span></span>
   <b>&#8679; over a building</b>: what changes with it (co-change colour), or its whole axis (cohesion colour)<br>
   Shift-click the ground (or Esc / breadcrumb) to step out<br>
   <span id="openHint">Cmd/Ctrl-double-click <span id="openWhere">opens a file in VS Code</span></span>
 </aside>
+</div>
 <section class="panel">
   <h1>__LOGO_SVG__<span>__TITLE__</span><select id="viewMode" class="titleView"
       aria-label="what a building represents">
@@ -2049,7 +2072,7 @@ const HAS_COUPLING_DELTA = __HAS_COUPLING_DELTA__;   // only the rows that moved
 // A city with a change set to diff against opens on OUTGOING COUPLING — over acceptance
 // reach too. That is the half of coupling a diff ADDS, line by line, in the classes the
 // reviewer is already reading, and on this colour the change answers itself three ways at
-// once: the dependencies the diff introduced stand as roads with a star riding them (see
+// once: the dependencies the diff introduced stand as blue roads, a legend saying so (see
 // addedCouplingOn), and a class that took some on is skinned in its old shade below the
 // band where it used to end, its new shade above it (see addChangeMarks).
 //
@@ -3508,7 +3531,7 @@ function showLabel(L, on) {
 // canvas. Re-measured each frame — the panel grows and shrinks with its own controls.
 function panelBoxes() {
   const boxes = [];
-  for (const sel of [".panel", "#shortcuts", ".corner", ".breadcrumb"]) {
+  for (const sel of [".panel", "#shortcuts", "#addedLegend", ".corner", ".breadcrumb"]) {
     const el = document.querySelector(sel);
     if (!el || el.hidden) continue;
     // Not offsetParent: every one of these is position:fixed, for which it is always
@@ -3680,8 +3703,7 @@ for (const kind of ROAD_KINDS) flowMaterial[kind] = trafficMaterial(FLOW_BLUE[ki
 let streetGroup = null;         // the roads currently drawn (one hovered building's)
 let streetedPath = null;        // whose they are, so a pointermove inside the same roof is free
 let streetFlowFrozen = false;   // a bundle past ROAD_FLOW_MAX: drawn, but the traffic holds still
-let standingStars = [];         // the runs the standing new roads' stars ride (see "The stars")
-let bundleStars = [];           // ...and the hovered bundle's, which replace them while it is up
+let bundleStars = [];           // the runs a hovered bundle's new roads' stars ride (see "The stars")
 const streetLabels = [];        // the names of the hovered building and everything it touches
 // How many roads the last draw actually put on screen per direction, vs how many peers
 // were there to draw: the hover tooltip says so on the coupling lines, so a capped or
@@ -4697,9 +4719,11 @@ function nameTheBundle(entry, bundle, fade) {
 // shows, and two hundred roads would hide it.
 //
 // The SAME look as every other road out of that class — its direction's blue, its wedges
-// running the way the dependency points — and on top of that, every so often, a star that
-// rides the very same trail from the class that took the dependency on to the one it now
-// leans on. The star is what says "new"; the road only says what any road says.
+// running the way the dependency points. Standing, with no key held, every road on the plate
+// is a new one, so the legend over the help box is what says "new". Under ⌥, where old and
+// new share a bundle, a star rides each new road from the class that took the dependency
+// on to the one it now leans on; it rode the standing roads too until 10 Nov 2026, and a
+// dozen moving badges pulled the eye off the city.
 //
 // It wore a look of its own until October 2026: a pale yellow road with small black
 // arrows, the one colour the city spends nowhere else. Nobody read it. Shown the city cold,
@@ -4813,9 +4837,15 @@ function starRuns(laid, deck) {
   return runs;
 }
 
-// Once a frame: whichever layer is on screen, every star on it, where the clock puts it.
+// Once a frame: every star on the hovered bundle, where the clock puts it. The standing
+// layer carries none: with no key held every road on the plate is a new one, so its blue
+// says "new" by itself and the legend above the help box says it in words — a badge
+// riding each of them only pulled the eye off the city (Victor, 10 Nov 2026).
+const addedLegend = document.getElementById("addedLegend");
 function updateStars() {
-  const runs = streetGroup ? bundleStars : (addedGroup ? standingStars : []);
+  const legendOn = !streetGroup && !!addedGroup;
+  if (addedLegend && addedLegend.hidden === legendOn) addedLegend.hidden = !legendOn;
+  const runs = streetGroup ? bundleStars : [];
   const spacing = STAR_SPACING * cityUnit;
   const travel = (performance.now() / 1000) * FLOW_SPEED * cityUnit;
   let n = 0;
@@ -4883,7 +4913,6 @@ function addedEdgeKeys() {
 }
 
 function clearAddedCoupling() {
-  standingStars = [];
   if (addedGroup) {
     scene.remove(addedGroup);
     addedGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
@@ -4949,7 +4978,6 @@ function drawAddedCoupling() {
   if (!group.children.length) return;
   scene.add(group);
   addedGroup = group;
-  standingStars = starRuns(laid, deck);
 }
 
 // ── Change coupling: the crime scene ────────────────────────────────────────

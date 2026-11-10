@@ -769,7 +769,10 @@ class RenderCodecityTest(unittest.TestCase):
             self.assertNotIn(".coupling-label.added", html)
             self.assertNotIn("ADDED_ROAD_PALE", html)
             self.assertIn("bundleStars = starRuns(laid, deck);", html)
-            self.assertIn("standingStars = starRuns(laid, deck);", html)
+            # Standing, no star: the blue is the only road on the plate, and a legend names it.
+            self.assertNotIn("standingStars", html)
+            self.assertIn('<div id="addedLegend" hidden>', html)
+            self.assertIn("const legendOn = !streetGroup && !!addedGroup;", html)
             self.assertIn("sinkMesh(sinks[kind].lane, flowMaterial.out, 1)", html)
             self.assertIn("sizeAttenuation: false", html)
             self.assertIn("function wireNote", html)
