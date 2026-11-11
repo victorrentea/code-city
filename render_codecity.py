@@ -6139,12 +6139,14 @@ const INTRO_CHANNELS = [
 const MARK_INK = "#0f172a";   // the intro's ink for the change marks — near-black, like them
 const INCREASED_SUB = "versus its previous value";   // the INCREASED card's second line
 
-// A small up arrow (head + stem), centred on (cx, cy): the INCREASED card's icon, saying
-// in one glance which way the PR moved the metric.
-function upArrowIcon(cx, cy) {
+// A row of three black arrowheads, centred on (cx, cy): the INCREASED card's icon. Just
+// the heads, no stem — the same mark the PR leaves standing on a grown roof or wall, so
+// the card shows the very thing it names instead of a generic "up" arrow.
+function arrowHeadsIcon(cx, cy) {
   const p = (x, y) => `${(cx + x).toFixed(1)},${(cy + y).toFixed(1)}`;
-  return `<polygon points="${[p(0, -9), p(7, -1), p(2.5, -1), p(2.5, 9), p(-2.5, 9), p(-2.5, -1), p(-7, -1)].join(" ")}" ` +
-    `fill="${MARK_INK}"/>`;
+  return [-9, 0, 9].map(dx =>
+    `<polygon points="${[p(dx, -5), p(dx + 4, 4), p(dx - 4, 4)].join(" ")}" fill="${MARK_INK}"/>`
+  ).join("");
 }
 
 // The clearest change mark on screen, or null when the city carries none. A row of black
@@ -6403,7 +6405,7 @@ function buildIntro() {
   // As wide as the longest line any card will carry, never narrower than 200: a fixed 200
   // let "acceptance coverage % (end-to-end)" run out through the COLOR card's right edge.
   // Measured in the card's own type, with the left bar + padding and, for INCREASED, the
-  // up arrow beside the words counted in.
+  // arrowheads beside the words counted in.
   const introMeasure = document.createElement("canvas").getContext("2d");
   introMeasure.font = '12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   const LW = Math.ceil(Math.max(200,
@@ -6541,7 +6543,7 @@ function buildIntro() {
       `<rect x="${box.x}" y="${box.y}" width="6" height="${box.h}" rx="3" fill="${row.color}"/>` +
       `<text x="${box.x + 16}" y="${box.y + 21}" font-size="13" font-weight="700" fill="${row.color}">${row.title}</text>` +
       `<text x="${box.x + 16}" y="${box.y + 39}" font-size="12.5" fill="#344054">${escapeXml(row.sub)}</text>` +
-      (row.upArrow ? upArrowIcon(box.x + box.w - 20, box.y + box.h / 2) : '') +
+      (row.upArrow ? arrowHeadsIcon(box.x + box.w - 20, box.y + box.h / 2) : '') +
       '</g>'
     );
   }
